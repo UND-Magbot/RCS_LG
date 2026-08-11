@@ -25,4 +25,11 @@ TabletApp/app/build/
 TabletApp/build/
 TabletApp/local.properties
 
+# DB 덤프 (로컬 보관용 — 운영 데이터라 커밋 금지)
+_db/
+*.sql
+
+# 맵핑 산출물 (로봇에서 받은 로컬 파일. DB엔 경로만 저장됨)
+BackEnd/static/maps/
+
 nul
