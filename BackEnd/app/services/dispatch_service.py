@@ -57,6 +57,54 @@ _workers_lock = threading.Lock()
 # 예약 자동 처리 직렬화 — 여러 워커가 동시에 종료해도 예약 배정은 한 번에 하나씩
 _reservation_lock = threading.Lock()
 
+# ── POI 배정 선점 ────────────────────────────────────────────
+# 로봇 슬롯은 start_session 이 _workers_lock 안에서 원자적으로 선점하지만(동시 호출이
+# 한 로봇을 이중 배정하지 못하게), POI 쪽에는 같은 방어가 없었다. 그래서 같은 POI 를
+# 동시에 호출하면 "점유 검증 → 실제 배정" 사이의 틈으로 여러 대가 배정된다.
+#
+# ⚠️ 이 락은 집합 조작에만 쓰고, 잡은 채로 DB·네트워크를 호출하지 않는다.
+#    가용 로봇 라이브 체크(online_ips_cached)는 캐시 미스 시 수 초가 걸리므로,
+#    그걸 락 안에 두면 콘솔/태블릿 응답이 통째로 밀린다(과거 폴링 지연 이슈와 같은 원인).
+_claim_lock = threading.Lock()
+_claimed_pois: set[int] = set()
+
+
+def _try_claim_poi(poi_id: int) -> bool:
+    """이 POI 의 배정 처리를 선점. 이미 다른 요청이 처리 중이면 False."""
+    with _claim_lock:
+        if poi_id in _claimed_pois:
+            return False
+        _claimed_pois.add(poi_id)
+        return True
+
+
+def _release_poi(poi_id: int) -> None:
+    """선점 해제. 세션이 만들어진 뒤에는 occupied_poi_ids 가 점유를 이어받으므로
+    배정 처리가 끝나면 바로 풀어야 한다(오래 들고 있으면 그 POI 가 호출 불가가 된다)."""
+    with _claim_lock:
+        _claimed_pois.discard(poi_id)
+
+
+# ── 경유지 등록(출발) 직렬화 ──────────────────────────────────
+# send_route 는 경로를 두 곳에 쓴다: DB(태블릿이 읽음) + worker.pending_route(워커가 읽음).
+# 상태 검사와 이 두 쓰기가 원자적이지 않으면, 콘솔에서 [출발]이 겹쳐 들어올 때
+# 여러 건이 모두 수락되어 **DB에 남은 경로와 로봇이 실제 가는 경로가 달라진다.**
+# (탭 2개 / 응답이 느려 경로를 바꿔 다시 누르는 경우 — LTE 환경에서 특히)
+#
+# 로봇별로 잠근다(다른 로봇의 출발까지 막을 이유가 없다).
+# ⚠️ 이 락 안에서는 DB만 만지고 로봇 통신은 하지 않는다(_claim_lock 과 같은 원칙).
+_route_locks_guard = threading.Lock()
+_route_locks: dict[int, threading.Lock] = {}
+
+
+def _route_lock(robot_id: int) -> threading.Lock:
+    with _route_locks_guard:
+        lk = _route_locks.get(robot_id)
+        if lk is None:
+            lk = threading.Lock()
+            _route_locks[robot_id] = lk
+        return lk
+
 # ── 로봇 라이브(ONLINE) 상태 캐시 ────────────────────────────
 # fetch_all_robots_live 는 로봇당 REST(3s)+WS(최대 4s) 를 태워 수 초가 걸린다.
 # 콘솔 폴링(2초)과 호출/예약 요청마다 이걸 그대로 태우면 응답이 밀려 UI 반영이 늦어지므로
@@ -703,18 +751,9 @@ def send_route(robot_id: int, poi_ids: list[int]) -> tuple[bool, str]:
     if worker.end_flag:
         return False, "종료 진행 중 — 명령 무시"
 
-    db = SessionLocal()
-    try:
-        s = db.query(DispatchSession).filter(DispatchSession.id == worker.session_id).first()
-        if not s or s.status in ("returning", "completed", "failed"):
-            return False, "종료/완료된 세션 — 명령 무시"
-        if s.status != "awaiting_next":
-            return False, f"현재 상태({s.status})에서는 경유지를 등록할 수 없습니다"
-    finally:
-        db.close()
-
     # 유효한 POI만 추림 — 중복 제거(순서 유지) + 조회 가능한 것만.
     # 연속으로 같은 위치가 들어오면 제자리 이동이 되므로 서비스 계층에서도 방어한다.
+    # (POI 조회가 여러 번이라 락 밖에서 미리 끝낸다)
     valid: list[int] = []
     seen: set[int] = set()
     for pid in poi_ids:
@@ -726,14 +765,34 @@ def send_route(robot_id: int, poi_ids: list[int]) -> tuple[bool, str]:
     if not valid:
         return False, "유효한 경유지가 없습니다"
 
-    _set_route_waypoints(worker.session_id, valid)  # DB 영속 (로봇 태블릿 조회용)
-    # 출발 상태를 동기적으로 반영 — 워커가 이벤트를 처리하기 전에 폴링이 이전 상태(awaiting_next)를
-    # 보여 콘솔 UI가 롤백되는 것을 막는다. 워커는 깨어나 같은 값으로 재설정 후 실제 이동을 수행한다.
-    _set_target_poi(worker.session_id, valid[0])
-    _mark_waypoint(worker.session_id, 0, "current")
-    _set_db_status(worker.session_id, "moving")
-    worker.pending_route = valid
-    worker.next_event.set()
+    # ── 상태 검사 → DB 반영 → 워커 신호를 한 덩어리로 ──
+    # 이 구간이 쪼개져 있으면 동시 [출발] 이 모두 awaiting_next 를 보고 전부 통과한다.
+    # 먼저 들어온 요청이 락 안에서 상태를 moving 으로 바꾸므로, 뒤따라온 요청은 거부된다.
+    with _route_lock(robot_id):
+        worker = _get_worker(robot_id)
+        if not worker:
+            return False, "활성 배차 없음"
+        if worker.end_flag:
+            return False, "종료 진행 중 — 명령 무시"
+
+        db = SessionLocal()
+        try:
+            s = db.query(DispatchSession).filter(DispatchSession.id == worker.session_id).first()
+            if not s or s.status in ("returning", "completed", "failed"):
+                return False, "종료/완료된 세션 — 명령 무시"
+            if s.status != "awaiting_next":
+                return False, f"현재 상태({s.status})에서는 경유지를 등록할 수 없습니다"
+        finally:
+            db.close()
+
+        _set_route_waypoints(worker.session_id, valid)  # DB 영속 (로봇 태블릿 조회용)
+        # 출발 상태를 동기적으로 반영 — 워커가 이벤트를 처리하기 전에 폴링이 이전 상태(awaiting_next)를
+        # 보여 콘솔 UI가 롤백되는 것을 막는다. 워커는 깨어나 같은 값으로 재설정 후 실제 이동을 수행한다.
+        _set_target_poi(worker.session_id, valid[0])
+        _mark_waypoint(worker.session_id, 0, "current")
+        _set_db_status(worker.session_id, "moving")
+        worker.pending_route = valid
+        worker.next_event.set()
     return True, "ok"
 
 
@@ -1010,41 +1069,50 @@ def call_to_poi(poi_id: int, robot_type: Optional[str] = None,
       - 예약 생성: (True, "reserved", None, True)
       - 거부:      (False, 사유, None, False)
     """
-    # 1) 점유 검증 — current/target 뿐 아니라 '다른 로봇의 미방문 경유지'도 거부
-    db = SessionLocal()
+    # 0) 같은 POI 동시 호출 선점 — 이게 없으면 아래 점유 검증을 여러 요청이 동시에
+    #    통과해(모두 "비어있음"으로 보고) 서로 다른 로봇이 같은 자리로 배정된다.
+    if not _try_claim_poi(poi_id):
+        return False, "다른 요청이 이 위치를 처리하는 중입니다. 잠시 후 다시 시도하세요", None, False
+
     try:
-        occupied = dispatch_crud.occupied_poi_ids(db)
-    finally:
-        db.close()
-    if poi_id in occupied:
-        return False, "다른 로봇이 점유(또는 경유지로 예약) 중인 위치입니다", None, False
-
-    poi = _load_poi(poi_id)
-    if not poi:
-        return False, "POI 조회 실패", None, False
-
-    # 2) 가용 로봇 배정 시도
-    ok, msg, robot_id = _assign_available_robot(poi_id, with_rack, robot_type=robot_type)
-    if ok:
-        # 이 POI에 남아있던 대기 예약이 있으면 소진 처리 (직접 배차로 충족됨)
+        # 1) 점유 검증 — current/target 뿐 아니라 '다른 로봇의 미방문 경유지'도 거부
         db = SessionLocal()
         try:
-            r = dispatch_crud.get_waiting_reservation(db, poi_id)
-            if r:
-                dispatch_crud.mark_reservation(db, r.id, "fulfilled")
+            occupied = dispatch_crud.occupied_poi_ids(db)
         finally:
             db.close()
-        return True, "ok", robot_id, False
-    if msg != "no_robot":
-        return False, msg, None, False
+        if poi_id in occupied:
+            return False, "다른 로봇이 점유(또는 경유지로 예약) 중인 위치입니다", None, False
 
-    # 3) 가용 로봇 없음 → 예약 생성 (FIFO 대기열). 로봇이 종료되면 자동 호출됨.
-    db = SessionLocal()
-    try:
-        dispatch_crud.create_reservation(db, poi_id, with_rack=with_rack)
+        poi = _load_poi(poi_id)
+        if not poi:
+            return False, "POI 조회 실패", None, False
+
+        # 2) 가용 로봇 배정 시도
+        ok, msg, robot_id = _assign_available_robot(poi_id, with_rack, robot_type=robot_type)
+        if ok:
+            # 이 POI에 남아있던 대기 예약이 있으면 소진 처리 (직접 배차로 충족됨)
+            db = SessionLocal()
+            try:
+                r = dispatch_crud.get_waiting_reservation(db, poi_id)
+                if r:
+                    dispatch_crud.mark_reservation(db, r.id, "fulfilled")
+            finally:
+                db.close()
+            return True, "ok", robot_id, False
+        if msg != "no_robot":
+            return False, msg, None, False
+
+        # 3) 가용 로봇 없음 → 예약 생성 (FIFO 대기열). 로봇이 종료되면 자동 호출됨.
+        db = SessionLocal()
+        try:
+            dispatch_crud.create_reservation(db, poi_id, with_rack=with_rack)
+        finally:
+            db.close()
+        return True, "reserved", None, True
     finally:
-        db.close()
-    return True, "reserved", None, True
+        # 세션이 생겼으면 이후 점유는 occupied_poi_ids 가 맡는다 — 여기서 반드시 푼다.
+        _release_poi(poi_id)
 
 
 # ── 예약 자동 처리 ────────────────────────────────────────────
@@ -1096,7 +1164,14 @@ def try_fulfill_reservations() -> None:
                     progressed = True
                     break
 
-                ok, msg, robot_id = _assign_available_robot(res.poi_id, bool(res.with_rack))
+                # 콘솔 직접 호출(call_to_poi)과 같은 POI 를 동시에 잡지 않도록 선점.
+                # 이미 처리 중이면 그 예약은 이번 회차에서 건너뛴다(다음 기회에 재시도).
+                if not _try_claim_poi(res.poi_id):
+                    continue
+                try:
+                    ok, msg, robot_id = _assign_available_robot(res.poi_id, bool(res.with_rack))
+                finally:
+                    _release_poi(res.poi_id)
                 if ok:
                     _mark_reservation(res.id, "fulfilled")
                     logger.info(f"[dispatch] 예약 자동 호출 — poi={res.poi_id} robot={robot_id}")
