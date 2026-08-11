@@ -129,6 +129,49 @@ PATCH 후 **`POST /chassis/current-map` 재선택**으로 overlay 리로드.
 
 ---
 
+## 4-1. ★ `calculation_failed` (경로 계산 실패) — 2026-08-11 실제 사례
+
+**증상**: 랙을 든 채 출발 못 함. 화면 안내 없음. `/chassis/moves` 에 `fail_reason: 9`, `fail_reason_str: "calculation_failed - 道路不连通"`, `fail_message: "failed to calc global path"` 가 5초 간격으로 반복.
+
+**원인**: **맵핑 당시 랙 위치(R1)에 랙이 놓여 있어 랙 다리 4개가 지도에 영구 장애물로 기록됨.**
+로봇이 그 자리에서 출발하려 하면 **출발점이 팽창영역에 걸려** 경로 계산이 시작조차 안 됨.
+
+**진단 절차 (그대로 따라 하면 됨)**
+
+1. 실패 사유 확인 — `GET /chassis/moves/{id}` (목록 API는 target 좌표를 안 줌)
+2. 로봇 상태가 정상인지 배제 — WS `ws://{ip}:8090/ws/v2/topics`
+   - `/slam/state` → `position_quality`, `lidar_matched` (정상이면 위치추정 문제 아님)
+   - `/jack_state` → `progress`(1.0=올라감), `weight`(적재 여부)
+   - `/planning_state` → `target_poses` 로 실제 목표 좌표 확인
+3. **지도를 직접 받아 분석** ← 결정적
+   ```
+   GET /maps/{id}        → grid_origin_x/y, grid_resolution
+   GET /maps/{id}.png    → 점유격자 이미지
+   world→pixel: c=(x-ox)/res,  r=H-1-(y-oy)/res
+   픽셀값: 255=자유, <=100=장애물, 그 외(예: 136)=미탐색
+   ```
+4. **출발점 반경별 비자유 셀 수**를 세기 — 반경 0.4m(로봇 반폭)에서 0이 아니면 그게 원인
+5. **연결성 BFS** — 팽창 0이면 도달 가능한데 팽창 0.4m 에서 출발점이 막히면 확정
+6. 장애물 오프셋이 **랙 스펙(width/depth)의 다리 배치와 일치**하는지 대조
+
+**실측 예 (2026-08-11)**
+```
+R1 반경 0.4m 내 비자유 5셀 / 0.6m 내 12셀     (다른 POI 6곳은 전부 0)
+장애물 오프셋: (-0.33,+0.08) (+0.38,+0.18) (-0.28,-0.40) (+0.43,-0.33)
+LG 랙: width 0.70(=±0.35) depth 0.50(=±0.25)  →  다리 4개와 일치
+BFS: 팽창 0 → 전 POI 도달 가능 / 팽창 0.4m → 출발점 자체 차단
+```
+
+**해결**
+- 임시: 원격제어로 로봇을 **0.4~0.5m 밀어내기** → 팽창영역 벗어나면 경로 생성됨
+- 근본: **랙·대차를 전부 치우고 맵 재작성** (실제로 이렇게 해결함)
+- 대안: rb-admin 맵 편집으로 해당 점만 지우기
+
+**재발 방지: 맵핑할 때 랙·대차·이동 가능한 물체를 전부 치울 것.**
+운영 중 랙이 그 자리에 있는 건 문제없음(라이다가 실시간 장애물로 보고 `align_with_rack` 이 처리). **지도에 박히는 게 문제.**
+
+---
+
 ## 5. 로봇이 안 움직일 때 — 진단 순서
 
 1. **부팅 중인가** → `GET /maps/{id}.png` 가 503이면 부팅중, 200이면 준비완료. `/chassis/status` 정상 JSON이면 부팅 끝
@@ -149,12 +192,18 @@ PATCH 후 **`POST /chassis/current-map` 재선택**으로 overlay 리로드.
 - 동기화 시 유휴(도킹) 로봇은 충전소 기준 자동 재조정, 작업 중 로봇은 포즈 저장/복원
 - ⚠️ **맵 저장이 POI를 delete+재생성** → id 변경 + FK `ON DELETE SET NULL` 로 `robots.charging_id` 소실. **저장 후 충전소·standby 재확인 필수**
 
-### 현재 상태 (2026-08-11 [측정])
+### 현재 상태 (2026-08-11 저녁 [측정])
 ```
 로봇 current-map : id=115, "1FF"
-DB robot_maps    : id=20, robot_map_id=115   ← 일치
-POI 6개          : C1(charging) R1(standby,LG) R2(standby,LG2) J1 J2 J3(jack)
+DB robot_maps    : id=22 (영역 '0811')  ← 현재 사용중
+POI 7개          : C1(979) C1-1(980) R1(981,LG) J1(985) J2(982) J3(983) J4(984)
+로봇 설정        : charging_id=979 / standby_id=981 / area_id=22
 ```
+⚠️ **구 맵(20)·영역(20)이 아직 `is_active=1`** 이라 POI 목록에 신구가 섞여 보임.
+`areas.is_main_floor` 도 20·22 양쪽에 1. → STEP 2에서 정리 필요.
+
+> 교훈: 맵을 새로 만들면 **`robots.charging_id` / `standby_id` 를 새 POI로 반드시 재지정**해야 함.
+> 2026-08-11 에 픽업은 구 맵 R1 좌표(0.0776,-29.6259)로, 이동은 새 맵 J1 좌표로 나가 **두 맵이 섞여 동작**한 사례가 있었음.
 
 ---
 
