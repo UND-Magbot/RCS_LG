@@ -28,6 +28,7 @@ from app.schemas.dispatch import (
     TabletSlotIn, TabletSlotOut,
     POIConsoleItem, ConsoleRobotItem, ConsoleStatusOut,
     DispatchRouteRequest, WaypointBrief, RobotTabletStatus,
+    JobPointIn, JobPointOut,
 )
 from app.crud import dispatch as dispatch_crud
 from app.services import dispatch_service
@@ -123,11 +124,16 @@ def _list_available_pois(db: Session, robot_id: Optional[int] = None) -> list[PO
     ]
 
 
-def _current_area_active_pois(db: Session) -> list[POIBrief]:
+def _current_area_active_pois(db: Session, include_standby: bool = False) -> list[POIBrief]:
     """현재 [메인 적용]된 area의 활성 맵에서 jack POI 목록.
 
     맵관리에서 적용한 area_id 기준. 다른 층/다른 맵의 POI는 제외한다.
     (콘솔/슬롯 모두 이 목록을 써서 현재 맵 POI만 노출)
+
+    include_standby=True 면 랙 보관 위치(R)도 함께 반환한다. 2026-08-24 현장 배치
+    확정으로 **호출 버튼이 R 에 놓이게** 되어 콘솔/태블릿이 R 타일을 그려야 하기
+    때문. 단 아무 standby 나 노출하면 혼란스러우므로 **job_points 매핑에 등장하는
+    R 만** 남긴다(충전 대기용 등 배차와 무관한 standby 는 제외).
     """
     from app.routers import map as map_mod
     area_id = map_mod._current_area_id
@@ -146,20 +152,49 @@ def _current_area_active_pois(db: Session) -> list[POIBrief]:
     if not active_map:
         return []
 
+    types = ["jack", "standby"] if include_standby else ["jack"]
     pois = (
         db.query(MapPOI)
         .filter(
             MapPOI.map_id == active_map.id,
             MapPOI.is_active == True,
-            MapPOI.poi_type == "jack",
+            MapPOI.poi_type.in_(types),
         )
         .order_by(MapPOI.name.asc())
         .all()
     )
+    if include_standby:
+        jps = _job_points_for_current_area(db, area_id)
+        if not jps:
+            # 매핑이 하나도 없으면 배송 모드가 아니다 → 종전 콘솔 그대로(jack 만).
+            # R 을 띄워봐야 호출하면 "연결된 작업지점이 없습니다" 로 막힌다.
+            pois = [p for p in pois if p.poi_type != "standby"]
+        else:
+            # 배송 모드 — **매핑된 것만** 남긴다.
+            # 매핑 없는 jack POI(J3·J4 등)를 그대로 두면 legacy 타일로 그려져
+            # J 에 [로봇 호출]/[예약하기]/[경유지 등록] 버튼이 살아난다. 호출은 R 에서만
+            # 해야 하므로 콘솔에서 아예 뺀다. (쓰려면 매핑을 등록하면 된다)
+            r_names = {jp.r_poi_name for jp in jps}
+            j_names = {jp.j_poi_name for jp in jps}
+            pois = [
+                p for p in pois
+                if (p.name in r_names if (p.poi_type or "") == "standby" else p.name in j_names)
+            ]
     return [
         POIBrief(id=p.id, name=p.name, poi_type=p.poi_type, world_x=p.world_x, world_y=p.world_y)
         for p in pois
     ]
+
+
+def _job_points_for_current_area(db: Session, area_id) -> list:
+    """현재 area 의 J↔R 매핑 목록. area 로 못 찾으면 전체로 폴백.
+
+    crud.get_job_point 이 area_id 로 먼저 찾고 없으면 이름만으로 폴백하는 것과 같은
+    규칙. (매핑을 area 없이 등록했거나 area_id 타입이 어긋난 경우에도 R 타일이
+    사라지지 않도록)
+    """
+    rows = dispatch_crud.list_job_points(db, area_id)
+    return rows if rows else dispatch_crud.list_job_points(db, None)
 
 
 # ── API ──────────────────────────────────────────────────────
@@ -276,17 +311,40 @@ def robot_pois(robot_id: int, db: Session = Depends(get_db)):
 # ══════════════════════════════════════════════════════════
 
 
+def _battery_ok(robot: Robot, stat) -> bool:
+    """배차 가능한 배터리인지 — find_available_robot() 과 동일 판정.
+
+    배터리 값이 없으면(아직 한 번도 수집 안 됨) 통과시킨다.
+    find_available_robot 도 값이 None 이면 검사를 건너뛰므로 기준을 맞춘 것.
+    """
+    level = stat.battery_level if (stat and stat.battery_level is not None) else None
+    if level is None:
+        return True
+    min_batt = robot.min_battery if robot.min_battery is not None else 20
+    return level >= min_batt
+
+
 def _count_available_robots(db: Session) -> int:
     """실제 호출 가능한 로봇 수.
 
     조건:
       - is_active=True, ip_address 있음
       - 활성 워커 없음 (=다른 호출에 배정 안 됨)
+      - **배터리 >= min_battery** (2026-08-19 추가)
       - **현재 온라인** (관제와 동일한 라이브 체크 — fetch_all_robots_live)
+
+    ⚠ 이 조건은 dispatch_service.find_available_robot() 과 반드시 같아야 한다.
+      한쪽만 바꾸면 "화면엔 가용 1대인데 호출하면 안 온다" 가 된다.
+      (area_id / robot_type 필터는 여기 없음 — 아래 _available_robot_counts 는 타입별로 나눠 집계)
     """
-    robots = db.query(Robot).filter(Robot.is_active == True, Robot.ip_address != None).all()
-    # 1) 인메모리 필터 (활성 워커 제외)
-    idle_robots = [r for r in robots if not dispatch_service.has_active_worker(r.id)]
+    rows = (db.query(Robot, RobotStatus)
+              .outerjoin(RobotStatus, RobotStatus.robot_id == Robot.id)
+              .filter(Robot.is_active == True, Robot.ip_address != None)
+              .all())
+    # 1) 인메모리 필터 (활성 워커 제외 + 배터리)
+    idle_robots = [r for r, st in rows
+                   if not dispatch_service.has_active_worker(r.id)
+                   and _battery_ok(r, st)]
     if not idle_robots:
         return 0
     # 2) 라이브 ONLINE 체크 (TTL 캐시 — 배차 선정 로직과 동일)
@@ -296,6 +354,63 @@ def _count_available_robots(db: Session) -> int:
     except Exception:
         # 라이브 서비스 자체가 죽었으면 폴백 — 등록된 idle 수 그대로
         return len(idle_robots)
+
+
+def _poi_area_id(db: Session, poi: MapPOI) -> Optional[int]:
+    """POI 가 속한 영역 id. 매핑(job_points)을 영역 단위로 찾기 위해 필요."""
+    if not poi or not poi.map_id:
+        return None
+    m = db.query(RobotMap).filter(RobotMap.id == poi.map_id).first()
+    return int(m.area_id) if (m and m.area_id is not None) else None
+
+
+def _poi_state_only(db: Session, poi_id: int) -> str:
+    """그 POI 의 state 만 계산 — empty / reserved / calling / arrived.
+
+    R 태블릿이 짝 J 의 상황(예약됨/오는 중/도착)을 보여주기 위한 경량 조회.
+    _poi_status 를 그대로 재귀 호출하면 사용 가능 POI 목록·가용 로봇 수까지
+    매번 다시 계산해서 폴링 비용이 커지므로 필요한 부분만 뽑았다.
+    """
+    from sqlalchemy import and_, or_
+    arrived = (
+        db.query(DispatchSessionModel)
+        .filter(
+            DispatchSessionModel.current_poi_id == poi_id,
+            or_(
+                DispatchSessionModel.status == "awaiting_next",
+                DispatchSessionModel.status == "awaiting_confirm",
+                and_(
+                    DispatchSessionModel.status == "moving",
+                    DispatchSessionModel.target_poi_id.is_(None),
+                ),
+            ),
+        )
+        .first()
+    )
+    if arrived:
+        return "arrived"
+    heading = (
+        db.query(DispatchSessionModel)
+        .filter(
+            DispatchSessionModel.target_poi_id == poi_id,
+            DispatchSessionModel.status.in_(("starting", "picking_up", "moving")),
+        )
+        .first()
+    )
+    if heading:
+        return "calling"
+    if dispatch_crud.get_waiting_reservation(db, poi_id):
+        return "reserved"
+    return "empty"
+
+
+def _safety_alerts() -> list[dict]:
+    """전방 장애물로 멈춰 있는 로봇 목록. 조회 실패로 태블릿이 죽으면 안 되므로 삼킨다."""
+    try:
+        from app.services import safety_zone
+        return safety_zone.active_alerts()
+    except Exception:
+        return []
 
 
 def _poi_status(db: Session, poi_id: int) -> DispatchPOIStatusOut:
@@ -367,6 +482,41 @@ def _poi_status(db: Session, poi_id: int) -> DispatchPOIStatusOut:
             if st:
                 battery = st.battery_level
 
+    # 랙 점유 + 짝 POI (2026-08-24 현장 배치)
+    #   J 태블릿 → 자기 자신의 점유. True 면 [확인 — 랙을 치웠습니다] 만 보여준다.
+    #   R 태블릿 → 짝 J 의 점유. True 면 호출 버튼을 그리지 않는다.
+    # 두 태블릿이 같은 값을 보고 서로 반대되는 UI 를 그린다.
+    rack_present = False
+    rack_at = None
+    poi_type = (poi.poi_type or "jack") if poi else "jack"
+    paired_id = paired_name = paired_state = None
+    if poi:
+        _area = _poi_area_id(db, poi)
+        jp = dispatch_crud.get_job_point(db, _area, poi.name)
+        if jp:
+            paired_name = jp.r_poi_name          # 나는 J — 짝은 R
+        else:
+            jp = dispatch_crud.get_job_point_by_r(db, _area, poi.name)
+            if jp:
+                paired_name = jp.j_poi_name      # 나는 R — 짝은 J
+        if jp:
+            rack_present = bool(jp.occupied)
+            rack_at = jp.occupied_at
+            prow = (
+                db.query(MapPOI)
+                .filter(
+                    MapPOI.map_id == poi.map_id,
+                    MapPOI.name == paired_name,
+                    MapPOI.is_active == True,
+                )
+                .first()
+            )
+            if prow:
+                paired_id = prow.id
+                if poi_type == "standby":
+                    # R 태블릿은 짝 J 가 예약/이동 중인지 보여줘야 한다
+                    paired_state = _poi_state_only(db, prow.id)
+
     # 사용 가능한 다음 위치 (점유 안 된 POI). POI 자기 자신은 제외
     available = _list_available_pois(db, robot_id=robot_id)
     occupied = sorted(dispatch_crud.occupied_poi_ids(db))
@@ -389,6 +539,13 @@ def _poi_status(db: Session, poi_id: int) -> DispatchPOIStatusOut:
         available_pois=available,
         occupied_poi_ids=occupied,
         available_robot_count=_count_available_robots(db),
+        rack_present=rack_present,
+        poi_type=poi_type,
+        paired_poi_id=paired_id,
+        paired_poi_name=paired_name,
+        paired_state=paired_state,
+        rack_occupied_at=rack_at,
+        safety_alerts=_safety_alerts(),
     )
 
 
@@ -410,6 +567,47 @@ def poi_call(poi_id: int, body: DispatchCallRequest | None = None, db: Session =
     """
     with_rack = body.with_rack if body is not None else True
     robot_type = body.robot_type if body is not None else None
+
+    # 2026-08-24 현장 배치 — 호출 버튼은 랙이 눈앞에 있는 R(랙 보관 위치)에 있다.
+    # (J 옆 작업자는 100m 떨어진 R 에 랙이 있는지 볼 수 없기 때문)
+    # 실제 배차 목적지는 매핑된 작업지점(J) 이므로 여기서 바꿔 끼운다.
+    # J POI 로 들어온 호출은 종전 경로 그대로 — 아래 블록을 그냥 지나간다.
+    _req_row = db.query(MapPOI).filter(MapPOI.id == poi_id).first()
+    if _req_row is not None and (_req_row.poi_type or "") == "standby":
+        jp_r = dispatch_crud.get_job_point_by_r(db, _poi_area_id(db, _req_row), _req_row.name)
+        if not jp_r:
+            raise HTTPException(
+                status_code=404,
+                detail=f"{_req_row.name} 에 연결된 작업지점이 없습니다",
+            )
+        j_row = (
+            db.query(MapPOI)
+            .filter(
+                MapPOI.map_id == _req_row.map_id,
+                MapPOI.name == jp_r.j_poi_name,
+                MapPOI.is_active == True,
+            )
+            .first()
+        )
+        if not j_row:
+            raise HTTPException(
+                status_code=404,
+                detail=f"작업지점 {jp_r.j_poi_name} 을 현재 맵에서 찾을 수 없습니다",
+            )
+        poi_id = j_row.id
+
+    # 2026-08-24 시나리오 — 작업지점에 이미 랙이 놓여 있으면 배차하지 않는다.
+    # 로봇이 랙을 든 채 가봐야 자리를 못 잡고 조용히 재시도만 반복하기 때문.
+    # 작업자가 랙을 치우고 [확인](rack-cleared)을 눌러야 다시 호출된다.
+    poi_row = db.query(MapPOI).filter(MapPOI.id == poi_id).first()
+    if poi_row:
+        jp = dispatch_crud.get_job_point(db, _poi_area_id(db, poi_row), poi_row.name)
+        if jp and jp.occupied:
+            raise HTTPException(
+                status_code=409,
+                detail="작업지역에 랙이 있어요. 치운 후 확인 버튼을 눌러주세요.",
+            )
+
     ok, msg, robot_id, reserved = dispatch_service.call_to_poi(
         poi_id, robot_type=robot_type, with_rack=with_rack
     )
@@ -443,19 +641,39 @@ def poi_cancel_reservation(poi_id: int):
 
 
 def _available_robot_counts(db: Session) -> dict:
-    """가용 로봇 수를 타입별로 집계 (라이브 ONLINE 체크 1회)."""
-    robots = db.query(Robot).filter(Robot.is_active == True, Robot.ip_address != None).all()
-    idle = [r for r in robots if not dispatch_service.has_active_worker(r.id)]
+    """가용 로봇 수를 타입별로 집계 (라이브 ONLINE 체크 1회).
+
+    ⚠ 조건은 dispatch_service.find_available_robot() 과 같게 유지할 것 (배터리 포함).
+    """
+    rows = (db.query(Robot, RobotStatus)
+              .outerjoin(RobotStatus, RobotStatus.robot_id == Robot.id)
+              .filter(Robot.is_active == True, Robot.ip_address != None)
+              .all())
+    idle = [r for r, st in rows
+            if not dispatch_service.has_active_worker(r.id) and _battery_ok(r, st)]
     if not idle:
         return {"total": 0, "lifting": 0, "serving": 0}
-    # 라이브 ONLINE 체크 — TTL 캐시 사용 (폴링마다 수 초 걸리는 것 방지)
-    online_ips = dispatch_service.online_ips_cached([r.ip_address for r in idle])
+    # 라이브 ONLINE 체크 — 화면 폴링이므로 **기다리지 않는다**(block=False).
+    # 오프라인 로봇이 등록돼 있으면 실조회가 20초 넘게 걸려 콘솔이 통째로 멈춘다.
+    online_ips = dispatch_service.online_ips_cached(
+        [r.ip_address for r in idle], block=False
+    )
     online = [r for r in idle if r.ip_address in online_ips]
-    return {
+    counts = {
         "total": len(online),
         "lifting": sum(1 for r in online if (r.robot_type or "lifting") == "lifting"),
         "serving": sum(1 for r in online if r.robot_type == "serving"),
     }
+
+    # 대기 중인 예약은 **이미 임자가 있는 로봇**이다 — 가용에서 뺀다.
+    # 안 빼면, 로봇이 유휴가 된 순간부터 예약이 실제로 배차될 때까지의 공백 동안
+    # "가용 1대" 로 보여 다른 R 타일에 [로봇 호출] 이 떠 버린다(실측으로 확인).
+    waiting = len(dispatch_crud.list_waiting_reservations(db))
+    if waiting:
+        counts["total"] = max(0, counts["total"] - waiting)
+        counts["lifting"] = min(counts["lifting"], counts["total"])
+        counts["serving"] = min(counts["serving"], counts["total"])
+    return counts
 
 
 def _console_status(db: Session) -> ConsoleStatusOut:
@@ -464,7 +682,8 @@ def _console_status(db: Session) -> ConsoleStatusOut:
     POI별 상태 계산은 _poi_status 와 동일 규칙이되, 세션/로봇/예약을 일괄
     조회해 N+1 쿼리를 피한다.
     """
-    pois = _current_area_active_pois(db)  # 현재 적용 area의 활성 맵 jack POI만
+    # 작업지점(J) + 매핑된 랙 보관 위치(R). R 타일에 호출 버튼이 붙는다.
+    pois = _current_area_active_pois(db, include_standby=True)
 
     sessions = (
         db.query(DispatchSessionModel)
@@ -486,6 +705,16 @@ def _console_status(db: Session) -> ConsoleStatusOut:
     reservations = {r.poi_id: r for r in dispatch_crud.list_waiting_reservations(db)}
     occupied = sorted(dispatch_crud.occupied_poi_ids(db))
     poi_name_by_id = {p.id: p.name for p in pois}
+
+    # 2026-08-24 현장 배치 — J↔R 짝과 랙 점유 상태를 한 번에 읽어 타일에 실어준다.
+    # R 타일과 J 타일 모두 **같은 J 의 occupied** 를 본다:
+    #   R 타일 → True 면 호출 버튼을 그리지 않음(짝 J 에 아직 랙이 있음)
+    #   J 타일 → True 면 [확인 — 랙을 치웠습니다] 만 표시
+    from app.routers import map as map_mod
+    _job_points = _job_points_for_current_area(db, map_mod._current_area_id)
+    jp_by_j = {jp.j_poi_name: jp for jp in _job_points}
+    jp_by_r = {jp.r_poi_name: jp for jp in _job_points}
+    poi_id_by_name = {p.name: p.id for p in pois}
 
     # "경유지 예약" 배지용 집합 — 미래 목적지(이동 목표 target + 아직 안 간 경유지)만.
     # 로봇이 떠나는 중인 current_poi_id 는 제외 → 출발지가 잘못 "예약"으로 뜨는 것 방지.
@@ -569,8 +798,19 @@ def _console_status(db: Session) -> ConsoleStatusOut:
                 else:
                     is_last = True
 
+        # 짝 POI / 랙 점유 (매핑이 없으면 전부 기본값 — 기존 인터랙티브 모드와 동일)
+        jp = jp_by_j.get(p.name) or jp_by_r.get(p.name)
+        paired_name = None
+        if jp:
+            paired_name = jp.r_poi_name if jp.j_poi_name == p.name else jp.j_poi_name
+
         items.append(POIConsoleItem(
             poi_id=p.id, poi_name=p.name, state=state,
+            poi_type=p.poi_type or "jack",
+            paired_poi_id=poi_id_by_name.get(paired_name) if paired_name else None,
+            paired_poi_name=paired_name,
+            rack_occupied=bool(jp.occupied) if jp else False,
+            rack_occupied_at=jp.occupied_at if jp else None,
             robot_id=robot_id, robot_name=robot_name, robot_ip=robot_ip,
             robot_battery=battery, with_rack=with_rack_val,
             session_status=session_status, target_poi_id=target_id,
@@ -608,7 +848,8 @@ def _console_robot_items(db: Session, sessions: list, poi_name_by_id: dict) -> l
 
     ips = [r.ip_address for r in robots if r.ip_address]
     try:
-        online_ips = dispatch_service.online_ips_cached(ips)
+        # 화면 폴링 — 기다리지 않는다 (위 _available_robot_counts 와 같은 이유)
+        online_ips = dispatch_service.online_ips_cached(ips, block=False)
     except Exception:
         online_ips = set(ips)  # 라이브 서비스 장애 시 온라인 취급
 
@@ -813,8 +1054,16 @@ def poi_send_next(poi_id: int, body: DispatchNextRequest, db: Session = Depends(
 
 @router.post("/poi/{poi_id}/end")
 def poi_send_end(poi_id: int):
-    """이 위치에 있는 로봇을 종료 시퀀스로 (standby → 잭다운 → 충전소)."""
-    session = dispatch_service.get_session_at_poi(poi_id)
+    """이 위치에 있는 로봇을 종료 시퀀스로 (standby → 잭다운 → 충전소).
+
+    "여기서 그만" 은 어떤 대기 상태에서든 가능해야 하므로
+    awaiting_next 뿐 아니라 경유지 순회 중(awaiting_confirm / moving+target NULL)에도
+    받아준다. send_end() 가 end_flag 와 두 이벤트를 모두 세워
+    어떤 wait() 에 걸려 있든 깨우므로 안전하다.
+    (이전에는 get_session_at_poi 가 awaiting_next 만 보아, 확인 대기 구간 내내
+     화면에는 [종료] 가 보이는데 누르면 404 가 났다.)
+    """
+    session = dispatch_service.get_arrived_session_at_poi(poi_id)
     if not session:
         raise HTTPException(status_code=404, detail="이 위치에 대기 중인 로봇이 없습니다")
     ok, msg = dispatch_service.send_end(session.robot_id)
@@ -923,3 +1172,59 @@ def remove_slot(slot_number: int, db: Session = Depends(get_db)):
     if not ok:
         raise HTTPException(status_code=404, detail="슬롯 매핑 없음")
     return {"ok": True}
+
+
+# ── 작업지점(J) ↔ 랙 보관(R) 매핑 (2026-08-24 시나리오) ─────────
+#
+# POI id 가 아니라 이름으로 저장한다. 맵 재동기화로 POI 가 재생성돼도
+# 매핑이 끊기지 않게 하기 위함. 자세한 내용은 models/dispatch.py 참조.
+
+
+@router.get("/job-points", response_model=list[JobPointOut])
+def list_job_points(area_id: Optional[int] = None, db: Session = Depends(get_db)):
+    """작업지점 매핑 목록 (+ 현재 랙 점유 상태)."""
+    return dispatch_crud.list_job_points(db, area_id)
+
+
+@router.post("/job-points", response_model=JobPointOut)
+def upsert_job_point(body: JobPointIn, db: Session = Depends(get_db)):
+    """매핑 등록/수정. 예) J1 → R1"""
+    if body.j_poi_name == body.r_poi_name:
+        raise HTTPException(status_code=400, detail="작업지점과 랙 보관 위치가 같습니다")
+    return dispatch_crud.upsert_job_point(db, body.area_id, body.j_poi_name, body.r_poi_name)
+
+
+@router.delete("/job-points/{j_poi_name}")
+def delete_job_point(j_poi_name: str, area_id: Optional[int] = None,
+                     db: Session = Depends(get_db)):
+    if not dispatch_crud.delete_job_point(db, area_id, j_poi_name):
+        raise HTTPException(status_code=404, detail="매핑이 없습니다")
+    return {"ok": True}
+
+
+@router.post("/poi/{poi_id:int}/rack-cleared")
+def poi_rack_cleared(poi_id: int, db: Session = Depends(get_db)):
+    """작업자가 랙을 치우고 태블릿에서 [확인]을 눌렀을 때 — 점유 해제.
+
+    작업지점(J) id 로 부르는 것이 정상 경로지만, **랙 보관 위치(R) id 로 불러도**
+    짝 J 의 점유를 푼다. 호출 버튼이 R 에 있어서 R 화면의 안전망 모달이 R id 로
+    이 API 를 부르기 때문. 이 치환이 없으면 조회가 빗나가 '매핑 없음'으로 조용히
+    성공 응답하고 점유가 그대로 남는다.
+    """
+    poi = db.query(MapPOI).filter(MapPOI.id == poi_id).first()
+    if not poi:
+        raise HTTPException(status_code=404, detail="POI를 찾을 수 없습니다")
+
+    area_id = _poi_area_id(db, poi)
+    j_name = poi.name
+    if (poi.poi_type or "") == "standby":
+        jp_r = dispatch_crud.get_job_point_by_r(db, area_id, poi.name)
+        if jp_r:
+            j_name = jp_r.j_poi_name
+
+    row = dispatch_crud.set_job_point_occupied(db, area_id, j_name, False)
+    if not row:
+        # 매핑이 없는 POI — 점유를 추적하지 않으므로 성공으로 응답한다
+        return {"ok": True, "message": "매핑되지 않은 위치입니다 (점유 미추적)"}
+    logger.info(f"[dispatch] 랙 치움 확인 — poi={j_name} 점유 해제 (요청: {poi.name})")
+    return {"ok": True, "j_poi_name": j_name}

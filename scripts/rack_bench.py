@@ -39,6 +39,7 @@ import json
 import math
 import os
 import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -67,7 +68,19 @@ except ImportError:
 ROBOT_PORT = 8090
 HTTP_TIMEOUT = 15          # LTE 지연 대응 (jack_service 와 동일)
 JACK_SETTLE_SEC = 10       # 잭 업/다운 후 안정화 (jack_service.JACK_WAIT_SEC 와 동일)
+JACK_CMD_TIMEOUT = 30      # 잭 명령 응답 대기 — 동작이 10초 이상이라 넉넉히
+JACK_WEIGHT_THRESHOLD = 30 # 이 이상이면 랙을 들고 있다고 본다 (실측 65~69)
 ALIGN_TIMEOUT = 120
+
+# ── 재시도(회복) 파라미터 — jack_service.align_with_retry 와 같은 값 ──
+ALIGN_BACKOFF_M = 0.5          # 3차: 후진 거리
+ALIGN_LATERAL_OFFSET_M = 0.3   # 4차: 측면 우회 거리
+RETRY_STAGE_NAME = {
+    1: "1차(그대로)",
+    2: "2차(재로컬화)",
+    3: "3차(후진+재로컬화)",
+    4: "4차(측면우회+재로컬화)",
+}
 # AutoXing 기본 시크릿 — BackEnd/app/routers/robot.py:39 의 DEFAULT_SECRET 과 같은 값.
 # (app.routers.robot 을 import 하면 FastAPI 라우터가 통째로 딸려오므로 값만 옮겨둔다)
 DEFAULT_SECRET = "19a11878aaab420fba94577ce3620dce"
@@ -153,11 +166,59 @@ class Robot:
         return self.patch_settings({"rack.specs": [spec]})
 
     # ── 잭 ──
+    # ⚠️ 잭 동작은 10초 이상 걸린다. 기본 타임아웃(15초)으로는 응답을 놓치기 쉽고,
+    #    응답을 못 받았다고 해서 **명령이 실행 안 된 게 아니다**(2026-08-13 실제 사고).
     def jack_up(self) -> dict:
-        return self.post("/services/jack_up")
+        return self.post("/services/jack_up", timeout=JACK_CMD_TIMEOUT)
 
     def jack_down(self) -> dict:
-        return self.post("/services/jack_down")
+        return self.post("/services/jack_down", timeout=JACK_CMD_TIMEOUT)
+
+    def jack_state(self) -> dict | None:
+        """WS /jack_state 로 잭 실제 상태. REST 에는 없다.
+
+        {"state": "hold", "progress": 1.0, "weight": 65, ...}
+        `/tracked_pose` 와 달리 **정지 상태에서도 발행된다**(2026-08-13 실측).
+        """
+        for pkt in reversed(ws_collect(self.ip, "/jack_state", 4.0)):
+            if pkt.get("state") is not None or pkt.get("weight") is not None:
+                return pkt
+        return None
+
+    def is_jack_up(self) -> bool | None:
+        """잭이 올라가 있는가. True/False, 판정 불가면 None.
+
+        ★ 판정 기준은 **progress** 다. weight 가 아니다.
+
+        2026-08-13 사고: weight(적재 하중)로 판정했다가 **"잭은 올라갔는데 랙을 못 받친"**
+        경우를 '내려감'으로 오판했다. 그 상태로 후진해 랙을 끌었고, 이후 모든 정렬이
+        `506 jack is in up state` 로 거부됐다.
+
+        실측:
+            랙 적재:   state=hold, progress=1.0, weight=65
+            내려놓음:  state=hold, progress=0.0, weight=0
+            잭만 올림: state=hold, progress=1.0, weight=0   ← weight 로는 구분 불가
+        """
+        st = self.jack_state()
+        if st is None:
+            return None
+        state = str(st.get("state", "")).lower()
+        if state in ("jacking_up", "up"):
+            return True
+        if state in ("jacking_down", "down", "lowered"):
+            return False
+        if state == "hold":
+            # hold = '동작 완료 후 유지'. 어느 쪽으로 완료했는지는 progress 가 말해준다.
+            try:
+                progress = float(st.get("progress", -1))
+            except (TypeError, ValueError):
+                return None
+            if progress >= 0.9:
+                return True
+            if 0 <= progress <= 0.1:
+                return False
+            return None      # 중간값 = 동작 중이거나 이상 → 판정 불가(보수적으로 처리됨)
+        return None
 
     # ── 이동 ──
     def create_move(self, move_type: str, x: float, y: float, ori: float) -> int | None:
@@ -176,6 +237,59 @@ class Robot:
                            json={"state": "cancelled"}, timeout=10)
         return r.json() if r.content else {"status": r.status_code}
 
+    # ── 섀시 상태 (비상정지 감지) ──
+    def chassis_status(self) -> dict:
+        """control_mode / emergency_stop_pressed / wheel_overloaded (실측 확인된 필드)."""
+        return self.get("/chassis/status", timeout=8)
+
+    # ── 위치 재보정 (재시도 2~4차의 공통 회복 동작) ──
+    def relocalize(self, max_wait_sec: int = 15) -> bool:
+        """start_global_positioning 후 /slam/state 로 매칭 확인.
+
+        jack_service.recover_positioning 과 같은 방식. 실패해도 다음 시도는 진행한다.
+        """
+        import websocket as _ws
+        try:
+            self.post("/services/start_global_positioning",
+                      {"use_barcode": True, "use_base_map_match": True}, timeout=8)
+        except Exception as e:
+            say(f"  위치 재보정 호출 실패(무시): {e}", "~")
+            return False
+        ws = None
+        try:
+            ws = _ws.create_connection(f"ws://{self.ip}:{ROBOT_PORT}/ws/v2/topics", timeout=3)
+            for t in ("/global_positioning_state", "/slam/state"):
+                try:
+                    ws.send(json.dumps({"enable_topic": t}))
+                except Exception:
+                    pass
+            ws.settimeout(2)
+            end = time.time() + max_wait_sec
+            while time.time() < end:
+                try:
+                    pkt = json.loads(ws.recv())
+                except Exception:
+                    continue
+                topic = pkt.get("topic", "")
+                if topic == "/global_positioning_state":
+                    st = pkt.get("state", "")
+                    if st in ("succeeded", "success", "done"):
+                        return True
+                    if st in ("failed", "error"):
+                        return False
+                elif topic == "/slam/state":
+                    if pkt.get("lidar_matched") or pkt.get("reliable"):
+                        return True
+        except Exception:
+            pass
+        finally:
+            if ws is not None:
+                try:
+                    ws.close()
+                except Exception:
+                    pass
+        return False
+
     def latest_move_id(self) -> int:
         try:
             moves = self.get("/chassis/moves?page=1&page_size=20")
@@ -185,34 +299,78 @@ class Robot:
             return 0
 
 
-def read_pose(ip: str, seconds: float = 2.0) -> dict | None:
-    """로봇의 현재 자세 (x, y, ori[rad]).
+# ══════════════════════════════════════════════════════════
+# 정렬 중 랙 검출 관찰
+# ══════════════════════════════════════════════════════════
+# 정렬이 실패하면 로봇은 `MoveFailReason::rack_detection_error` 만 돌려준다.
+# "치수가 안 맞았다" 인지 "아예 못 찾았다" 인지 구분할 근거가 전혀 없다(2026-08-12 실측).
+# 그래서 정렬이 도는 동안 /detected_rack 을 옆에서 같이 구독해 둔다.
+#   → 실패 순간 로봇이 랙을 보긴 봤는지, 봤다면 몇 x 몇 으로 봤는지가 남는다.
+#
+# ※ /tracked_pose 로 랙 각도를 역산하는 방식은 폐기했다.
+#   로봇이 정지 상태면 그 토픽이 아예 발행되지 않아(12초 구독 0건) 값을 못 얻는다.
+#   자세 구분은 세트 라벨(사람이 직접 입력)로 한다.
 
-    GET /chassis/pose 는 help 텍스트만 반환하므로(2026-08 실측) WS 로만 읽을 수 있다.
-    align_with_rack 이 성공한 직후에 읽으면 로봇이 랙에 맞춰 선 상태이므로,
-    이 각도가 곧 **랙이 놓인 각도**에 가깝다(정렬 허용오차만큼의 차이는 있음).
-    사람이 "오른쪽으로 조금" 틀어놓은 것을 나중에 숫자로 되돌아볼 수 있게 남긴다.
-    """
-    for pkt in reversed(ws_collect(ip, "/tracked_pose", seconds)):
-        pos = pkt.get("pos")
-        ori = pkt.get("ori")
-        if isinstance(pos, (list, tuple)) and len(pos) >= 2 and ori is not None:
-            try:
-                return {"x": round(float(pos[0]), 4), "y": round(float(pos[1]), 4),
-                        "ori": round(float(ori), 4)}
-            except (TypeError, ValueError):
-                continue
-    return None
+class RackWatch:
+    """align 이 도는 동안 백그라운드로 /detected_rack 을 모은다."""
 
+    def __init__(self, ip: str):
+        self.ip = ip
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self.seen = 0          # 받은 패킷 수
+        self.detected = 0      # rack_detected=True 였던 횟수
+        self.sizes: list[dict] = []
 
-def angle_diff_deg(a: float, b: float) -> float:
-    """a - b 를 [-180, 180] 도로 정규화."""
-    d = math.degrees(a - b)
-    while d > 180:
-        d -= 360
-    while d < -180:
-        d += 360
-    return d
+    def start(self) -> None:
+        self._stop.clear()
+        self.seen = self.detected = 0
+        self.sizes = []
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+
+    def _loop(self) -> None:
+        import websocket as _ws
+        ws = None
+        try:
+            ws = _ws.create_connection(f"ws://{self.ip}:{ROBOT_PORT}/ws/v2/topics", timeout=3)
+            ws.send(json.dumps({"enable_topic": "/detected_rack"}))
+            ws.settimeout(1.5)
+            while not self._stop.is_set():
+                try:
+                    pkt = json.loads(ws.recv())
+                except Exception:
+                    continue
+                if pkt.get("topic") != "/detected_rack":
+                    continue
+                self.seen += 1
+                if pkt.get("rack_detected"):
+                    self.detected += 1
+                    s = _extract_size(pkt)
+                    if s:
+                        self.sizes.append(s)
+        except Exception:
+            pass
+        finally:
+            if ws is not None:
+                try:
+                    ws.close()
+                except Exception:
+                    pass
+
+    def stop(self) -> dict:
+        """수집 종료 + 요약. 실패 원인 판단용."""
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=3)
+        out = {"packets": self.seen, "detected": self.detected}
+        if self.sizes:
+            w = sorted(s["width"] for s in self.sizes)
+            d = sorted(s["depth"] for s in self.sizes)
+            mid = len(w) // 2
+            out["median"] = [w[mid], d[mid]]
+            out["range"] = [[w[0], w[-1]], [d[0], d[-1]]]
+        return out
 
 
 def ws_collect(ip: str, topic: str, seconds: float) -> list[dict]:
@@ -326,20 +484,75 @@ def parse_detected(fail_message: str | None) -> dict | None:
 # ══════════════════════════════════════════════════════════
 
 class Bench:
-    def __init__(self, rb: Robot, poi: dict, log: Log, backoff: float):
+    def __init__(self, rb: Robot, poi: dict, log: Log, backoff: float,
+                 max_attempts: int = 1):
         self.rb = rb
         self.poi = poi
         self.log = log
         self.backoff = backoff
+        self.max_attempts = max_attempts   # 1 = 재시도 없음, 4 = 백엔드와 동일
         self.jacked = False          # 잭이 올라가 있는가 (= 랙을 들고 있는가)
         self.cond = "A"              # 현재 실험 조건 라벨
         self.trials: list[dict] = []
         # ── 자동 반복(세트) ──
-        # 세트 = "랙을 한 자세로 둔 채 N회 반복". 세트가 끝나면 사람이 랙 각도를 틀고
-        # 다음 세트를 시작한다. 집계는 세트별로 나오므로 각도별 성공률을 볼 수 있다.
+        # 세트 = "랙을 한 자세로 둔 채 N회 반복". 세트가 끝나면 사람이 랙 자세를 바꾸고
+        # 다음 세트를 시작한다. 자세 구분은 세트 라벨(사람이 직접 입력)로 한다.
         self.set_no = 1
         self.set_label = ""
         self.abort = False           # 자동 루프 중단 요청
+
+    # ══════════════════════════════════════════════════
+    # 방해 요인 처리 — 랙 인식 실패와 섞이지 않게 분리한다
+    # ══════════════════════════════════════════════════
+
+    def wait_if_blocked(self) -> str | None:
+        """비상정지·원격모드·통신두절이면 풀릴 때까지 대기.
+
+        2026-08-12 테스트에서 E-STOP 5건·공유기 OFF 2건이 '랙 인식 실패'로 집계되어
+        성공률을 오염시켰다. 이런 건 실패로 세지 말고 **멈췄다가 이어서** 해야 한다.
+
+        반환: 대기했으면 사유 문자열, 정상이면 None
+        """
+        reason = None
+        waited = 0.0
+        while True:
+            try:
+                st = self.rb.chassis_status()
+            except Exception as e:
+                cur = f"통신 두절 ({type(e).__name__})"
+            else:
+                if st.get("emergency_stop_pressed"):
+                    cur = "비상정지(E-STOP) 눌림"
+                elif str(st.get("control_mode", "auto")) != "auto":
+                    cur = f"제어 모드가 auto 아님 ({st.get('control_mode')})"
+                elif st.get("wheel_overloaded"):
+                    cur = "바퀴 과부하(wheel_overloaded)"
+                else:
+                    cur = None
+
+            if cur is None:
+                if reason:
+                    say(f"해제됨 — {waited:.0f}초 대기 후 이어서 진행합니다", "✔")
+                    self.log.event("blocked_cleared", reason=reason,
+                                   waited_sec=round(waited, 1), set=self.set_no)
+                return reason
+
+            if reason is None:            # 처음 감지
+                reason = cur
+                say("=" * 58, "!")
+                say(f"{cur} — 대기합니다. 해제하면 자동으로 이어집니다.", "!")
+                say("  (이 시간은 실패로 세지 않습니다.  중단하려면 q)", "·")
+                say("=" * 58, "!")
+                self.log.event("blocked", reason=cur, set=self.set_no)
+            if self._check_abort_key():
+                return reason
+            time.sleep(3.0)
+            waited += 3.0
+
+    @staticmethod
+    def _is_comm_error(exc: Exception) -> bool:
+        return isinstance(exc, (requests.exceptions.ConnectionError,
+                                requests.exceptions.Timeout))
 
     # ── 이동 1회 (재시도 없음) ──
     def _run_move(self, move_type: str, x: float, y: float, ori: float,
@@ -348,10 +561,11 @@ class Bench:
         try:
             move_id = self.rb.create_move(move_type, x, y, ori)
         except Exception as e:
-            return {"state": "failed", "fail_message": f"명령 전송 실패: {e}",
+            return {"state": "failed", "cls": "comm" if self._is_comm_error(e) else "other",
+                    "fail_message": f"명령 전송 실패: {e}",
                     "elapsed": time.time() - t0}
         if move_id is None:
-            return {"state": "failed", "fail_message": "move id 없음",
+            return {"state": "failed", "cls": "other", "fail_message": "move id 없음",
                     "elapsed": time.time() - t0}
 
         end = time.time() + timeout
@@ -383,59 +597,171 @@ class Bench:
             pass
         return {"state": "timeout", "move_id": move_id, "elapsed": time.time() - t0}
 
-    # ── 랙 진입: align_with_rack 1회 + jack_up ──
+    # ── 회복 동작 (재시도 2~4차) — jack_service.align_with_retry 와 동일 ──
+    def _recover(self, stage: int) -> None:
+        p = self.poi
+        # 3·4차는 로봇을 움직인다 → 랙을 든 채로 움직이지 않게 먼저 확인
+        if stage >= 3 and not self.ensure_jack_down(f"{stage}차 회복 이동"):
+            say("  잭을 못 내려 회복 이동을 건너뜁니다", "✗")
+            return
+        if stage == 2:
+            say("  회복: 위치 재보정", "~")
+            self.rb.relocalize(max_wait_sec=10)
+        elif stage == 3:
+            say(f"  회복: 후진 {ALIGN_BACKOFF_M}m + 위치 재보정", "~")
+            bx = p["x"] - ALIGN_BACKOFF_M * math.cos(p["ori"])
+            by = p["y"] - ALIGN_BACKOFF_M * math.sin(p["ori"])
+            self._run_move("standard", bx, by, p["ori"], 60)
+            self.rb.relocalize(max_wait_sec=10)
+        else:
+            say(f"  회복: 측면 {ALIGN_LATERAL_OFFSET_M}m 우회 + 위치 재보정", "~")
+            sx = (p["x"] + ALIGN_LATERAL_OFFSET_M * math.cos(p["ori"] + math.pi / 2)
+                  - ALIGN_BACKOFF_M * math.cos(p["ori"]))
+            sy = (p["y"] + ALIGN_LATERAL_OFFSET_M * math.sin(p["ori"] + math.pi / 2)
+                  - ALIGN_BACKOFF_M * math.sin(p["ori"]))
+            self._run_move("standard", sx, sy, p["ori"], 60)
+            self.rb.relocalize(max_wait_sec=10)
+        time.sleep(2)
+
+    # ── 랙 진입: align_with_rack (최대 max_attempts 회) + jack_up ──
     def enter(self, quiet_tail: bool = False) -> bool:
         p = self.poi
-        say(f"[{self.cond}] 세트{self.set_no} #{self.set_count() + 1} 진입 — "
-            f"align_with_rack 1회만 (재시도 없음)", "▶")
-        res = self._run_move("align_with_rack", p["x"], p["y"], p["ori"], ALIGN_TIMEOUT)
+        mode = ("1회만 (재시도 없음)" if self.max_attempts == 1
+                else f"최대 {self.max_attempts}차까지 회복 재시도")
+        say(f"[{self.cond}] 세트{self.set_no} #{self.set_count() + 1} 진입 — {mode}", "▶")
 
-        state = str(res.get("state", "")).lower()
-        fail_msg = res.get("fail_message") or res.get("fail_reason_str") or ""
-        detected = parse_detected(fail_msg)
+        t_total = time.time()
+        attempts: list[dict] = []
+        success_at = None
+        watch = RackWatch(self.rb.ip)
+
+        for stage in range(1, self.max_attempts + 1):
+            if stage > 1:
+                self._recover(stage)
+                if self.wait_if_blocked() and self.abort:
+                    break
+
+            watch.start()
+            res = self._run_move("align_with_rack", p["x"], p["y"], p["ori"], ALIGN_TIMEOUT)
+            rack = watch.stop()
+
+            state = str(res.get("state", "")).lower()
+            fail_msg = res.get("fail_message") or res.get("fail_reason_str") or ""
+            attempts.append({
+                "stage": stage,
+                "state": state,
+                "fail_reason": res.get("fail_reason"),
+                "fail_message": str(fail_msg)[:200],
+                "detected": parse_detected(fail_msg),
+                "elapsed": round(res.get("elapsed", 0), 1),
+                "move_id": res.get("move_id"),
+                "cls": res.get("cls"),
+                "rack": rack,
+            })
+
+            if state == "succeeded":
+                success_at = stage
+                break
+
+            # ★ 506 = 로봇이 직접 "잭이 올라가 있어 이동 못 한다"고 거부한 것.
+            #   WS 판정보다 확실한 신호다. 여기서 무조건 잭을 내리고 이어간다.
+            #   (2026-08-13: 이 신호를 안 쓰다가 506 이 4차까지 반복되며 세트가 날아갔다)
+            if res.get("fail_reason") == 506:
+                say("  로봇이 '잭 up 상태'라며 거부 — 잭을 내리고 계속합니다", "!")
+                self.log.event("jack_up_detected_by_506", stage=stage)
+                self.jacked = True          # 실제로 올라가 있다
+                self.ensure_jack_down("506 거부 회복")
+
+            seen = (f"랙 {rack['detected']}/{rack['packets']}회 검출"
+                    + (f" {rack['median'][0]:.3f}x{rack['median'][1]:.3f}"
+                       if rack.get("median") else "")) if rack["packets"] else "랙 관측 없음"
+            say(f"  {RETRY_STAGE_NAME.get(stage, stage)} 실패 [{state}] {fail_msg} | {seen}", "✗")
+
+            if res.get("cls") == "comm":     # 통신 두절은 회복 재시도 대상이 아님
+                break
+
+        last = attempts[-1] if attempts else {}
+        # 분류: ok / rack(진짜 인식 실패) / jack(잭 상태) / comm(통신) / timeout
+        if success_at:
+            cls = "ok"
+        elif last.get("cls") == "comm":
+            cls = "comm"
+        # 506 으로만 실패했으면 랙 인식 문제가 아니라 잭 상태 문제다.
+        # 이걸 rack 으로 세면 인식 성공률이 왜곡된다(2026-08-13 세트가 그렇게 날아갔다).
+        elif attempts and all(a.get("fail_reason") == 506 for a in attempts):
+            cls = "jack"
+        elif last.get("state") == "timeout":
+            cls = "timeout"
+        else:
+            cls = "rack"
 
         trial = {
             "set": self.set_no,
             "label": self.set_label,
             "cond": self.cond,
-            "state": state,
-            "fail_reason": res.get("fail_reason"),
-            "fail_message": str(fail_msg)[:300],
-            "detected": detected,
-            "elapsed": round(res.get("elapsed", 0), 1),
-            "move_id": res.get("move_id"),
-            "pose": None,
-            "yaw_delta_deg": None,
+            "state": "succeeded" if success_at else last.get("state", "failed"),
+            "cls": cls,
+            "success_at": success_at,          # 몇 차에 성공했나 (None=최종 실패)
+            "n_attempts": len(attempts),
+            "elapsed": round(time.time() - t_total, 1),
+            "first_elapsed": attempts[0]["elapsed"] if attempts else 0,
+            "fail_reason": last.get("fail_reason"),
+            "fail_message": last.get("fail_message", ""),
+            "detected": last.get("detected"),
+            "rack": last.get("rack"),
+            "attempts": attempts,
         }
-
-        if state != "succeeded":
-            self.trials.append(trial)
-            self.log.event("align", **trial)
-            say(f"정렬 실패 [{state}] {fail_msg}", "✗")
-            if detected:
-                say(f"  → 로봇이 잰 값: {detected['width']} x {detected['depth']}", "!")
-            return False
-
-        # ── 정렬 직후 자세 = 랙이 놓인 각도 (잭 업 전에 읽어야 정확) ──
-        pose = read_pose(self.rb.ip)
-        if pose:
-            trial["pose"] = pose
-            trial["yaw_delta_deg"] = round(angle_diff_deg(pose["ori"], p["ori"]), 1)
         self.trials.append(trial)
         self.log.event("align", **trial)
 
-        d = trial["yaw_delta_deg"]
-        say(f"정렬 성공 ({trial['elapsed']}초)"
-            + (f" | 랙 각도 {math.degrees(pose['ori']):.1f}° (POI 대비 {d:+.1f}°)" if pose else "")
-            + " — 잭 업", "✔")
+        if not success_at:
+            say(f"최종 실패 ({len(attempts)}차까지 시도, {trial['elapsed']}초) — 분류: {cls}", "✗")
+            return False
+
+        stage_txt = ("1차 성공" if success_at == 1
+                     else f"★ {RETRY_STAGE_NAME.get(success_at, success_at)}에 성공")
+        say(f"정렬 {stage_txt} (총 {trial['elapsed']}초) — 잭 업", "✔")
+
+        # ⚠️ 응답 타임아웃이 나도 **명령은 실행됐을 수 있다**(2026-08-13 사고).
+        #    예외를 '실패'로 단정하지 말고 로봇에 실제 상태를 물어본다.
+        cmd_error = None
         try:
             self.rb.jack_up()
         except Exception as e:
-            say(f"jack_up 실패: {e}", "✗")
-            self.log.event("jack_up_failed", error=str(e))
-            return False
+            cmd_error = e
+            say(f"jack_up 응답 없음({type(e).__name__}) — 실제 잭 상태를 확인합니다", "~")
+            self.log.event("jack_up_no_response", error=str(e))
         time.sleep(JACK_SETTLE_SEC)
-        self.jacked = True
+
+        jst = self.rb.jack_state() or {}
+        up = self.rb.is_jack_up()
+        if up is True:
+            self.jacked = True
+            if cmd_error:
+                say("  확인 결과 잭은 올라가 있습니다 — 정상으로 처리합니다", "✔")
+            # 잭은 올라갔는데 하중이 안 실렸으면 랙을 제대로 못 받친 것.
+            # (정렬은 성공했다고 나오지만 실제로는 헛든 상태 — 다음 시도가 깨진다)
+            try:
+                w = float(jst.get("weight", 0))
+            except (TypeError, ValueError):
+                w = 0.0
+            trial["jack_weight"] = w
+            if w < JACK_WEIGHT_THRESHOLD:
+                say(f"  ⚠️ 잭은 올라갔으나 하중이 낮습니다 (weight={w:.0f}) — "
+                    f"랙을 제대로 못 받쳤을 수 있습니다", "!")
+                self.log.event("jack_up_no_load", weight=w)
+        elif up is False:
+            self.jacked = False
+            say("  잭이 올라가지 않았습니다 — 이번 시도는 여기서 종료합니다", "✗")
+            self.log.event("jack_up_failed", error=str(cmd_error) if cmd_error else "state=down")
+            trial["cls"] = "jack"
+            return False
+        else:
+            # 판정 불가 — 올라간 것으로 **보수적으로** 가정한다.
+            # (내려간 걸로 가정했다가 틀리면 랙을 끌고 움직이게 된다)
+            self.jacked = True
+            say("  잭 상태 판정 불가 — 안전을 위해 '올라감'으로 간주합니다", "!")
+            self.log.event("jack_state_unknown")
         if not quiet_tail:
             say("랙을 들었습니다. 스페이스 = 반납", "✔")
         return True
@@ -443,23 +769,62 @@ class Bench:
     # ── 랙 반납: jack_down → 후진 (순서 중요) ──
     def leave(self, quiet_tail: bool = False) -> bool:
         say(f"[{self.cond}] 랙 반납 — 잭 다운 후 후진 {self.backoff}m", "▶")
-        try:
-            self.rb.jack_down()
-        except Exception as e:
-            say(f"jack_down 실패: {e}  ← 랙을 든 채 후진하면 안 됩니다. 확인하세요", "✗")
-            self.log.event("jack_down_failed", error=str(e))
-            return False
-        time.sleep(JACK_SETTLE_SEC)
-        self.jacked = False
-
-        # 랙을 내려놓은 뒤에 빠져나온다 (들고 후진하면 랙째 끌려나옴)
+        # 랙을 내려놓은 뒤에 빠져나온다 (들고 후진하면 랙째 끌려나옴).
+        # ensure_jack_down 이 로봇에 실제 상태를 물어보고 내린 것까지 확인한다.
         ok = self._back_off()
         if ok and not quiet_tail:
             say("랙 밖으로 나왔습니다. 스페이스 = 다시 진입", "✔")
         return ok
 
+    # ══════════════════════════════════════════════════
+    # ★ 이동 전 안전 가드 — 랙을 든 채로 움직이지 않게
+    # ══════════════════════════════════════════════════
+    # 2026-08-13 사고: jack_up 의 HTTP 응답이 타임아웃 → 스크립트가 '실패'로 단정 →
+    # 잭이 실제로는 올라가 있는데 후진 명령을 보내 **랙을 끌고 나갔다.**
+    # 타임아웃은 "응답을 못 받았다"이지 "실행 안 됐다"가 아니다.
+    # 그래서 내부 변수(self.jacked)를 믿지 말고 **로봇에 직접 물어본다.**
+
+    def ensure_jack_down(self, why: str = "이동") -> bool:
+        """잭이 올라가 있으면 내린다. 이동 명령 전에 반드시 호출할 것."""
+        up = self.rb.is_jack_up()
+        if up is None:
+            say(f"  잭 상태를 확인할 수 없습니다 — 안전을 위해 {why} 전 잭 다운을 시도합니다", "!")
+            try:
+                self.rb.jack_down()
+                time.sleep(JACK_SETTLE_SEC)
+            except Exception as e:
+                say(f"  jack_down 실패: {e} — 수동 확인 필요", "✗")
+                self.log.event("jack_down_failed", error=str(e), context=why)
+                return False
+            self.jacked = False
+            return True
+
+        if not up:
+            self.jacked = False
+            return True
+
+        # 올라가 있다 — 스크립트가 안 올렸다고 생각했더라도 실제가 우선이다
+        say(f"  ★ 잭이 올라가 있습니다(랙 적재 상태). {why} 전에 내립니다.", "!")
+        self.log.event("guard_jack_was_up", context=why, script_thought=self.jacked)
+        try:
+            self.rb.jack_down()
+        except Exception as e:
+            say(f"  jack_down 실패: {e} — 랙을 든 채로 움직이면 안 됩니다. 수동 조치하세요", "✗")
+            self.log.event("jack_down_failed", error=str(e), context=why)
+            return False
+        time.sleep(JACK_SETTLE_SEC)
+        still = self.rb.is_jack_up()
+        if still:
+            say("  잭이 여전히 올라가 있습니다 — 이동을 중단합니다. 수동 조치하세요", "✗")
+            self.log.event("guard_jack_still_up", context=why)
+            return False
+        self.jacked = False
+        return True
+
     def _back_off(self) -> bool:
-        """랙 밖으로 후진. 잭이 내려간 상태에서만 부를 것."""
+        """랙 밖으로 후진. ★ 잭이 내려가 있는지 로봇에 확인한 뒤에만 움직인다."""
+        if not self.ensure_jack_down("후진"):
+            return False
         p = self.poi
         bx = p["x"] - self.backoff * math.cos(p["ori"])
         by = p["y"] - self.backoff * math.sin(p["ori"])
@@ -490,8 +855,10 @@ class Bench:
     def run_set(self, n_trials: int, fail_limit: int) -> None:
         """한 세트(= 랙 한 자세)에서 n_trials 회 자동 반복.
 
-        실패해도 계속 돈다(성공률을 재는 게 목적). 다만 **연속 실패가 fail_limit 회**면
-        랙이 넘어졌거나 로봇이 엉뚱한 데 있는 등 사람이 봐야 하는 상황이므로 멈춘다.
+        ★ 중단 판정은 **최종 실패**(재시도까지 다 실패)만 센다.
+          1차 실패는 우리가 재려는 값 그 자체이므로 중단 사유가 아니다.
+          (2026-08-12: 1차 실패로 세다 보니 가장 알고 싶은 자세에서 12회만 돌고 끊겼다)
+        비상정지·통신두절은 대기로 처리되어 아예 시도로 세지 않는다.
         """
         streak = 0
         t_start = time.time()
@@ -504,6 +871,9 @@ class Bench:
         for _ in range(n_trials):
             if self._check_abort_key():
                 break
+            self.wait_if_blocked()          # E-STOP·통신두절이면 여기서 대기
+            if self.abort:
+                break
 
             ok = self.enter(quiet_tail=True)
 
@@ -511,33 +881,42 @@ class Bench:
                 streak = 0
                 self.leave(quiet_tail=True)
             else:
-                streak += 1
-                say(f"  연속 실패 {streak}/{fail_limit}", "!")
                 # 정렬 실패면 잭은 안 올라갔다. 랙 밑에 어정쩡하게 들어가 있을 수 있으니
                 # 다음 시도가 같은 조건에서 시작하도록 일단 빠져나온다.
                 self._back_off()
-                if streak >= fail_limit:
-                    say(f"연속 {streak}회 실패 — 자동 반복을 멈춥니다. "
-                        f"랙 상태를 확인하세요.", "✗")
-                    self.log.event("auto_stop", reason="fail_streak",
-                                   set=self.set_no, streak=streak)
-                    break
+                cls = self.trials[-1]["cls"] if self.trials else "rack"
+                if cls == "rack":
+                    streak += 1
+                    say(f"  연속 최종실패 {streak}/{fail_limit}", "!")
+                    if streak >= fail_limit:
+                        say(f"연속 {streak}회 최종 실패 — 자동 반복을 멈춥니다. "
+                            f"랙 상태를 확인하세요.", "✗")
+                        self.log.event("auto_stop", reason="fail_streak",
+                                       set=self.set_no, streak=streak)
+                        break
+                else:
+                    # 통신 두절 등 외부 요인 — 연속 카운터를 올리지 않는다
+                    say(f"  외부 요인({cls}) — 연속 카운터에 반영하지 않음", "~")
 
             done = self.set_count()
             okc = sum(1 for t in self.trials if t["set"] == self.set_no
                       and t["state"] == "succeeded")
-            say(f"  진행 {done}/{n_trials}  (성공 {okc})", "·")
+            first = sum(1 for t in self.trials if t["set"] == self.set_no
+                        and t.get("success_at") == 1)
+            say(f"  진행 {done}/{n_trials}  (성공 {okc}, 그중 1차 {first})", "·")
 
         elapsed = time.time() - t_start
-        okc = sum(1 for t in self.trials if t["set"] == self.set_no
-                  and t["state"] == "succeeded")
-        done = self.set_count()
+        ts = [t for t in self.trials if t["set"] == self.set_no]
+        okc = sum(1 for t in ts if t["state"] == "succeeded")
+        first = sum(1 for t in ts if t.get("success_at") == 1)
         print()
         say("=" * 62, "◆")
-        say(f"세트 {self.set_no} 완료 — 성공 {okc}/{done}  ({elapsed/60:.1f}분)", "◆")
+        say(f"세트 {self.set_no} 완료 — 최종성공 {okc}/{len(ts)} "
+            f"(1차 {first}) ({elapsed/60:.1f}분)", "◆")
         say("=" * 62, "◆")
         self.log.event("set_done", set=self.set_no, label=self.set_label,
-                       trials=done, success=okc, elapsed_sec=round(elapsed, 1))
+                       trials=len(ts), success=okc, first_try=first,
+                       elapsed_sec=round(elapsed, 1))
 
     def wait_next_set(self) -> bool:
         """세트 사이 대기. 다음 세트를 시작하면 True, 종료면 False."""
@@ -546,30 +925,32 @@ class Bench:
             self.leave(quiet_tail=True)
 
         print()
-        say("★ 랙 위치/각도를 바꿔주세요.", "★")
-        say("   [Space] 준비됐음 — 다음 세트 시작", "·")
-        say("   [n]     이번 세트에 이름표를 달고 시작 (예: +5도)", "·")
-        say("   [q]     종료하고 결과 보기", "·")
+        say("=" * 62, "★")
+        say("랙 자세를 바꿔주세요.", "★")
+        say("=" * 62, "★")
+        print()
+        print("  다음 세트의 랙 자세를 적어주세요.")
+        print("  예)  정위치  /  오른쪽으로 조금 돌림  /  오른쪽으로 많이 돌림")
+        print("       왼쪽으로 조금 돌림  /  왼쪽으로 많이 돌림  /  앞으로 5cm")
+        print()
+        print("  ※ 그냥 Enter = 이름표 없이 시작 (나중에 어느 자세였는지 알 수 없게 됩니다)")
+        print("  ※ q + Enter = 종료하고 결과 보기")
+        print()
+        # 세트 자세는 사람이 직접 적는다.
+        # (로봇 자세로 각도를 역산하려 했으나 /tracked_pose 가 정지 상태에서 발행되지 않아
+        #  2026-08-12 테스트에서 120건 전부 기록 실패. 라벨이 유일하게 확실한 방법이다)
+        try:
+            lab = input("  랙 자세 > ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return False
+        if lab.lower() in ("q", "quit", "exit"):
+            return False
 
-        while True:
-            if not (msvcrt and msvcrt.kbhit()):
-                time.sleep(0.05)
-                continue
-            k = msvcrt.getch()
-            if k == b" ":
-                self.set_no += 1
-                self.set_label = ""
-                return True
-            if k in (b"n", b"N"):
-                try:
-                    lab = input("   이번 세트 이름표: ").strip()
-                except EOFError:
-                    lab = ""
-                self.set_no += 1
-                self.set_label = lab
-                return True
-            if k in (b"q", b"Q", b"\x1b", b"\x03"):
-                return False
+        self.set_no += 1
+        self.set_label = lab
+        if not lab:
+            say("이름표 없이 시작합니다", "~")
+        return True
 
     def toggle(self) -> None:
         if self.jacked:
@@ -579,86 +960,87 @@ class Bench:
 
     # ── 집계 ──
     @staticmethod
-    def _fmt_stats(ts: list[dict]) -> tuple[str, str, str, str, str]:
-        """(랙각도, 성공률, 정렬시간 중앙값, detected 중앙값, detected 범위)"""
-        n = len(ts)
-        ok = sum(1 for t in ts if t["state"] == "succeeded")
-        rate = f"{ok}/{n} ({ok * 100 // n if n else 0}%)"
-
-        secs = sorted(t["elapsed"] for t in ts if t["state"] == "succeeded")
-        tmed = f"{secs[len(secs) // 2]:.0f}s" if secs else "-"
-
-        # 랙 각도 — 정렬 성공한 시도에서만 잰다(실패하면 랙에 못 붙어 의미 없음)
-        ds = sorted(t["yaw_delta_deg"] for t in ts if t.get("yaw_delta_deg") is not None)
-        if ds:
-            mid = len(ds) // 2
-            ang = f"{ds[mid]:+.1f}°"
-            if ds[-1] - ds[0] >= 1.0:      # 시도마다 1도 이상 흔들리면 함께 보여준다
-                ang += f" ({ds[0]:+.0f}~{ds[-1]:+.0f})"
-        else:
-            ang = "-"
-
-        dets = [t["detected"] for t in ts if t["detected"]]
-        if dets:
-            w = sorted(d["width"] for d in dets)
-            d_ = sorted(d["depth"] for d in dets)
-            mid = len(w) // 2
-            med = f"{w[mid]:.3f} x {d_[mid]:.3f}"
-            rng = f"{w[0]:.2f}~{w[-1]:.2f} x {d_[0]:.2f}~{d_[-1]:.2f}"
-        else:
-            med, rng = "-", "-"
-        return ang, rate, tmed, med, rng
+    def _row(ts: list[dict]) -> dict:
+        """세트(또는 전체) 한 줄치 통계."""
+        # 유효 시도 = 랙 인식의 성패를 물을 수 있는 것만.
+        # 통신 두절(comm)·잭 이상(jack)은 랙 인식과 무관하므로 성공률에서 뺀다.
+        rack = [t for t in ts if t["cls"] in ("ok", "rack", "timeout")]
+        ext = [t for t in ts if t["cls"] in ("comm", "jack")]
+        n = len(rack)
+        by_stage = {k: sum(1 for t in rack if t.get("success_at") == k) for k in (1, 2, 3, 4)}
+        final_ok = sum(by_stage.values())
+        secs = sorted(t["elapsed"] for t in rack if t["state"] == "succeeded")
+        return {
+            "n": n, "ext": len(ext),
+            "stage": by_stage,
+            "final_ok": final_ok,
+            "final_ng": n - final_ok,
+            "first_pct": (by_stage[1] * 100 // n) if n else 0,
+            "final_pct": (final_ok * 100 // n) if n else 0,
+            "tmed": secs[len(secs) // 2] if secs else 0,
+        }
 
     def summary(self) -> str:
         if not self.trials:
             return "시도 기록이 없습니다."
 
-        W = 100
-        L = ["", "=" * W, "  세트별 결과 (세트 = 랙을 한 자세로 둔 채 반복한 묶음)", "=" * W,
-             f"  {'세트':<4}{'이름표':<14}{'랙 각도':<18}{'성공률':<14}{'정렬시간':<10}"
-             f"{'실패시 detected':<20}{'범위'}",
+        W = 104
+        L = ["", "=" * W,
+             "  세트별 결과   (세트 = 랙을 한 자세로 둔 채 반복한 묶음)", "=" * W,
+             f"  {'세트':<4}{'랙 자세':<22}{'1차':>6}{'2차':>5}{'3차':>5}{'4차':>5}"
+             f"{'최종실패':>8}   {'1차성공률':<11}{'최종성공률':<11}{'평균시간':>8}",
              "-" * W]
 
-        for s in sorted({t["set"] for t in self.trials}):
-            ts = [t for t in self.trials if t["set"] == s]
-            lab = (ts[0].get("label") or "")[:13]
-            ang, rate, tmed, med, rng = self._fmt_stats(ts)
-            L.append(f"  {s:<4}{lab:<14}{ang:<18}{rate:<14}{tmed:<10}{med:<20}{rng}")
+        def fmt(tag: str, r: dict) -> str:
+            s = r["stage"]
+            return (f"  {tag:<26}{s[1]:>6}{s[2]:>5}{s[3]:>5}{s[4]:>5}{r['final_ng']:>8}   "
+                    f"{r['first_pct']:>3}% ({s[1]}/{r['n']})  "
+                    f"{r['final_pct']:>3}% ({r['final_ok']}/{r['n']})  {r['tmed']:>6.0f}s")
 
-        L += ["-" * W]
-        ang, rate, tmed, med, rng = self._fmt_stats(self.trials)
-        L.append(f"  {'전체':<18}{ang:<18}{rate:<14}{tmed:<10}{med:<20}{rng}")
-        L.append("=" * W)
+        for st in sorted({t["set"] for t in self.trials}):
+            ts = [t for t in self.trials if t["set"] == st]
+            lab = (ts[0].get("label") or "(이름표 없음)")[:21]
+            L.append(fmt(f"{st:<4}{lab}", self._row(ts)))
 
-        # ── 실패 사유 분류 ──
-        fails = [t for t in self.trials if t["state"] != "succeeded"]
+        L += ["-" * W, fmt("전체", self._row(self.trials)), "=" * W]
+
+        # ── 최종 실패한 것들의 근거 ──
+        fails = [t for t in self.trials if t["cls"] in ("rack", "timeout")
+                 and t["state"] != "succeeded"]
         if fails:
-            L += ["", f"  실패 {len(fails)}건의 사유:"]
-            buckets: dict[str, list[dict]] = {}
+            L += ["", f"  최종 실패 {len(fails)}건 — 실패 순간 로봇이 랙을 봤는가:"]
             for t in fails:
-                msg = t["fail_message"] or t["state"]
-                if "rack size" in msg.lower() or t["detected"]:
-                    key = "Wrong rack size (치수 불일치)"
-                elif t["state"] == "timeout":
-                    key = "시간 초과 (랙을 못 찾아 접근만 반복)"
-                elif t["state"] == "cancelled":
-                    key = "취소됨 (사람이 x 를 눌렀거나 다른 명령)"
+                rk = t.get("rack") or {}
+                if rk.get("packets"):
+                    seen = f"검출 {rk['detected']}/{rk['packets']}회"
+                    if rk.get("median"):
+                        seen += f", 중앙 {rk['median'][0]:.3f} x {rk['median'][1]:.3f}"
+                        if rk.get("range"):
+                            r0, r1 = rk["range"]
+                            seen += f" (폭 {r0[0]:.2f}~{r0[1]:.2f} / 깊이 {r1[0]:.2f}~{r1[1]:.2f})"
                 else:
-                    key = f"기타 — {msg[:60]}"
-                buckets.setdefault(key, []).append(t)
-            for key, ts in sorted(buckets.items(), key=lambda kv: -len(kv[1])):
-                sets = sorted({t["set"] for t in ts})
-                L.append(f"    {len(ts):>3}건  {key}   (세트 {sets})")
+                    seen = "랙 관측 패킷 없음"
+                lab = (t.get("label") or "?")[:14]
+                L.append(f"    세트{t['set']} [{lab}] {t['n_attempts']}차까지 시도 — {seen}")
+
+        # ── 외부 요인 (성공률에서 제외된 것) ──
+        comm = [t for t in self.trials if t["cls"] == "comm"]
+        jack = [t for t in self.trials if t["cls"] == "jack"]
+        if comm:
+            L += ["", f"  ※ 통신 두절로 제외 {len(comm)}건 "
+                      f"(세트 {sorted({t['set'] for t in comm})})"]
+        if jack:
+            L += [f"  ※ 잭 이상으로 제외 {len(jack)}건 "
+                  f"(세트 {sorted({t['set'] for t in jack})}) — 정렬은 됐으나 잭이 안 올라감"]
 
         # ── 해석 도우미 ──
-        L += ["", "  읽는 법", "  " + "-" * 46,
-              "  * 랙 각도 = 정렬 성공 직후 로봇이 선 방향을 POI 등록각과 비교한 값.",
-              "      +는 한쪽, -는 반대쪽. 사람이 '오른쪽으로 조금'이라 한 것이 몇 도였는지 여기서 나온다.",
-              "      성공한 시도가 하나도 없는 세트는 '-' (랙에 못 붙었으니 각도를 못 잰다).",
-              "  * detected 는 실패 로그에만 실린다. 성공만 한 세트가 '-' 인 것은 정상.",
-              "  * 세트별 성공률이 각도에 따라 갈리면 → 특정 각도에서만 가짜 다리가 보이는 것.",
-              "  * 각도와 무관하게 균일하면 → 각도가 아닌 다른 요인.",
-              "  * 정렬시간이 유독 긴 세트는 '겨우 성공'한 것 — 100% 여도 여유가 없다.",
+        L += ["", "  읽는 법", "  " + "-" * 50,
+              "  * 1차/2차/3차/4차 = 그 단계에서 성공한 횟수.",
+              "      2차=위치 재보정 후, 3차=후진 0.5m 후, 4차=측면 0.3m 우회 후.",
+              "  * 1차 성공률 = 랙 인식이 얼마나 깨끗한가 (자세의 좋고 나쁨).",
+              "  * 최종 성공률 = 실운영에서 실제로 성공하는 비율 ← 현장에서 중요한 숫자.",
+              "  * 뒤 단계(3·4차)에 몰려 있으면 지금은 되지만 여유가 없다는 뜻.",
+              "  * 비상정지·통신두절은 시도로 세지 않는다(대기 후 이어서 진행).",
               f"  * 전체 로그(시도 단위): {self.log.path}"]
         return "\n".join(L)
 
@@ -666,13 +1048,14 @@ class Bench:
 # ══════════════════════════════════════════════════════════
 
 HELP = """
-  [Enter] ★ 자동 반복 시작 — N회 돌고 멈춤 → 랙 각도 바꾸고 Space → 다음 세트
+  [Enter] ★ 자동 반복 시작 — N회 돌고 멈춤 → 랙 자세 바꾸고 자세 입력 → 다음 세트
   [Space] 수동: 랙 진입 / 반납 토글   [d] 랙 치수 측정 (15초)
   [a/b/c] 조건 라벨 지정              [s] 로봇의 현재 rack.specs 조회
   [2]     LG2 스펙 주입               [w/e] leg_size -5mm / +5mm 후 주입
   [x]     이동 취소 (비상)            [h] 도움말   [q] 종료 + 결과 정리
 
   조건 A = 체인 현상태 / B = 체인을 기둥에 밀착 고정 / C = 체인 임시 제거(기준선)
+  * 비상정지를 누르면 실패로 세지 않고 대기합니다. 풀면 알아서 이어집니다.
 """
 
 
@@ -711,8 +1094,12 @@ def main() -> int:
     p.add_argument("--poi-name", default="R1", help="랙 위치 POI 이름 (기본 R1)")
     p.add_argument("--backoff", type=float, default=2, help="반납 후 후진 거리(m)")
     p.add_argument("--trials", type=int, default=20, help="한 세트당 반복 횟수 (기본 20)")
-    p.add_argument("--fail-limit", type=int, default=5,
-                   help="연속 이 횟수만큼 실패하면 자동 반복 중지 (기본 5)")
+    p.add_argument("--retry", action="store_true",
+                   help="실패 시 백엔드와 동일한 4단계 회복 재시도 "
+                        "(재보정 → 후진 → 측면우회). 몇 차에 성공했는지 기록")
+    p.add_argument("--fail-limit", type=int, default=3,
+                   help="연속 이 횟수만큼 **최종 실패**하면 자동 반복 중지 (기본 3). "
+                        "1차 실패는 세지 않는다")
     p.add_argument("--cond", default="B", help="조건 라벨 초기값 (기본 B = 체인 고정)")
     p.add_argument("--secret", default=DEFAULT_SECRET)
     p.add_argument("--dry-run", action="store_true", help="연결·조회만, 로봇 안 움직임")
@@ -759,8 +1146,19 @@ def main() -> int:
         say("스펙이 2개 이상입니다 — 펌웨어가 엉뚱한 것과 매칭할 수 있습니다. "
             "[2] 로 LG2 하나만 주입하는 것을 권합니다.", "!")
 
-    bench = Bench(rb, poi, log, cfg.backoff)
+    bench = Bench(rb, poi, log, cfg.backoff,
+                  max_attempts=4 if cfg.retry else 1)
     bench.cond = cfg.cond.upper()
+    say(f"재시도 모드: {'ON — 최대 4차까지 회복' if cfg.retry else 'OFF — 1차만'}", "✔")
+
+    # 첫 세트 자세 라벨
+    print()
+    print("  첫 세트의 랙 자세를 적어주세요. (예: 정위치 / 오른쪽으로 조금 돌림)")
+    print("  그냥 Enter 를 누르면 이름표 없이 시작합니다.")
+    try:
+        bench.set_label = input("  랙 자세 > ").strip()
+    except (EOFError, KeyboardInterrupt):
+        bench.set_label = ""
     print(HELP)
     say(f"현재 조건: {bench.cond} | 로그: {log.path}")
 

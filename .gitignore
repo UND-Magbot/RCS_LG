@@ -36,3 +36,27 @@ BackEnd/static/maps/
 _logs/
 
 nul
+# 서버별 설정 (DB 비밀번호 포함) — config.env.example 만 커밋
+BackEnd/config.env
+
+# 프론트 정적 빌드 결과 (배포 시 생성)
+BackEnd/web/
+frontend/out/
+
+# ── 2026-09-11 추가 — 인수인계 정리 ──
+# 옛 스냅샷·백업본. 무엇이 현재 코드인지 헷갈리게 한다
+_backup/
+*.bak_*
+*.bak
+
+# APK 는 APK/ 에만 둔다 (tests/ 쪽은 중복 · 각 2.5MB)
+tests/*.apk
+
+# 파이썬 캐시
+__pycache__/
+*.pyc
+
+# 진단 스크립트 산출물
+_logs/run_*/
+_logs/costmap_*/
+BackEnd/_logs/

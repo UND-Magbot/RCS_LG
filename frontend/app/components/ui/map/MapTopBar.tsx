@@ -25,7 +25,7 @@ type MapTopBarProps = {
   selectedArea: string;
   onAreaChange: (value: string) => void;
   onSave: () => void;
-  onSync: () => void;
+  onSync: (mode: "map" | "poi") => void;
   onRelocalize: () => void;
   onDelete: () => void;
   onApply?: () => void;
@@ -139,7 +139,18 @@ export function MapTopBar({
             >적용</button>
           )}
           <button className="map-top-bar__btn" onClick={onSave}>저장</button>
-          <button className="map-top-bar__btn" onClick={onSync} disabled={syncDisabled}>동기화</button>
+          <button
+            className="map-top-bar__btn"
+            onClick={() => onSync("poi")}
+            disabled={syncDisabled}
+            title="충전소·작업위치·가상벽만 전송합니다. 로봇 재시작 없이 몇 초면 끝납니다."
+          >POI 동기화</button>
+          <button
+            className="map-top-bar__btn"
+            onClick={() => onSync("map")}
+            disabled={syncDisabled}
+            title="SLAM 맵 자체를 교체합니다. 로봇 재시작 60~90초. 맵을 새로 만들었을 때만 쓰세요."
+          >맵 동기화</button>
           <button className="map-top-bar__btn" onClick={onRelocalize}>위치재조정</button>
           <button className="map-top-bar__btn" onClick={onDelete}>삭제</button>
         </div>

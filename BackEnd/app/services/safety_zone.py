@@ -1,0 +1,975 @@
+"""전방 장애물 안전거리 — Yellow(서행) / Red(정지). LGIT 요청 4번.
+
+로봇에는 '로봇을 따라다니는 2단계 링'이 없다(2026-09-04 확인). 맵에 고정된
+`regionType` 구역만 있어서, **전방 감지는 서버가 직접 해야 한다.**
+
+★ 인증된 안전 장치가 아니다. 안전 라이다(IEC 61496-3 + PL d)가 아니라
+  소프트웨어 보조 정지다. 로봇은 사람과 사물을 구분하지 못하므로
+  (`supportsVisionBasedDetector: false`) '작업자 감지'가 아니라 '장애물 감지'다.
+  로봇 자체 회피·정지는 이것과 별개로 항상 동작한다. 이 기능은 그보다
+  **더 일찍, 단계적으로** 줄이는 보조 수단이다.
+
+판정 (2026-09-04 실측 근거)
+  · 라이다 `/scan_matched_points2` 1.86 Hz(0.53초) — 더 빠른 대안 없음
+  · `control.max_forward_decel` -2.0 m/s²
+  · 0.7 m/s 기준 정지거리 (0.53+0.15)*0.7 + 0.49/(2*2.0) = 0.61 m
+  · 판정 영역은 **부채꼴이 아니라 직사각형 밴드**다. 부채꼴로 하면 멀어질수록
+    넓어져 통로 벽이 계속 잡히고 로봇이 내내 감속한다.
+
+거리 기준
+  설정값(yellow_m/red_m)은 **자기 앞끝에서의 거리**다. 로봇 중심에서 재면
+  랙을 들었을 때 랙이 앞으로 더 나온 만큼 실제 여유가 줄어드는데 설정은
+  그대로라 위험하다. 앞끝 기준이면 랙 유무와 무관하게 "내 앞에서 몇 m"가 된다.
+
+동작 — 서행도 정지도 **속도로만** 건다
+  Yellow 진입 → `max_forward_velocity` 를 `slow_speed` 로
+  Red   진입 → `max_forward_velocity` 를 **0** 으로 (2026-09-07 실기에서 0 수용 확인)
+  해제      → 원래 속도(DB `robots.max_speed`) 복구
+  전이할 때만 명령을 보낸다. 매 틱 쏘지 않는다.
+
+작업지점 주변에서는 판정하지 않는다 (2026-09-07 추가)
+  랙 밑 이탈·후진 재시도·측면 우회는 전부 작업지점에서 **일부러** 하는 동작인데
+  이동 type 이 그냥 `standard` 라 종류로 구분할 수 없다. 그래서 **위치**로 뺀다.
+  R/J·충전소·대기장소 반경 안에서는 존이 `SKIP` 이 되고 아무 제약도 걸지 않는다.
+  자세한 반경 산출은 아래 `RACK_FRONT_M` 주석 참조.
+
+★ 이동 명령을 취소하지 않는 이유 (2026-09-07 실기 사고)
+  처음에는 RED 에서 `jack_service.pause_robot_job()` 을 썼는데, 이건 진행 중인
+  이동을 **취소**한다. 그러면 `safe_move` 가 재시도하면서 처음 만든
+  `route_coordinates` 를 그대로 다시 쓰는데, 그 사이 로봇은 앞으로 가 있다.
+  결국 로봇이 경로 시작점으로 되돌아가려 해서 **우회**가 생겼다
+  (현대 프로젝트 fail_reason 표의 `401 트랙 시작점에서 너무 멀리 있음` 과 같은 상황).
+  속도만 0 으로 만들면 이동 명령과 경로가 그대로 살아 있어 장애물이 비키는 즉시
+  그 자리에서 이어서 간다.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import math
+import threading
+import time
+from typing import Optional
+
+import requests
+from websocket import WebSocketException, create_connection
+
+from app.services import map_image   # 맵 벽 대조 (DB 접근은 함수 안에서만 한다)
+
+logger = logging.getLogger(__name__)
+
+ROSTER_REFRESH_SEC = 30.0
+RECONNECT_WAIT_SEC = 5.0
+WS_TIMEOUT_SEC = 5.0
+
+# 상태. SKIP 은 "작업지점 주변이라 판정을 하지 않는 중" — CLEAR(앞이 비었다)와 다르다.
+# 둘을 같은 값으로 두면 콘솔에 "정상"으로 보여 감시 중인 줄 알게 된다.
+CLEAR, YELLOW, RED, SKIP = "clear", "yellow", "red", "skip"
+
+# 자기 몸(랙 포함) 앞끝에서 이만큼 더 띄운 곳부터 장애물로 본다.
+# 0.10 → 0.25 (2026-09-07). 이유 두 가지.
+#  ① `/robot_model` 이 **0.08 Hz(12초에 1건)** 라 랙을 든 직후 한동안 옛 풋프린트
+#     (앞끝 0.379)를 쓰게 된다. 그동안 자기 랙(앞끝 0.475)이 장애물로 잡혔다.
+#     0.379 + 0.25 = 0.629 > 0.475 라 그 창에서도 자기 랙이 안 잡힌다.
+#  ② 안전상 손해가 없다 — 0.7 m/s 정지거리가 0.61 m 라 앞끝 0.25 m 안쪽은
+#     감지해도 못 멈춘다. 그 구간은 로봇 자체 회피가 담당한다.
+SELF_CLEARANCE_M = 0.25
+
+# 포즈가 이보다 낡으면 판정을 건너뛴다.
+# `/tracked_pose` 는 **1.02 Hz** 밖에 안 온다(2026-09-07 실측). 0.7 m/s 로 달리면
+# 1초에 70 cm 를 가므로, 낡은 포즈로 맵 좌표 스캔을 변환하면 이미 지나친 벽이
+# 여전히 '앞'에 있는 것으로 계산된다 — '아무것도 없는데 정지'의 주범.
+#
+# ★ 처음엔 0.5 로 뒀는데 스캔의 절반이 버려졌다(실측 로그 '포즈가 낡아 판정 보류'
+#   0.65~0.97초). 판정 주기가 반토막나면 실효 지연이 1.15초가 되고 정지거리가
+#   1.03 m 로 늘어 Red 1.0 m 로는 못 멈춘다.
+#   → 버리는 대신 **속도로 외삽**해서 쓰고, 한계만 1 Hz 주기를 덮게 넉넉히 둔다.
+POSE_MAX_AGE_SEC = 1.2
+
+# 외삽에 쓸 전진 속도의 상한 — 추정이 튀어도 이 이상은 밀지 않는다
+MAX_EXTRAPOLATE_SPEED = 1.2
+
+# 회전 판정 — 이 값은 이제 **외삽을 쉬는 기준**으로만 쓴다.
+# 회전 중에는 헤딩이 계속 바뀌어 포즈 외삽이 틀리기 때문이다.
+#
+# (2026-09-08 변경) 예전에는 "회전 중이면 RED 대신 서행" 규칙이 있었다.
+#   코너에서 전방 밴드가 **맵에 있는 벽**을 훑어 로봇이 멈춰버려서 넣은 예외였는데,
+#   아래 맵 벽 제외를 넣으면서 그 원인이 사라졌다. 예외를 남겨두면 회전 중에 사람이
+#   앞에 있어도 서행까지만 걸려 오히려 위험하다 → **제거했다. 회전 중에도 정지한다.**
+TURN_RATE_RAD_S = 0.25
+
+# ══════════════════════════════════════════════════════════════════
+#  맵에 이미 있는 벽은 장애물로 보지 않는다 (2026-09-08 현장)
+#
+#  라이다는 벽도 똑같이 찍는다. 그래서 "새로 생긴 것"과 "원래 있던 것"을 구분하지
+#  못해, 주행 중·회전 중에 맵의 벽면을 보고 그냥 멈춰버렸다.
+#
+#  맵(점유 격자 PNG)과 대조해서 **이미 그려진 벽이면 건너뛴다.**
+#
+#  ★ 충돌 위험이 늘지 않는다 — 정지 장치가 둘이기 때문이다.
+#     ① 로봇 자체 회피·정지 : 자기 외곽 기준으로 **항상** 동작. 벽에 안 부딪히게 하는
+#        건 원래 이쪽 일이고, 여기서 끄는 게 아니다.
+#     ② 이 기능(서버 안전거리) : 그보다 더 일찍·더 멀리서 줄이는 **보조** 수단.
+#        벽을 빼는 건 ② 뿐이다.
+#
+#  무시 범위는 벽 표면에서 이 거리 안쪽뿐이다. 사람이 벽 앞에 서 있으면
+#  (몸이 보통 벽에서 0.2~0.5 m 떨어진다) 그대로 잡힌다.
+#  이 값은 **위치추정 오차를 흡수하는 값**이기도 하다 — 맵과 실제가 어긋난 만큼
+#  벽이 '새 장애물'로 보이므로, 현장에서 오정지가 남으면 조금 키운다.
+WALL_TOLERANCE_M = 0.25
+
+# 벽인지 대조할 후보 점 수 상한. 최근접부터 이만큼만 보고, 전부 벽이면 '앞이 비었다'로 본다.
+# 밴드 안 점을 전부 대조하면 틱마다 수백 번 조회하게 된다.
+WALL_CHECK_MAX = 12
+
+# ── 정적 장애물 알림 (2026-09-08 LG 통화로 확정) ──
+# 로봇은 동적·정적을 구분하지 못한다. **정지가 이만큼 이어지면** 정적으로 보고 알린다.
+# 알림은 로봇을 멈추지 않는다 — 이미 멈춰 있고, "사람이 와서 치워달라"를 알릴 뿐이다.
+STATIC_ALERT_SEC = 20.0
+
+# 알림은 **치울 때까지 계속** 떠 있어야 한다(LG 요청).
+#   · 화면 : 태블릿·콘솔이 상태 API 를 폴링해 배너를 계속 띄운다 (`active_alerts()`)
+#   · 이력 : 그대로 매번 쌓으면 알람 목록이 도배되므로 이 주기로만 기록한다
+ALERT_REPEAT_SEC = 60.0
+
+# 이동 정보(type/state) 캐시 주기.
+# `/planning_state` 는 **0.08 Hz(12초에 1건)** 라 WS 로는 못 쓴다 —
+# 랙 정렬에 들어가도 12초 뒤에나 알아채 그동안 랙을 장애물로 본다.
+# REST 로 직접 읽는다.
+MOVE_POLL_SEC = 1.0
+
+# ★ 정밀 동작 중에는 적용하지 않는다 (2026-09-07 실기에서 사고).
+#   align_with_rack 은 랙에, charge 는 충전독에 **일부러 다가가는** 동작이다.
+#   그 대상을 장애물로 보고 멈추면 동작이 영영 끝나지 않고,
+#   pause 가 진행 중인 정렬을 계속 취소해 `[align_retry] pause/resume` 가 반복된다.
+#   deadlock_monitor 가 같은 이유로 이 동작들을 제외하는 것과 같은 취지다.
+#   문자열은 `/planning_state.action_type` 이 이동 type 을 그대로 쓰는 것을
+#   2026-09-07 실기로 확인했다(align_with_rack / charge / standard / along_given_route).
+PRECISE_ACTIONS = {"align_with_rack", "charge", "to_unload_point"}
+
+# 히스테리시스 — 나갈 때는 들어올 때보다 멀어야 한다.
+# 없으면 거리가 임계값 근처에서 흔들릴 때 RED↔YELLOW 를 초 단위로 왕복하며
+# pause/resume 를 반복한다(2026-09-07 실측: 0.99 → 1.16 → 0.91).
+HYSTERESIS_M = 0.30
+
+# RED 에서 거는 속도. 0 = 완전 정지 (로봇이 0 을 받아주는 것을 2026-09-07 실기 확인).
+# 이동 명령은 살아 있으므로 장애물이 비키면 그 자리에서 이어서 간다.
+RED_SPEED = 0.0
+
+# RED 이 이만큼 이어지면 '고정 장애물'로 보고 풀어준다.
+# 로봇은 동적/정적을 구분하지 못한다 — 서버가 지속시간으로 판정해야 한다.
+# 안 풀면 벽·설비 앞에서 영원히 멈춰 선다(작업 자체가 멈춘다).
+# (제거됨) RED_MAX_SEC / RED_COOLDOWN_SEC —
+#   RED 이 이동을 취소하던 시절, 벽 앞 영구 정지를 막으려던 쿨다운이었다.
+#   지금은 속도만 0 으로 두고 이동 명령은 살아 있어 그 위험이 없고,
+#   오히려 앞 0.14 m 인데 '서행' 으로 강등돼 위험했다(2026-09-07 실측). 삭제.
+
+# ══════════════════════════════════════════════════════════════════
+#  작업지점 주변에서는 판정하지 않는다 (2026-09-07 추가)
+#
+#  작업지점(랙 위치 R/J · 충전소 · 대기장소) 주변에서 로봇이 하는 동작은 전부
+#  **대상에 일부러 다가가거나 그 자리에서 빠져나오는** 동작이다.
+#    · 랙 밑에서 전진 이탈        1.05 m  (dispatch_service.RACK_ESCAPE_M)
+#    · 랙 인식 실패 후 후진 재시도  0.50 m  (jack_service.ALIGN_BACKOFF_M)
+#    · 랙 인식 실패 후 측면 우회    0.30 m  (jack_service.ALIGN_LATERAL_OFFSET_M)
+#  이걸 장애물로 보고 멈추면 로봇이 랙 밑에 남거나 복구 동작이 통째로 막힌다.
+#  이동 type 으로는 구분할 수 없다 — 전부 그냥 "standard" 다. 그래서 **위치**로 뺀다.
+#
+#  ★ 반경을 정하는 건 위 이동 거리들이 아니라 **랙 자체가 RED 를 유발하는 거리** 다.
+#    랙을 가지러 갈 때 앞에 있는 게 바로 그 랙이라, 반경이 이보다 작으면 로봇이
+#    반경 밖에서 멈춰버려 **반경 안으로 들어오지도 못한다.**
+#
+#      반경 = red_m + 로봇 앞끝(0.379) + 랙이 로봇 쪽으로 나온 길이 + 여유
+#
+#    | 랙          | 앞쪽 돌출(반깊이+여유) | 필요 반경(red 1.0) |
+#    | LG   (현장)  | 0.340 m              | 1.72 m |
+#    | LG2  (현장)  | 0.353 m              | 1.73 m |
+#    | S300 (테스트) | 0.475 m              | 1.85 m |
+#    | S600 (미사용) | 0.535 m              | 1.91 m |
+#
+#  ★ 현장 이관 시 — 지금은 S300 으로 테스트 중이라 0.475(→ 반경 1.90)를 쓴다.
+#    현장은 LG/LG2 이므로 `RACK_FRONT_M` 을 **0.353 으로 낮추면 반경 1.78** 이 된다.
+#    이 상수 하나만 고치면 되고 다른 곳은 건드릴 필요가 없다.
+#
+#  ※ 맞바꿈 — 이 반경 안에서는 작업자가 로봇 앞에 서 있어도 서행/정지가 걸리지 않는다.
+#    J 는 사람이 랙에서 물건을 빼는 자리라 사람이 있는 게 정상이다. 그 구간은
+#    로봇 자체 회피가 담당한다(이 기능과 무관하게 항상 동작). 사람이 이동하는
+#    통로 구간에서는 서행/정지가 그대로 동작한다.
+RACK_FRONT_M = 0.475          # 사용 중인 랙의 앞쪽 돌출. 현장(LG/LG2) 이관 시 0.353
+ROBOT_FRONT_M = 0.379         # 로봇 단독 풋프린트 앞끝 (/robot_model 실측)
+WORK_SKIP_MARGIN_M = 0.05     # 계산값에 붙이는 여유
+
+# ★ 반경 하한 (2026-09-08 현장 요구).
+#   계산식만 쓰면 red 1.0 기준 1.904 m 인데, **랙이 RED 를 유발하는 거리가 1.854 m**
+#   라 여유가 5 cm 뿐이다. 랙이 작업지점보다 조금만 앞에 놓여도 제외 반경 **밖에서**
+#   RED 가 걸린다 — 실제로 J1 가는 길에 R2 의 랙을 보고 멈췄다.
+#   2.0 m 로 올리면 여유가 15 cm 가 된다.
+#   ※ 통로 등 다른 곳에서는 서행 3 m / 정지 1 m 가 그대로 적용된다.
+#     작업지점 반경 2 m 안에서만 판정을 쉬는 것이다.
+WORK_SKIP_MIN_M = 2.0
+
+# 반경을 벗어날 때는 이만큼 더 나가야 한다 — 경계에서 켜졌다 꺼졌다 하는 것 방지
+WORK_SKIP_HYST_M = 0.20
+
+# 판정에서 뺄 POI 종류. waypoint(W1~Wn 경유지)는 **넣지 않는다** —
+# 통로 한복판이라 거기서까지 감시를 끄면 기능 자체가 무의미해진다.
+WORK_POI_TYPES = ("jack", "standby", "charging")
+
+# 작업지점 좌표 캐시 주기(초). 매 스캔마다 DB 를 치면 안 된다.
+POI_REFRESH_SEC = 30.0
+
+# 걸어둔 속도를 다시 보내는 주기(초).
+# 전이할 때 한 번만 보내면 두 가지가 깨진다(2026-09-07 검토).
+#   ① POST 가 LTE 에서 실패하면 존은 RED 인데 로봇은 그대로 달린다
+#      — 화면엔 "정지", 실제로는 주행. 표시와 실제가 어긋난다.
+#   ② 콘솔 속도 슬라이더(POST /api/robot/speed)가 로봇에 직접 속도를 쓴다.
+#      RED 중에 만지면 그 속도로 즉시 출발하는데 safety 는 다시 안 쏜다.
+# 같은 값을 다시 보내는 것뿐이라 멱등이다.
+SPEED_REASSERT_SEC = 3.0
+
+_stop_event = threading.Event()
+_workers: dict[str, threading.Thread] = {}
+_workers_lock = threading.Lock()
+_state: dict[str, dict] = {}          # ip -> {"zone", "dist", "poi", "since"}
+_state_lock = threading.Lock()
+
+# 지금 알림 중인 로봇 — 태블릿·콘솔이 이걸 폴링해서 배너를 띄운다.
+# 장애물이 치워져 정지가 풀리면 여기서 빠지고 배너도 자동으로 사라진다.
+_alerts: dict[str, dict] = {}         # ip -> {"name", "since", "dist"}
+_alerts_lock = threading.Lock()
+
+
+def status() -> dict[str, dict]:
+    """콘솔 표시용 — 로봇별 현재 존과 앞끝 기준 최근접 거리.
+
+    `zone == "skip"` 이면 `poi` 에 **어느 작업지점 때문에 껐는지** 이름이 들어간다.
+    이게 없으면 콘솔에 "정상"으로만 보여서 '왜 안 멈추지'를 또 추적하게 된다.
+    """
+    with _state_lock:
+        return {ip: dict(v) for ip, v in _state.items()}
+
+
+def active_alerts() -> list[dict]:
+    """지금 '장애물로 멈춰 있음' 알림 중인 로봇 목록.
+
+    태블릿·콘솔이 폴링해서 **치울 때까지 계속** 배너를 띄운다(2026-09-08 LG 요청).
+    정지가 풀리면 목록에서 빠지므로 화면도 알아서 사라진다.
+    """
+    now = time.time()
+    with _alerts_lock:
+        return [
+            {"robot_ip": ip, "robot_name": v.get("name") or ip,
+             "seconds": int(now - v["since"]),
+             "distance_m": v.get("dist")}
+            for ip, v in _alerts.items()
+        ]
+
+
+def _clear_alert(ip: str) -> None:
+    with _alerts_lock:
+        if _alerts.pop(ip, None) is not None:
+            logger.info(f"[safety] {ip} 정지 해소 — 알림 내림")
+
+
+def _set_state(ip: str, zone: str, dist: Optional[float],
+               poi: Optional[str] = None) -> None:
+    with _state_lock:
+        _state[ip] = {"zone": zone, "dist": dist, "poi": poi,
+                      "since": time.time()}
+
+
+def _base_speed(ip: str) -> float:
+    """이 로봇의 원래 주행 속도(DB). 서행 해제 때 이 값으로 되돌린다."""
+    from app.database import SessionLocal
+    from app.models.robot import Robot
+    db = SessionLocal()
+    try:
+        r = db.query(Robot).filter(Robot.ip_address == ip).first()
+        return float(r.max_speed) if (r and r.max_speed) else 1.2
+    except Exception:
+        return 1.2
+    finally:
+        db.close()
+
+
+def _current_move(ip: str, cache: dict) -> tuple[str, bool]:
+    """현재 이동의 (type, moving 여부). REST 로 직접 읽고 `MOVE_POLL_SEC` 만큼 캐시.
+
+    `/planning_state` WS 는 0.08 Hz 라 최대 12초 낡은 값을 준다 —
+    그 사이 랙 정렬에 들어가도 모르고 자기 랙을 장애물로 잡는다.
+    """
+    now = time.time()
+    if now - cache.get("t", 0.0) < MOVE_POLL_SEC:
+        return cache.get("type", ""), cache.get("moving", False)
+    try:
+        r = requests.get(f"http://{ip}:8090/chassis/moves/current", timeout=3)
+        if r.status_code == 200:
+            d = r.json()
+            cache["type"] = str(d.get("type") or "").lower()
+            cache["moving"] = str(d.get("state") or "").lower() == "moving"
+        else:
+            cache["type"], cache["moving"] = "", False
+    except Exception:
+        pass          # 실패하면 직전 값을 그대로 쓴다
+    cache["t"] = now
+    return cache.get("type", ""), cache.get("moving", False)
+
+
+def _set_speed(ip: str, v: float) -> bool:
+    """속도를 로봇에 적용한다. **성공 여부를 돌려준다.**
+
+    예전에는 실패를 warning 만 찍고 넘어갔는데, 그러면 존은 RED 로 바뀌었는데
+    로봇은 그대로 달리는 상태가 된다 — 화면엔 "정지", 실제로는 주행.
+    호출자는 실패 시 존 전이를 **확정하지 않고** 다음 틱에 다시 시도한다.
+    """
+    try:
+        r = requests.post(f"http://{ip}:8090/robot-params",
+                          json={"/wheel_control/max_forward_velocity": float(v)},
+                          timeout=5)
+        if r.status_code >= 400:
+            logger.warning(f"[safety] {ip} 속도 적용 거부({v}): "
+                           f"HTTP {r.status_code} {r.text[:120]}")
+            return False
+        return True
+    except Exception as e:
+        logger.warning(f"[safety] {ip} 속도 적용 실패({v}): {e}")
+        return False
+
+
+def work_skip_radius(red_m: float) -> float:
+    """작업지점 판정 제외 반경(m). `red_m` 이 바뀌면 같이 따라간다.
+
+    계산값이 `WORK_SKIP_MIN_M`(2.0 m) 보다 작으면 하한을 쓴다.
+    red 1.0 · RACK_FRONT_M 0.475(S300) → 1.90 → **2.00**
+    red 1.0 · RACK_FRONT_M 0.353(LG)   → 1.78 → **2.00**
+    """
+    return max(red_m + ROBOT_FRONT_M + RACK_FRONT_M + WORK_SKIP_MARGIN_M,
+               WORK_SKIP_MIN_M)
+
+
+def _work_points(ip: str, cache: dict) -> list[tuple[float, float, str]]:
+    """이 로봇 area 의 작업지점 좌표 [(x, y, 이름)]. `POI_REFRESH_SEC` 만큼 캐시.
+
+    조회에 실패해도 **직전 값을 그대로 쓴다.** 여기서 빈 리스트를 돌려주면
+    작업지점 제외가 통째로 풀려 랙 밑 이탈이 다시 막힌다.
+    """
+    now = time.time()
+    if now - cache.get("t", 0.0) < POI_REFRESH_SEC:
+        return cache.get("pts", [])
+
+    from app.database import SessionLocal
+    from app.models.map import MapPOI, RobotMap
+    from app.models.robot import Robot
+
+    db = SessionLocal()
+    try:
+        robot = db.query(Robot).filter(Robot.ip_address == ip).first()
+        area_id = None
+        if robot is not None and robot.area_id is not None:
+            try:
+                area_id = int(robot.area_id)      # Robot.area_id 는 문자열 컬럼이다
+            except (TypeError, ValueError):
+                area_id = None
+
+        q = db.query(RobotMap).filter(RobotMap.is_active == True)   # noqa: E712
+        if area_id is not None:
+            q = q.filter(RobotMap.area_id == area_id)
+        active_map = q.order_by(RobotMap.id.desc()).first()
+
+        pts: list[tuple[float, float, str]] = []
+        if active_map is not None:
+            rows = db.query(MapPOI).filter(
+                MapPOI.map_id == active_map.id,
+                MapPOI.is_active == True,                          # noqa: E712
+                MapPOI.poi_type.in_(WORK_POI_TYPES),
+            ).all()
+            pts = sorted(          # 순서를 고정해야 아래 '바뀌었나' 비교가 안 튄다
+                (float(p.world_x), float(p.world_y), p.name or "?")
+                for p in rows
+                if p.world_x is not None and p.world_y is not None)
+        if pts != cache.get("pts"):
+            logger.info(f"[safety] {ip} 작업지점 {len(pts)}곳 — "
+                        f"{', '.join(n for _, _, n in pts) or '(없음)'}")
+        cache["pts"] = pts
+    except Exception as e:
+        logger.warning(f"[safety] {ip} 작업지점 조회 실패(직전 값 유지): {e}")
+    finally:
+        db.close()
+        cache["t"] = now          # 실패해도 매 틱 DB 를 다시 치지 않는다
+    return cache.get("pts", [])
+
+
+def worker_area_id(ip: str, cache: dict):
+    """이 로봇의 area_id. 맵 벽 대조에 쓴다. `POI_REFRESH_SEC` 만큼 캐시."""
+    now = time.time()
+    if now - cache.get("t", 0.0) < POI_REFRESH_SEC:
+        return cache.get("v")
+    from app.database import SessionLocal
+    from app.models.robot import Robot
+    db = SessionLocal()
+    try:
+        r = db.query(Robot).filter(Robot.ip_address == ip).first()
+        v = None
+        if r is not None and r.area_id is not None:
+            try:
+                v = int(r.area_id)          # Robot.area_id 는 문자열 컬럼이다
+            except (TypeError, ValueError):
+                v = None
+        cache["v"] = v
+    except Exception as e:
+        logger.warning(f"[safety] {ip} area 조회 실패(직전 값 유지): {e}")
+    finally:
+        db.close()
+        cache["t"] = now
+    return cache.get("v")
+
+
+def nearest_work_point(pts, px: float, py: float):
+    """(거리, 이름) — 가장 가까운 작업지점. 없으면 None."""
+    best = None
+    for x, y, name in pts:
+        d = math.hypot(x - px, y - py)
+        if best is None or d < best[0]:
+            best = (d, name)
+    return best
+
+
+def self_front_extent(footprint) -> float:
+    """풋프린트의 앞끝까지 거리(m). 로봇 좌표계는 X=우 / Y=전 이다.
+
+    랙을 들면 로봇이 보고하는 footprint 자체가 랙 크기까지 커지므로
+    (`supportsDynamicFootprints: true`, 2026-09-07 실측 0.46 → 0.80),
+    이 값만 보면 '싣고 있는 랙'의 앞끝을 그대로 알 수 있다.
+    """
+    try:
+        return max(float(p[1]) for p in footprint)
+    except Exception:
+        return 0.379          # 로봇 단독 풋프린트의 앞끝
+
+
+def self_half_width(footprint) -> float:
+    """풋프린트 반폭(m). 랙을 들면 랙 폭까지 커진다."""
+    try:
+        return max(abs(float(p[0])) for p in footprint)
+    except Exception:
+        return 0.23
+
+
+def candidates_in_band(points, px: float, py: float, ori: float,
+                       half_w: float, near_min: float, far: float,
+                       limit: int = WALL_CHECK_MAX):
+    """밴드 안 점들을 **가까운 순으로** 최대 `limit` 개. 각 원소는 (전방거리, 좌우, x, y).
+
+    맵에 있는 벽을 건너뛰려면 최근접 하나로는 부족하다 — 그게 벽이면 그다음 점을
+    봐야 한다. 그래서 nearest_in_band 대신 이걸 쓴다.
+    """
+    c, s = math.cos(ori), math.sin(ori)
+    out = []
+    for q in points:
+        if isinstance(q, dict):
+            qx, qy = q.get("x"), q.get("y")
+        elif isinstance(q, (list, tuple)) and len(q) >= 2:
+            qx, qy = q[0], q[1]
+        else:
+            continue
+        if qx is None or qy is None:
+            continue
+        dx, dy = qx - px, qy - py
+        fwd = dx * c + dy * s
+        if fwd < near_min or fwd > far:
+            continue
+        lat = -dx * s + dy * c
+        if abs(lat) > half_w:
+            continue
+        out.append((fwd, lat, qx, qy))
+    out.sort(key=lambda t: t[0])
+    return out[:limit]
+
+
+def nearest_in_band(points, px: float, py: float, ori: float,
+                    half_w: float, near_min: float, far: float):
+    """`_nearest_in_band` 와 같되 **어디였는지**까지 준다 — (전방거리, 좌우, 맵x, 맵y).
+
+    '아무것도 없는데 멈춘다'를 규명하려면 잡힌 점이 자기 몸인지 진짜 장애물인지
+    알아야 한다. 그래서 좌표를 함께 남긴다.
+    """
+    c, s = math.cos(ori), math.sin(ori)
+    best = None
+    for q in points:
+        if isinstance(q, dict):
+            qx, qy = q.get("x"), q.get("y")
+        elif isinstance(q, (list, tuple)) and len(q) >= 2:
+            qx, qy = q[0], q[1]
+        else:
+            continue
+        if qx is None or qy is None:
+            continue
+        dx, dy = qx - px, qy - py
+        fwd = dx * c + dy * s
+        if fwd < near_min or fwd > far:
+            continue
+        lat = -dx * s + dy * c
+        if abs(lat) > half_w:
+            continue
+        if best is None or fwd < best[0]:
+            best = (fwd, lat, qx, qy)
+    return best
+
+
+def _nearest_in_band(points, px: float, py: float, ori: float,
+                     half_w: float, near_min: float, far: float) -> Optional[float]:
+    """로봇 정면 직사각형 밴드 안에서 가장 가까운 장애물까지의 전방 거리.
+
+    반환값은 **로봇 중심 기준**이다(라이다 점이 그 좌표계로 온다).
+    호출자가 앞끝 기준으로 환산해서 쓴다.
+    near_min 안쪽은 무시한다 — 자기가 든 랙을 장애물로 잡지 않기 위한 것이라
+    호출자가 현재 풋프린트에 맞춰 넘겨준다.
+    """
+    c, s = math.cos(ori), math.sin(ori)
+    best = None
+    for q in points:
+        if isinstance(q, dict):
+            qx, qy = q.get("x"), q.get("y")
+        elif isinstance(q, (list, tuple)) and len(q) >= 2:
+            qx, qy = q[0], q[1]
+        else:
+            continue
+        if qx is None or qy is None:
+            continue
+        dx, dy = qx - px, qy - py
+        fwd = dx * c + dy * s
+        if fwd < near_min or fwd > far:
+            continue
+        lat = -dx * s + dy * c
+        if abs(lat) > half_w:
+            continue
+        if best is None or fwd < best:
+            best = fwd
+    return best
+
+
+def decide_zone(current: str, dist: Optional[float], action: str,
+                red_in: float, yellow_in: float) -> str:
+    """다음 존을 정한다. `dist` 는 **앞끝 기준** 거리다.
+
+    나갈 때 쓰는 임계값은 들어올 때보다 `HYSTERESIS_M` 만큼 멀다. 그래야 거리가
+    임계값 근처에서 흔들려도 존이 왕복하지 않는다.
+    정밀 동작(랙 정렬·충전 도킹) 중에는 항상 CLEAR — 대상에 일부러 다가가는 중이다.
+    """
+    if action in PRECISE_ACTIONS or dist is None:
+        return CLEAR
+    red_out = red_in + HYSTERESIS_M
+    yellow_out = yellow_in + HYSTERESIS_M
+    if current == RED:
+        return RED if dist <= red_out else (YELLOW if dist <= yellow_out else CLEAR)
+    if current == YELLOW:
+        return RED if dist <= red_in else (YELLOW if dist <= yellow_out else CLEAR)
+    return RED if dist <= red_in else (YELLOW if dist <= yellow_in else CLEAR)
+
+
+def _release(ip: str, zone: str) -> None:
+    """걸어둔 속도 제약을 푼다. 어떤 경로로 빠져나가든 반드시 거쳐야 한다.
+
+    이동 명령은 애초에 건드리지 않으므로 속도만 되돌리면 된다.
+    """
+    try:
+        _set_speed(ip, _base_speed(ip))
+    except Exception:
+        pass
+
+
+def _raise_static_alert(ip: str, dist: Optional[float], secs: float) -> None:
+    """정지가 오래 이어지면 관제에 알린다. 실패해도 주행 판정에는 영향을 주지 않는다."""
+    from app.database import SessionLocal
+    from app.models.alarm_log import AlarmLog
+    from app.models.robot import Robot
+
+    db = SessionLocal()
+    try:
+        r = db.query(Robot).filter(Robot.ip_address == ip).first()
+        name = (r.name if r else None) or ip
+        d = "-" if dist is None else f"{dist:.2f} m"
+        db.add(AlarmLog(
+            error_code="SAFETY-STATIC",
+            error_type="robot",
+            severity="warning",
+            message=f"{name} 전방 장애물로 {int(secs)}초째 정지 — 확인이 필요합니다",
+            description=(f"전방 최근접 {d}. 맵에 없는 장애물이 치워지지 않아 로봇이 "
+                         f"멈춰 있습니다. 장애물을 치우면 자동으로 다시 출발합니다."),
+            source="safety_zone",
+            robot_sn=(r.serial_number if r else None),
+        ))
+        db.commit()
+        with _alerts_lock:
+            cur = _alerts.get(ip) or {}
+            _alerts[ip] = {"name": name,
+                           "since": cur.get("since", time.time() - secs),
+                           "dist": dist}
+        logger.warning(f"[safety] {ip} ★ 정적 장애물 알림 — {int(secs)}초 정지, 앞 {d}")
+    except Exception as e:
+        logger.warning(f"[safety] {ip} 정적 장애물 알림 발행 실패(무시): {e}")
+    finally:
+        db.close()
+
+
+def _worker(ip: str) -> None:
+    from app.routers.settings import get_safety_settings
+
+    zone = CLEAR
+    clear_since = 0.0
+    fail_streak = 0
+    logger.info(f"[safety] 감시 시작 — {ip}")
+
+    while not _stop_event.is_set():
+        ws = None
+        try:
+            ws = create_connection(f"ws://{ip}:8090/ws/v2/topics", timeout=WS_TIMEOUT_SEC)
+            # /planning_state 는 0.08 Hz 라 쓸모가 없어 구독하지 않는다 — REST 로 읽는다.
+            for t in ("/tracked_pose", "/scan_matched_points2", "/robot_model"):
+                ws.send(json.dumps({"enable_topic": t}))
+            ws.settimeout(WS_TIMEOUT_SEC)
+            fail_streak = 0
+
+            pose = None
+            pose_t = 0.0         # 포즈 수신 시각 — 낡은 포즈로 판정하지 않으려고
+            turn_rate = 0.0      # 회전 각속도(rad/s) — 회전 중엔 RED 을 걸지 않는다
+            fwd_speed = 0.0      # 전진 속도(m/s) — 낡은 포즈를 이만큼 앞으로 밀어 보정
+            move_cache: dict = {}
+            poi_cache: dict = {}     # 작업지점 좌표 캐시 (POI_REFRESH_SEC)
+            area_cache: dict = {}    # 이 로봇의 area_id 캐시 (맵 벽 대조용)
+            last_speed_sent = 0.0    # 걸어둔 속도를 마지막으로 보낸 시각
+            last_speed_fail_log = 0.0
+            red_since = 0.0          # RED 이 시작된 시각 — 정적 장애물 알림 판정용
+            alerted = 0.0            # 알림 이력을 마지막으로 남긴 시각
+            last_wall_log = 0.0
+            front = 0.379        # 자기 앞끝. /robot_model 오면 갱신된다
+            half = 0.23          # 자기 반폭. 랙을 들면 커진다
+            last_size_log = 0.0
+            last_skip_log = 0.0
+
+            while not _stop_event.is_set():
+                raw = ws.recv()
+                try:
+                    msg = json.loads(raw)
+                except Exception:
+                    continue
+                topic = msg.get("topic")
+
+                if topic == "/tracked_pose" and msg.get("pos"):
+                    now_p = time.time()
+                    new_pose = (float(msg["pos"][0]), float(msg["pos"][1]),
+                                float(msg.get("ori", 0.0)))
+                    # 포즈가 1 Hz 라 회전·전진 속도를 이 델타에서 추정할 수밖에 없다
+                    if pose is not None and now_p > pose_t:
+                        dt = max(1e-3, now_p - pose_t)
+                        d_ori = (new_pose[2] - pose[2] + math.pi) % (2 * math.pi) - math.pi
+                        turn_rate = abs(d_ori) / dt
+                        # 전진 속도 = 변위를 헤딩에 투영 (옆으로 미끄러지는 성분은 뺀다)
+                        dx, dy = new_pose[0] - pose[0], new_pose[1] - pose[1]
+                        v = (dx * math.cos(new_pose[2]) + dy * math.sin(new_pose[2])) / dt
+                        fwd_speed = max(-MAX_EXTRAPOLATE_SPEED,
+                                        min(MAX_EXTRAPOLATE_SPEED, v))
+                    pose = new_pose
+                    pose_t = now_p
+                    continue
+                if topic == "/robot_model":
+                    fpz = msg.get("footprint") or []
+                    if fpz:
+                        new_front = self_front_extent(fpz)
+                        new_half = self_half_width(fpz)
+                        if abs(new_front - front) > 0.02 or abs(new_half - half) > 0.02:
+                            front, half = new_front, new_half
+                            if time.time() - last_size_log > 5:
+                                logger.info(f"[safety] {ip} 자기 크기 갱신 — 앞끝 {front:.3f} m "
+                                            f"/ 반폭 {half:.3f} m (폭 {msg.get('width')})")
+                                last_size_log = time.time()
+                    continue
+                if topic != "/scan_matched_points2":
+                    continue
+
+                cfg = get_safety_settings()
+                if not cfg.get("enabled", False):
+                    if zone != CLEAR:
+                        # 기능을 끄면 걸어둔 제약을 반드시 풀고 나간다.
+                        # SKIP 은 애초에 아무 제약도 안 걸어둔 상태라 POST 가 필요 없다.
+                        if zone in (YELLOW, RED):
+                            _release(ip, zone)
+                        _clear_alert(ip)
+                        zone = CLEAR
+                        _set_state(ip, zone, None)
+                        logger.info(f"[safety] {ip} 기능 꺼짐 — 제약 해제")
+                    continue
+
+                # ★ 낡은 포즈로는 판정하지 않는다.
+                #   /tracked_pose 가 1 Hz 라, 늦은 포즈로 맵 좌표 스캔을 변환하면
+                #   이미 지나친 벽이 '앞'에 있는 것으로 계산된다.
+                age = time.time() - pose_t
+                if pose is None or age > POSE_MAX_AGE_SEC:
+                    if time.time() - last_skip_log > 10:
+                        logger.info(f"[safety] {ip} 포즈가 낡아 판정 보류 "
+                                    f"({age:.2f}초 > {POSE_MAX_AGE_SEC})")
+                        last_skip_log = time.time()
+                    continue
+
+                # 포즈를 그 사이 움직인 만큼 앞으로 밀어 보정한다.
+                # 회전 중에는 헤딩이 계속 바뀌어 외삽이 틀리므로 하지 않는다.
+                if turn_rate <= TURN_RATE_RAD_S and abs(fwd_speed) > 0.05:
+                    adv = fwd_speed * age
+                    px_e = pose[0] + adv * math.cos(pose[2])
+                    py_e = pose[1] + adv * math.sin(pose[2])
+                else:
+                    px_e, py_e = pose[0], pose[1]
+
+                # ── 작업지점 주변이면 판정 자체를 하지 않는다 ──
+                # 랙 밑 이탈·후진 재시도·측면 우회는 전부 여기서 일어나는데,
+                # 이동 type 은 그냥 "standard" 라 종류로는 구분할 수 없다.
+                # 위치로 빼는 게 유일하게 빠짐 없는 방법이다.
+                skip_r = work_skip_radius(float(cfg["red_m"]))
+                nw = nearest_work_point(_work_points(ip, poi_cache),
+                                        pose[0], pose[1])
+                limit = skip_r + WORK_SKIP_HYST_M if zone == SKIP else skip_r
+                if nw is not None and nw[0] <= limit:
+                    if zone != SKIP:
+                        # 걸어둔 제약을 먼저 푼다. 안 풀면 속도 0 인 채로 작업지점에
+                        # 들어가 랙 밑 이탈이 그대로 막힌다.
+                        if zone in (YELLOW, RED) and not _set_speed(ip, _base_speed(ip)):
+                            continue          # 해제 실패 — 존을 바꾸지 않고 다음 틱 재시도
+                        logger.info(f"[safety] {ip} 작업지점 {nw[1]} 근처"
+                                    f"({nw[0]:.2f} m ≤ {skip_r:.2f}) — 판정 제외")
+                        zone = SKIP
+                        clear_since = 0.0
+                    _set_state(ip, SKIP, None, poi=nw[1])
+                    continue
+                if zone == SKIP:
+                    logger.info(f"[safety] {ip} 작업지점 벗어남 — 판정 재개")
+                    zone = CLEAR
+                    _set_state(ip, CLEAR, None)
+
+                action, moving = _current_move(ip, move_cache)
+
+                # 자기가 든 랙을 장애물로 잡지 않도록, 무시 범위를 현재 풋프린트에서 뽑는다.
+                # 고정값(near_min)만 쓰면 랙을 들었을 때 랙 앞끝이 그 밖으로 나와
+                # 자기 랙을 계속 장애물로 본다(2026-09-07 현장 발생).
+                near = max(float(cfg["near_min"]), front + SELF_CLEARANCE_M)
+                # 밴드 폭은 설정값을 그대로 쓴다. 하한만 자기 반폭 —
+                # 그보다 좁으면 랙 모서리가 부딪칠 장애물이 사각이 된다.
+                # ★ 여유(+SELF_CLEARANCE)를 더하지 않는다. 랙 적재 시 0.725 m 가 되어
+                #   좌우 1.45 m 를 보는 바람에 1.4 m 통로에서 벽이 상시로 잡히고
+                #   코너에서 로봇이 멈춰버렸다(2026-09-07 현장).
+                #   옆·뒤 장애물은 로봇 자체 회피가 담당한다 — 랙을 들면 footprint 가
+                #   랙 크기까지 커져서(0.46→0.95 실측) 그 몸으로 전방향 회피한다.
+                band_half = max(float(cfg["band_half_w"]), half)
+                # 스캔 상한도 중심 기준으로 환산한다. 앞끝과 히스테리시스만큼 더 봐야
+                # YELLOW 이탈 판정(yellow + 0.3)에 쓸 점이 잘리지 않는다.
+                far = float(cfg["yellow_m"]) + front + HYSTERESIS_M
+
+                pts = msg.get("points") or msg.get("data") or []
+                # ★ 맵에 이미 있는 벽은 건너뛴다. 가까운 순으로 훑다가 벽이 아닌
+                #   첫 점을 채택한다. 전부 벽이면 '앞이 비었다'로 본다.
+                #   (로봇 자체 회피·정지는 이것과 무관하게 항상 동작한다)
+                meta = map_image.map_meta_for_area(worker_area_id(ip, area_cache))
+                hit = None
+                walls = 0
+                for cand in candidates_in_band(pts, px_e, py_e, pose[2],
+                                               band_half, near, far):
+                    if map_image.is_wall_at(meta, cand[2], cand[3], WALL_TOLERANCE_M):
+                        walls += 1
+                        continue
+                    hit = cand
+                    break
+                if walls and time.time() - last_wall_log > 10:
+                    logger.info(f"[safety] {ip} 맵에 있는 벽 {walls}개 건너뜀"
+                                f"{'' if hit else ' — 앞이 비었다고 판정'}")
+                    last_wall_log = time.time()
+                raw_dist = None if hit is None else hit[0]
+                # 판정·표시는 앞끝 기준 거리로 한다 (모듈 독스트링 참조)
+                edge = None if raw_dist is None else max(0.0, raw_dist - front)
+
+                now = time.time()
+
+                # 걸어둔 속도를 주기적으로 다시 보낸다.
+                # 전이할 때 한 번만 보내면 ① POST 실패 ② 콘솔 속도 슬라이더가
+                # 덮어쓰는 경우에 "화면엔 정지, 실제로는 주행" 이 된다.
+                if zone in (YELLOW, RED) and now - last_speed_sent >= SPEED_REASSERT_SEC:
+                    if _set_speed(ip, RED_SPEED if zone == RED
+                                  else float(cfg["slow_speed"])):
+                        last_speed_sent = now
+
+                want = decide_zone(zone, edge, action,
+                                   float(cfg["red_m"]), float(cfg["yellow_m"]))
+
+                # (2026-09-08 제거) '회전 중이면 RED 대신 서행' 예외.
+                #   코너에서 밴드가 **맵의 벽**을 훑어 멈추던 것을 막으려던 규칙인데,
+                #   위에서 벽을 건너뛰게 되면서 원인이 사라졌다. 예외를 남기면 회전 중에
+                #   사람이 앞에 있어도 서행까지만 걸려 오히려 위험하다.
+                #   → 회전 중에도 정지한다.
+
+                # ※ 예전에 있던 'RED 15초 지속 → 서행으로 강등' 쿨다운은 제거했다.
+                #   RED 이 이동을 취소하던 시절의 안전장치였는데, 지금은 속도만 0 으로
+                #   두고 이동 명령은 살려두므로 영구 정지가 되지 않는다.
+                #   오히려 앞 0.14 m 인데 '서행' 으로 강등돼 위험했다(2026-09-07 실측).
+                #   벽 앞에서 계속 멈춰 있으면 safe_move 자체 타임아웃이 처리한다.
+
+                # 해제는 곧바로 하지 않는다 — 점 하나에 깜빡이면 주행이 덜컹거린다
+                if want == CLEAR and zone != CLEAR:
+                    if clear_since == 0.0:
+                        clear_since = now
+                    if now - clear_since < float(cfg["clear_hold_sec"]):
+                        # 존은 아직 안 바꾸되 거리는 계속 갱신한다.
+                        # 안 그러면 해제 대기 동안 콘솔 표시가 얼어붙어
+                        # 실제보다 훨씬 느려 보인다.
+                        _set_state(ip, zone, edge)
+                        continue
+                else:
+                    clear_since = 0.0
+
+                # 진입은 로봇이 실제로 이동 중일 때만 (서 있는 로봇을 붙잡지 않는다)
+                if want != CLEAR and zone == CLEAR and not moving:
+                    _set_state(ip, CLEAR, edge)
+                    continue
+
+                # ── 정적 장애물 알림 ── 정지가 이어지면 사람이 와서 봐야 한다.
+                #   로봇은 동적·정적을 구분하지 못하므로 **지속 시간으로 사후 판정**한다.
+                #   알림은 로봇을 멈추지 않는다. 이미 멈춰 있고, 알리기만 한다.
+                if zone == RED:
+                    if red_since == 0.0:
+                        red_since = now
+                    elif now - red_since >= STATIC_ALERT_SEC and now - alerted >= ALERT_REPEAT_SEC:
+                        # 화면 배너는 계속 떠 있고(active_alerts), 이력만 주기로 남긴다
+                        _raise_static_alert(ip, edge, now - red_since)
+                        alerted = now
+                else:
+                    if red_since:
+                        _clear_alert(ip)
+                    red_since = 0.0
+                    alerted = 0.0
+
+                if want == zone:
+                    _set_state(ip, zone, edge)
+                    continue
+
+                # ── 상태 전이 ──
+                # ★ 속도 적용에 **성공했을 때만** 존을 바꾼다.
+                #   실패했는데 존만 바꾸면 화면엔 "정지" 인데 로봇은 그대로 달린다.
+                #   실패하면 존을 그대로 두고 다음 틱(약 0.6초)에 다시 시도한다.
+                if want == RED:
+                    if not _set_speed(ip, RED_SPEED):
+                        if now - last_speed_fail_log > 5:
+                            logger.warning(f"[safety] {ip} 정지 적용 실패 — "
+                                           f"존 유지({zone}) 후 재시도")
+                            last_speed_fail_log = now
+                        continue
+                    # 무엇을 보고 멈췄는지 남긴다 — 자기 몸인지 진짜 장애물인지 구분하려면
+                    # 좌표가 있어야 한다. 로봇 pos·앞끝과 같이 봐야 판단이 된다.
+                    where = (f" 점=맵({hit[2]:.2f},{hit[3]:.2f}) 좌우{hit[1]:+.2f}m"
+                             f" 중심거리{hit[0]:.2f}m" if hit else "")
+                    logger.warning(
+                        f"[safety] {ip} ★ RED — 앞 {edge:.2f} m 정지"
+                        f" | 로봇({px_e:.2f},{py_e:.2f}) 앞끝{front:.3f}"
+                        f" 포즈나이{age:.2f}s 속도{fwd_speed:+.2f}{where}")
+                elif want == YELLOW:
+                    if not _set_speed(ip, float(cfg["slow_speed"])):
+                        if now - last_speed_fail_log > 5:
+                            logger.warning(f"[safety] {ip} 서행 적용 실패 — "
+                                           f"존 유지({zone}) 후 재시도")
+                            last_speed_fail_log = now
+                        continue
+                    logger.info(f"[safety] {ip} YELLOW — 앞 {edge:.2f} m 서행 "
+                                f"{cfg['slow_speed']} m/s")
+                else:  # CLEAR
+                    base = _base_speed(ip)
+                    if not _set_speed(ip, base):
+                        if now - last_speed_fail_log > 5:
+                            logger.warning(f"[safety] {ip} 속도 복구 실패 — "
+                                           f"존 유지({zone}) 후 재시도")
+                            last_speed_fail_log = now
+                        continue
+                    logger.info(f"[safety] {ip} 해제 — 속도 복구 {base} m/s")
+
+                zone = want
+                last_speed_sent = now
+                _set_state(ip, zone, edge)
+
+        except (WebSocketException, OSError) as e:
+            if fail_streak == 0:
+                logger.info(f"[safety] {ip} 접속 실패 — {RECONNECT_WAIT_SEC:.0f}초마다 재시도 ({e})")
+            fail_streak += 1
+        except Exception as e:
+            logger.exception(f"[safety] {ip} 감시 오류: {e}")
+        finally:
+            if ws:
+                try:
+                    ws.close()
+                except Exception:
+                    pass
+
+        # 연결이 끊긴 채로 제약이 걸려 있으면 로봇이 영영 멈춰 있게 된다 — 반드시 푼다.
+        # SKIP 은 애초에 제약을 안 걸어둔 상태라 존만 되돌린다.
+        _clear_alert(ip)          # 감시가 끊긴 채로 배너만 남으면 안 된다
+        if zone in (YELLOW, RED):
+            _release(ip, zone)
+            logger.warning(f"[safety] {ip} 연결 끊김 — 걸어둔 제약 해제")
+            zone = CLEAR
+            _set_state(ip, zone, None)
+        elif zone == SKIP:
+            zone = CLEAR
+            _set_state(ip, zone, None)
+
+        if not _stop_event.is_set():
+            _stop_event.wait(RECONNECT_WAIT_SEC)
+
+    # 서비스 종료 시에도 제약을 남기지 않는다
+    if zone in (YELLOW, RED):
+        _release(ip, zone)
+    logger.info(f"[safety] 감시 종료 — {ip}")
+
+
+def _supervisor_loop() -> None:
+    from app.database import SessionLocal
+    from app.models.robot import Robot
+
+    while not _stop_event.is_set():
+        try:
+            db = SessionLocal()
+            try:
+                robots = db.query(Robot).filter(
+                    Robot.is_active == True,       # noqa: E712
+                    Robot.ip_address != None,      # noqa: E711
+                ).all()
+                roster = [r.ip_address for r in robots]
+            finally:
+                db.close()
+
+            with _workers_lock:
+                for ip in roster:
+                    t = _workers.get(ip)
+                    if t is None or not t.is_alive():
+                        t = threading.Thread(target=_worker, args=(ip,),
+                                             name=f"safety-{ip}", daemon=True)
+                        _workers[ip] = t
+                        t.start()
+                for ip in [k for k, v in _workers.items()
+                           if k not in roster and not v.is_alive()]:
+                    _workers.pop(ip, None)
+        except Exception as e:
+            logger.warning(f"[safety] 로봇 목록 갱신 실패: {e}")
+        _stop_event.wait(ROSTER_REFRESH_SEC)
+
+
+_supervisor: Optional[threading.Thread] = None
+
+
+def start() -> None:
+    global _supervisor
+    if _supervisor and _supervisor.is_alive():
+        return
+    _stop_event.clear()
+    _supervisor = threading.Thread(target=_supervisor_loop,
+                                   name="safety-supervisor", daemon=True)
+    _supervisor.start()
+    logger.info("[safety] 전방 안전거리 감시 시작")
+
+
+def stop() -> None:
+    _stop_event.set()
+    logger.info("[safety] 전방 안전거리 감시 정지 요청")

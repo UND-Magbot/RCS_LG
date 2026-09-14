@@ -1,0 +1,94 @@
+{
+  "01": {
+    "file": "01_moving.mp3",
+    "text": "이동중입니다"
+  },
+  "02": {
+    "file": "02_turning.mp3",
+    "text": "회전중입니다"
+  },
+  "03": {
+    "file": "03_unloading.mp3",
+    "text": "로봇이배출중입니다"
+  },
+  "04": {
+    "file": "04_loading.mp3",
+    "text": "로봇이투입중입니다"
+  },
+  "05": {
+    "file": "05_charging.mp3",
+    "text": "충전중입니다"
+  },
+  "06": {
+    "file": "06_waiting.mp3",
+    "text": "잠시대기중입니다"
+  },
+  "07": {
+    "file": "07_waiting_other.mp3",
+    "text": "다른차량에의해잠시대기중입니다"
+  },
+  "08": {
+    "file": "08_alarm.mp3",
+    "text": "알람이발생하였습니다"
+  },
+  "09": {
+    "file": "09_bumper.mp3",
+    "text": "범퍼센서가감지되었습니다"
+  },
+  "10": {
+    "file": "10_obstacle.mp3",
+    "text": "장애물감지중입니다"
+  },
+  "11": {
+    "file": "11_bad_route.mp3",
+    "text": "잘못된경로가할당되었습니다"
+  },
+  "12": {
+    "file": "12_acs_disconnected.mp3",
+    "text": "ACS연결이끊어졌습니다"
+  },
+  "13": {
+    "file": "13_localization_low.mp3",
+    "text": "맵핑률저하로정지중입니다"
+  },
+  "14": {
+    "file": "14_docking.mp3",
+    "text": "도킹중입니다"
+  },
+  "15": {
+    "file": "15_undocking.mp3",
+    "text": "언도킹중입니다"
+  },
+  "16": {
+    "file": "16_to_equipment.mp3",
+    "text": "공정설비로이동중입니다"
+  },
+  "17": {
+    "file": "17_to_stocker.mp3",
+    "text": "스토커로이동중입니다"
+  },
+  "18": {
+    "file": "18_to_charger.mp3",
+    "text": "충전소로이동중입니다"
+  },
+  "19": {
+    "file": "19_avoiding.mp3",
+    "text": "회피중입니다"
+  },
+  "20": {
+    "file": "20_resetting.mp3",
+    "text": "리셋중입니다"
+  },
+  "21": {
+    "file": "21_initializing.mp3",
+    "text": "AMR초기화중입니다"
+  },
+  "22": {
+    "file": "22_stocker_loading.mp3",
+    "text": "스토커에서로봇이투입중입니다"
+  },
+  "23": {
+    "file": "23_stocker_unloading.mp3",
+    "text": "스토커에서로봇이배출중입니다"
+  }
+}

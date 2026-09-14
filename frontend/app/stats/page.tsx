@@ -8,7 +8,9 @@ import {
   PieChart, Pie, Cell,
 } from "recharts";
 
-const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8002";
+// 비워두면 상대경로("/api/...") — 화면을 준 서버에게 그대로 물어본다.
+// localhost 를 폴백으로 두면 다른 PC 에서 열었을 때 통계만 조용히 실패한다.
+const API = process.env.NEXT_PUBLIC_API_URL || "";
 
 interface CompletionData {
   date: string;

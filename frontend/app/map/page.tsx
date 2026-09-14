@@ -28,6 +28,10 @@ import type {
 } from "@/lib/types/map";
 import { apiFetch } from "@/lib/api";
 import {
+  offsetPolyline, ribbon, corridorWalls, snapAngle,
+  openWallsAtTargets, WORK_POINT_MAX_DIST_M,
+} from "@/lib/geometry";
+import {
   getStoredBusiness, getStoredArea, setStoredBusiness, setStoredArea,
 } from "@/lib/util/selectedScope";
 import { ConfirmModal } from "../components/ui/robots/ConfirmModal";
@@ -177,6 +181,18 @@ export default function MapPage() {
   const [robotPose, setRobotPose] = useState<RobotPose>(null);
   const poseWsRef = useRef<WebSocket | null>(null);
   const vwPointsRef = useRef<{ x: number; y: number }[]>([]);
+  // 가상벽 그리기 옵션 — 실제 벽에서 몇 m 띄울지, 어느 쪽으로, 벽에 스냅할지
+  const [vwOffsetM, setVwOffsetM] = useState(0.2);
+  const [vwSide, setVwSide] = useState<"left" | "right">("left");
+  const [vwSnap, setVwSnap] = useState(true);
+  // 통로 모드 — 한 줄만 그리면 평행한 벽 2줄이 자동 생성된다 (폭이 수학적으로 정확)
+  const [vwMode, setVwMode] = useState<"line" | "corridor">("corridor");
+  const [vwWidthM, setVwWidthM] = useState(1.2);
+  const [vwBase, setVwBase] = useState<"wall" | "center">("wall");
+  const [vwAngleSnap, setVwAngleSnap] = useState(true);
+  // 작업지점(R/J) 앞은 벽을 끊어 출입구를 낸다 — 안 뚫으면 로봇이 랙에 들어갈 수 없다
+  const [vwAutoGap, setVwAutoGap] = useState(true);
+  const [vwGapM, setVwGapM] = useState(1.4);
   const [vwTempPoints, setVwTempPoints] = useState<{ x: number; y: number }[]>([]);
   const [mapImageSize, setMapImageSize] = useState<{ w: number; h: number } | null>(null);
 
@@ -398,8 +414,14 @@ export default function MapPage() {
 
     if (!connectedRobot) return;
 
+    // NEXT_PUBLIC_API_URL 이 비어 있으면(= 백엔드가 이 화면을 직접 서빙하는 정적 빌드)
+    // 지금 접속 중인 주소를 그대로 쓴다. 서버 IP 를 빌드에 박지 않아야
+    // 사내망·포트포워딩 어느 경로로 열어도 WebSocket 이 같은 곳으로 붙는다.
     const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "";
-    const wsUrl = `${API_URL.replace(/^http/, "ws")}/api/map/ws/${connectedRobot.ip}?topics=/tracked_pose`;
+    const wsBase = API_URL
+      ? API_URL.replace(/^http/, "ws")
+      : `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}`;
+    const wsUrl = `${wsBase}/api/map/ws/${connectedRobot.ip}?topics=/tracked_pose`;
     const ws = new WebSocket(wsUrl);
     poseWsRef.current = ws;
 
@@ -581,28 +603,58 @@ export default function MapPage() {
           setLineStartPOI(null);
         }
       } else if (activeTool === "virtualwall") {
-        // 가상벽: 4점 클릭으로 사각형 생성
+        // 가상벽: 클릭할 때마다 점 추가 → 더블클릭으로 종료 (handleCanvasDoubleClick)
+        // 같은 자리를 두 번 찍는 것(더블클릭의 두 번째 클릭)은 무시한다.
+        const last = vwPointsRef.current[vwPointsRef.current.length - 1];
+        if (last && Math.abs(last.x - x) < 3 / zoom && Math.abs(last.y - y) < 3 / zoom) return;
+        const snapped = vwAngleSnap ? snapAngle(vwPointsRef.current, { x, y }) : { x, y };
+        x = snapped.x; y = snapped.y;
         vwPointsRef.current.push({ x, y });
-        if (vwPointsRef.current.length >= 4) {
-          pushHistory();
-          const vwCount = polygons.filter((p) => p.shapeType === "firewall").length;
-          const newPolygon: PolygonShape = {
-            id: generateId("polygon"),
-            points: [...vwPointsRef.current],
-            name: `VW${vwCount + 1}`,
-            shapeType: "firewall",
-          };
-          setPolygons((prev) => [...prev, newPolygon]);
-          vwPointsRef.current = [];
-          setVwTempPoints([]);
-        } else {
-          setVwTempPoints([...vwPointsRef.current]);
+        setVwTempPoints([...vwPointsRef.current]);
+        // 벽 스냅 — 클릭 지점 근처의 실제 벽을 백엔드에서 찾아 그 자리로 당긴다
+        if (vwSnap && selectedMapId && mapMeta) {
+          const w = svgToWorld(x, y);
+          if (w) {
+            apiFetch(
+              `/api/map/maps/${selectedMapId}/snap-wall?x=${w.worldX}&y=${w.worldY}&radius=0.5`
+            ).then((r: any) => {
+              if (!r?.found) return;
+              const sp = worldToSvg(r.x, r.y);
+              if (!sp) return;
+              const idx = vwPointsRef.current.findIndex(
+                (q) => Math.abs(q.x - x) < 1e-6 && Math.abs(q.y - y) < 1e-6
+              );
+              if (idx < 0) return;
+              // 벽 스냅 결과를 그대로 쓰면 각도 스냅이 무효가 되고, 그 틀어진 방향이
+              // 다음 구간의 기준이 되어 오차가 누적된다.
+              // → 각도 스냅이 켜져 있으면 '직전 점에서 각도 방향으로 낸 직선'에 정사영한다.
+              //   벽까지의 거리는 살리면서 각도는 정확히 유지된다.
+              let fixed = sp;
+              if (vwAngleSnap && idx > 0) {
+                const prev = vwPointsRef.current[idx - 1];
+                const dx = x - prev.x;
+                const dy = y - prev.y;
+                const n = Math.hypot(dx, dy);
+                if (n > 1e-6) {
+                  const ux = dx / n;
+                  const uy = dy / n;
+                  const t = (sp.x - prev.x) * ux + (sp.y - prev.y) * uy;
+                  fixed = { x: prev.x + ux * t, y: prev.y + uy * t };
+                }
+              }
+              vwPointsRef.current[idx] = fixed;
+              setVwTempPoints([...vwPointsRef.current]);
+            }).catch(() => {});
+          }
         }
       } else if (activeTool === "polygon") {
         setPolygonPoints((prev) => [...prev, { x, y }]);
       }
     },
-    [activeTool, pois.length, pushHistory, lineStartPOI, pois, zoom, offset]
+    // 스냅 토글이 즉시 반영되도록 관련 state 를 의존성에 넣는다.
+    // svgToWorld/worldToSvg 는 이 아래에서 선언되므로 여기 넣으면 TDZ 로 터진다 — 넣지 말 것.
+    [activeTool, pois.length, pushHistory, lineStartPOI, pois, zoom, offset,
+     vwAngleSnap, vwSnap, selectedMapId, mapMeta]
   );
 
   // ── POI Click Handler ──
@@ -901,6 +953,84 @@ export default function MapPage() {
     [mapMeta, mapImageSize]
   );
 
+  // ── 월드 좌표 → SVG 좌표 (svgToWorld 의 역) ──
+  const worldToSvg = useCallback(
+    (worldX: number, worldY: number): { x: number; y: number } | null => {
+      if (!mapMeta || !mapImageSize || mapMeta.grid_resolution <= 0) return null;
+      const ipx = (worldX - mapMeta.grid_origin_x) / mapMeta.grid_resolution;
+      const ipy = mapImageSize.h - (worldY - mapMeta.grid_origin_y) / mapMeta.grid_resolution;
+      return { x: ipx - mapImageSize.w / 2, y: ipy - mapImageSize.h / 2 };
+    },
+    [mapMeta, mapImageSize]
+  );
+
+  // ── 작업지점 앞 벽 끊기 (출입구) ──
+  // 벽으로 통로를 다 막으면 로봇이 랙 지점(R/J)으로 들어갈 수 없다.
+  // 작업지점마다 '가장 가까운 벽 한 줄'에만 구멍을 내므로 통로 반대쪽 벽은 온전히 남는다.
+  const cutWallsAtWorkPoints = useCallback(
+    (walls: { x: number; y: number }[][], res: number) => {
+      if (!vwAutoGap) return walls;
+      const targets = pois
+        .filter((p) => p.type === "jack" || p.type === "standby")
+        .map((p) => ({ x: p.x, y: p.y }));
+      if (targets.length === 0) return walls;
+
+      return openWallsAtTargets(walls, targets, vwGapM / res, WORK_POINT_MAX_DIST_M / res);
+    },
+    [vwAutoGap, vwGapM, pois]
+  );
+
+  // ── 가상벽 그리기 종료 (더블클릭) ──
+  // 찍은 폴리라인을 오프셋한 뒤 얇은 띠 폴리곤으로 저장한다.
+  // 저장 형식은 기존 '가상벽'과 동일해서 백엔드는 손댈 필요가 없다.
+  const finishVirtualWall = useCallback(() => {
+    const pts = vwPointsRef.current;
+    if (pts.length < 2) {
+      vwPointsRef.current = [];
+      setVwTempPoints([]);
+      return;
+    }
+    // 화면 픽셀 ↔ 미터 환산 (오프셋은 반드시 미터 기준이어야 줌 배율에 안 흔들린다)
+    const res = mapMeta?.grid_resolution && mapMeta.grid_resolution > 0 ? mapMeta.grid_resolution : 0.05;
+    const offPx = vwOffsetM / res;
+    const thickPx = 0.02 / res;
+
+    const widthPx = vwWidthM / res;
+    const walls =
+      vwMode === "corridor"
+        ? corridorWalls(pts, offPx, widthPx, vwSide, vwBase)
+        : [offsetPolyline(pts, vwSide === "left" ? offPx : -offPx)];
+
+    const pieces = cutWallsAtWorkPoints(walls, res);
+
+    pushHistory();
+    const vwCount = polygons.filter((p) => p.shapeType === "firewall").length;
+    setPolygons((prev) => [
+      ...prev,
+      ...pieces.map((wl, i) => ({
+        id: generateId("polygon"),
+        points: ribbon(wl, thickPx),
+        name: `VW${vwCount + 1 + i}`,
+        shapeType: "firewall",
+      } as PolygonShape)),
+    ]);
+    vwPointsRef.current = [];
+    setVwTempPoints([]);
+  }, [mapMeta, vwOffsetM, vwSide, vwMode, vwWidthM, vwBase, polygons, pushHistory,
+      cutWallsAtWorkPoints]);
+
+  // Esc — 그리던 가상벽 취소
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && vwPointsRef.current.length > 0) {
+        vwPointsRef.current = [];
+        setVwTempPoints([]);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   // ── Action buttons (placeholder handlers) ──
   const handleSave = useCallback(() => {
     if (!selectedMapId) {
@@ -971,11 +1101,13 @@ export default function MapPage() {
       })
       .catch(() => showAlert({ title: "알림", message: "맵 데이터 저장에 실패했습니다.", errorCode: "MAP-006", errorType: "map", source: "맵 관리 > 맵 저장", description: "MapPage — 맵 저장 실패" }));
   }, [selectedMapId, pois, lines, polygons, svgToWorld]);
-  const handleSync = () => {
+  const [syncMode, setSyncMode] = useState<"map" | "poi">("poi");
+  const handleSync = (mode: "map" | "poi" = "poi") => {
     if (!selectedMappingId) {
       showInfo("안내", "동기화할 맵을 먼저 선택해 주세요.");
       return;
     }
+    setSyncMode(mode);
     setSyncModalOpen(true);
   };
   const handleRelocalize = () => setRelocalizeModalOpen(true);
@@ -1189,6 +1321,15 @@ export default function MapPage() {
                 lines={lines}
                 polygons={polygons}
                 vwTempPoints={vwTempPoints}
+                vwOffsetPx={vwOffsetM / (mapMeta?.grid_resolution || 0.05)}
+                vwSide={vwSide}
+                onCanvasDoubleClick={finishVirtualWall}
+                vwMode={vwMode}
+                vwBase={vwBase}
+                vwAngleSnap={vwAngleSnap}
+                vwWidthPx={vwWidthM / (mapMeta?.grid_resolution || 0.05)}
+                vwAutoGap={vwAutoGap}
+                vwGapPx={vwGapM / (mapMeta?.grid_resolution || 0.05)}
                 activeTool={activeTool}
                 selectedPOI={selectedPOI}
                 lineStartPOI={lineStartPOI}
@@ -1206,6 +1347,90 @@ export default function MapPage() {
                 onOffsetChange={setOffset}
                 onImageLoad={(w, h) => setMapImageSize({ w, h })}
               />
+
+              {/* 가상벽 그리기 옵션 — 도구 선택 중에만 표시 */}
+              {activeTool === "virtualwall" && (() => {
+                const ip: React.CSSProperties = {
+                  width: 58, background: "#0f131a", color: "#e6eaf0",
+                  border: "1px solid #333d4d", borderRadius: 4, padding: "3px 6px",
+                };
+                const btn = (on: boolean): React.CSSProperties => ({
+                  background: on ? "#1e5f8b" : "#2a3140", color: "#fff", border: "none",
+                  borderRadius: 4, padding: "4px 10px", cursor: "pointer",
+                });
+                return (
+                  <div style={{
+                    position: "absolute", top: 74, left: 16, zIndex: 20,
+                    display: "flex", alignItems: "center", flexWrap: "wrap", gap: 10,
+                    maxWidth: "calc(100% - 32px)",
+                    background: "rgba(20,24,32,0.94)", color: "#e6eaf0",
+                    border: "1px solid #333d4d", borderRadius: 8,
+                    padding: "8px 12px", fontSize: 13,
+                  }}>
+                    <button style={btn(vwMode === "corridor")}
+                      onClick={() => setVwMode(vwMode === "corridor" ? "line" : "corridor")}
+                      title="통로: 한 줄만 그려도 평행한 벽 2줄이 자동 생성됩니다">
+                      {vwMode === "corridor" ? "통로(2줄)" : "선(1줄)"}
+                    </button>
+
+                    {vwMode === "corridor" && (
+                      <>
+                        <span style={{ opacity: 0.75 }}>폭</span>
+                        <input type="number" step={0.1} min={0.3} max={5} value={vwWidthM} style={ip}
+                          onChange={(e) => setVwWidthM(Math.max(0.3, Number(e.target.value) || 1.2))} />
+                        <span style={{ opacity: 0.75 }}>m</span>
+                        <button style={btn(false)}
+                          onClick={() => setVwBase(vwBase === "wall" ? "center" : "wall")}
+                          title="기준선을 '실제 벽'으로 볼지 '통로 한가운데'로 볼지">
+                          기준 {vwBase === "wall" ? "벽" : "중심"}
+                        </button>
+                      </>
+                    )}
+
+                    {(vwMode === "line" || vwBase === "wall") && (
+                      <>
+                        <span style={{ opacity: 0.75 }}>벽에서</span>
+                        <input type="number" step={0.05} min={0} max={2} value={vwOffsetM} style={ip}
+                          onChange={(e) => setVwOffsetM(Math.max(0, Number(e.target.value) || 0))} />
+                        <span style={{ opacity: 0.75 }}>m</span>
+                      </>
+                    )}
+
+                    <button style={btn(false)}
+                      onClick={() => setVwSide((v) => (v === "left" ? "right" : "left"))}
+                      title="선이 반대쪽에 생기면 눌러서 뒤집으세요">
+                      방향 {vwSide === "left" ? "◀" : "▶"}
+                    </button>
+
+                    <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer" }}>
+                      <input type="checkbox" checked={vwAngleSnap}
+                        onChange={(e) => setVwAngleSnap(e.target.checked)} />
+                      각도 스냅
+                    </label>
+                    <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer" }}>
+                      <input type="checkbox" checked={vwSnap}
+                        onChange={(e) => setVwSnap(e.target.checked)} />
+                      벽 스냅
+                    </label>
+
+                    <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer" }}
+                      title="작업지점(R/J) 앞 벽을 자동으로 끊어 로봇이 드나들 출입구를 만듭니다">
+                      <input type="checkbox" checked={vwAutoGap}
+                        onChange={(e) => setVwAutoGap(e.target.checked)} />
+                      작업지점 열기
+                    </label>
+                    {vwAutoGap && (
+                      <>
+                        <input type="number" step={0.1} min={0.6} max={4} value={vwGapM} style={ip}
+                          onChange={(e) => setVwGapM(Math.max(0.6, Number(e.target.value) || 1.4))} />
+                        <span style={{ opacity: 0.75 }}>m</span>
+                      </>
+                    )}
+
+                    <span style={{ opacity: 0.55 }}>클릭=점 · 더블클릭=종료 · Esc=취소</span>
+                  </div>
+                );
+              })()}
 
               {/* Toolbar: 단일 가로 줄 — 되돌리기 + 모드 도구 + 충전소 + 현위치 */}
               <MapToolbarTop
@@ -1331,6 +1556,7 @@ export default function MapPage() {
               mappingId={selectedMappingId}
               mapId={selectedMapId}
               areaName={areas.find((a) => String(a.area_id) === selectedArea)?.name ?? ""}
+              mode={syncMode}
             />
           )}
 

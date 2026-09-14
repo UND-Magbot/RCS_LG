@@ -1,6 +1,6 @@
 ---
 name: rcs-lg-tablet
-description: RCS LG 운영 UI 전담 — 배차 콘솔(dispatch_console.html)과 로봇 부착 태블릿(dispatch_robot_tablet.html), 그리고 이를 감싸는 Android WebView 셸(TabletApp). 콘솔에서 호출/예약/경유지 출발이 안 됨, 태블릿 [확인] 버튼, 폴링 지연, 태블릿 앱 서버주소 설정, APK 빌드 질문이면 이 에이전트를 쓸 것.
+description: RCS LG 운영 UI 전담 — 배차 콘솔(dispatch_console.html), 위치별 태블릿(dispatch_tablet.html — R=호출/J=확인), 로봇 부착 태블릿(dispatch_robot_tablet.html), 이를 감싸는 Android WebView 셸(TabletApp). 호출 버튼이 안 보임/비활성, 랙 치움 [확인], 콘솔 호출·예약·경유지 출발, 폴링 지연, 태블릿 서버주소 설정, APK 빌드 질문이면 이 에이전트를 쓸 것.
 tools: Read, Write, Edit, Bash, Grep, Glob, WebSearch, WebFetch
 ---
 
@@ -26,12 +26,78 @@ FastAPI /api/dispatch/*
 |---|---|---|
 | `templates/dispatch_console.html` | 810 | ★ **중앙 콘솔** — 모든 POI + 로봇 사이드바 + 원격제어 모달 |
 | `templates/dispatch_robot_tablet.html` | 280 | ★ **로봇 부착 태블릿** — [확인]/[작업 종료] |
-| `templates/dispatch_tablet.html` | 886 | (레거시) 위치별 태블릿 — 콘솔로 대체됨 |
-| `templates/tablet.html` | 561 | (레거시) |
+| `templates/dispatch_tablet.html` | 1,066 | ★ **위치별 태블릿** — 배송 모드의 현장 단말(R=호출 / J=확인). **레거시 아님** (2026-08-24 부활) |
+| `templates/tablet.html` | 561 | (레거시) 구 태스크 시스템 — 배차와 무관 |
 
 ---
 
-## 1. LG 운영 흐름 (VESA와 다름)
+## 1. LG 운영 흐름
+
+### ★ 현행 — 배송 모드 (2026-08-24, PoC 기본)
+
+```
+[R1 태블릿]  [호출]  ──▶ 로봇이 R1 에서 랙 적재 ──▶ J1 로 이동 ──▶ 하차 ──▶ 충전소
+                                                        │
+[J1 태블릿]  랙 도착 → 작업자가 치움 → [확인 — 랙을 치웠습니다]
+                                                        ▼
+                                          R1 호출 버튼 다시 활성화
+```
+
+**호출은 R(랙 보관), 확인은 J(작업지점).** 현장은 두 곳이 **100m 이상** 떨어져 서로 다른 구역:
+
+| 구역 | POI |
+|---|---|
+| A | **R1 + J2** |
+| B | **J1 + R2** |
+
+- 태블릿 **4대** (R1·R2·J1·J2 각 1대) — `/api/dispatch/tablet/poi/{poi_id}`
+- **짝 J 에 랙이 남아 있으면 R 의 호출 버튼을 아예 그리지 않는다** (센서가 없어 사람 확인이 유일)
+- 로봇 부착 태블릿은 배송 모드에서 **역할 없음** → 비상 종료용으로만 존치
+- 숨긴 것: 경유지 등록 · 다음 위치 지정 · 서빙 호출 · 렉 없이 (선택지가 하나라 **호출 모달도 생략**)
+
+**코드 진입점**
+| 화면 | 함수 |
+|---|---|
+| 콘솔 R 타일 | `rackTileHtml()` |
+| 콘솔 J 타일 | `jobTileHtml()` |
+| 콘솔 (매핑 없는 POI) | `legacyTileHtml()` ← **롤백 경로. 지우지 말 것** |
+| 태블릿 R | `renderRackSource()` |
+| 태블릿 J | `renderJobPoint()` |
+
+분기 조건은 **`paired_poi_name` 유무** (= `job_points` 매핑 유무). 매핑이 없으면 종전 화면.
+
+**버튼 규칙** — 버튼을 없애지 않고 **항상 같은 자리에 두되 비활성**으로 만든다.
+R 은 짝 J 에 랙이 있거나 로봇이 작업 중이면 비활성, J 는 랙이 실제로 놓였을 때만 활성.
+(사라졌다 나타나면 작업자가 화면을 잘못 읽는다)
+
+**POI 모드에서는 ⚙ 슬롯 설정을 숨긴다** — 주소에 POI 가 이미 박혀 있어 설정할 게 없고,
+`dispatch_slots` 는 비어 있으며, 그 화면의 '작업 위치' 목록은 **jack POI 만** 줘서 R 을 고를 수도 없다.
+
+### APK — flavor 3종 (2026-08-24)
+
+| flavor | 패키지 | 로드 경로 | 설정 항목 |
+|---|---|---|---|
+| `console` | `com.und.rcs.tablet.console` | `/api/dispatch/console` | 서버주소 |
+| `robot` | `...tablet.robot` | `/api/dispatch/robot-tablet/{id}` | 서버주소 + 로봇ID |
+| **`poi`** | `...tablet.poi` | `/api/dispatch/tablet/poi/{id}` | 서버주소 + **POI ID** |
+
+패키지 id 가 달라 **한 기기에 셋 다 설치 가능**. 산출물은 `RCS_LG/APK/`.
+빌드: `TabletApp/APK빌드.bat [all|console|robot|poi]`
+
+> ⚠️ **JDK 17 필요** (2026-08-24 실측). Gradle 8.7 + AGP 8.3.2 구성이라
+> JRE 1.8 은 AGP 가 안 붙고, JDK 25 는 Gradle 이 못 읽는다(`major version 69`).
+> `local.properties`(Android SDK 경로)도 없으면 `SDK location not found` 로 멈춘다.
+
+### ⚠️ 화면이 깜빡이거나 멈춘다면 — 먼저 이 셋을 의심
+
+1. **낡은 폴링 응답** — `refresh()` 가 응답을 받은 뒤에도 `refreshSeq` 로 최신인지 검사하는지
+2. **오프라인 로봇 프로브** — 화면 폴링은 `online_ips_cached(..., block=False)` 여야 한다.
+   `block=True` 면 오프라인 로봇 타임아웃(20초+)에 응답이 통째로 막힌다
+3. **가용 로봇 수** — 대기 예약을 차감하는지 (`_available_robot_counts`)
+
+상세 [docs/08_공정시나리오_변경.md](../../docs/08_공정시나리오_변경.md)
+
+### (참고) 기존 인터랙티브 모드 — 매핑 없는 POI
 
 ```
 [중앙 콘솔 1대]
@@ -84,6 +150,8 @@ FastAPI /api/dispatch/*
 
 ## 4. 콘솔 화면 구성
 
+- **배송 모드**: R 타일(호출)과 J 타일(확인)이 **짝끼리 붙어서** 표시됨 (`orderedPois()`)
+  — 서버는 이름순(J1,J2,R1,R2)으로 주지만 화면에서 R1,J1,R2,J2 로 재정렬
 - **좌/중앙**: POI 타일 — `empty` / `calling` / `arrived`, 점유·예약 배지
 - **우측 사이드바**: 등록 로봇 카드 — 온라인·배터리·작업상태, **[직접 제어]** → 원격제어 모달(방향 조종 / 잭 업·다운 / 충전소·대기장소 복귀 / 시스템 재시작 / **작업 강제 종료**)
 - `awaiting_confirm` 타일에는 **[확인] 대행 버튼** — 콘솔에서도 로봇 태블릿 확인을 대신 눌러줄 수 있음
@@ -119,6 +187,21 @@ TabletApp/app/src/main/java/com/und/rcs/tablet/MainActivity.kt   (181줄, 유일
 
 ### 렉 포함/렉 없이
 **"로봇 호출(렉 포함)"은 픽업(align + jack_up)을 자동으로 합니다.** 미리 잭업 해두면 오히려 **506 충돌**. 수동(rb-admin) 픽업과 자동 호출을 섞지 마세요.
+
+### ⚠️ 이름이 비슷한 두 "점유" — 헷갈리면 버그가 난다
+
+| | 뜻 | 출처 |
+|---|---|---|
+| `occupied_poi_ids()` | 다른 **로봇**이 그 자리를 목표로 잡고 있다 | `dispatch_sessions` |
+| `job_points.occupied` | 그 자리에 **랙**이 놓여 있다 | `job_points` |
+
+예약 자동 소화 경로가 앞엣것만 보고 있어서 랙 점유를 통과시켰다 → `rack_occupied_at_poi()` 추가.
+
+### ⚠️ `rack-cleared` 는 R id 도 받는다
+
+`set_job_point_occupied` 는 `j_poi_name` 으로만 조회한다. R 이름을 그대로 넘기면 매칭이 빗나가
+**`{"ok":true}` 로 성공 응답하면서 점유는 그대로 남는다.** 라우터에서 R→J 치환을 하도록 고쳤으니
+비슷한 API 를 새로 만들 때 같은 함정을 반복하지 말 것.
 
 ### 점유 판정
 `crud/dispatch.occupied_poi_ids` 는 **떠나는 중인 로봇의 출발지를 제외**합니다(`returning`, 그리고 `moving`+target 있음). 이걸 안 빼면 방금 떠난 POI 호출/예약이 "점유중"으로 거부됩니다.

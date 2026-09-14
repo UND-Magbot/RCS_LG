@@ -30,6 +30,7 @@ export function MapSyncModal({
   mapId,
   areaName,
   onSyncComplete,
+  mode: propMode = "poi",
 }: MapSyncModalProps) {
   const [search, setSearch] = useState("");
   const [selectedSns, setSelectedSns] = useState<Set<string>>(new Set());
@@ -37,6 +38,7 @@ export function MapSyncModal({
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [mode, setMode] = useState<"map" | "poi">(propMode);
   const [results, setResults] = useState<SyncResult[]>([]);
 
   // 로봇 맵 목록 (대상 선택용)
@@ -110,7 +112,8 @@ export function MapSyncModal({
     }
   };
 
-  const handleSync = async () => {
+  const handleSync = async (syncMode: "map" | "poi") => {
+    setMode(syncMode);
     if (selectedSns.size === 0) return;
     setSyncing(true);
     setError(null);
@@ -134,37 +137,42 @@ export function MapSyncModal({
       );
 
       try {
-        const syncBody: Record<string, any> = {
-          robot_ip: robot.ip_address,
-          area_name: areaName,
-          method: "full",
-        };
-        // 대상 로봇 맵 ID 지정
-        if (selectedRobotMapId) {
-          syncBody.target_robot_map_id = selectedRobotMapId;
-        }
+        if (syncMode === "map") {
+          // ── 맵 동기화 : SLAM 맵(carto_map) 자체를 교체한다.
+          //    로봇이 새 맵을 읽으려면 서비스 재시작이 필요해 60~90초 걸린다.
+          //    POI·가상벽은 백엔드가 재시작 완료를 확인한 뒤 자동으로 다시 넣는다.
+          const syncBody: Record<string, any> = {
+            robot_ip: robot.ip_address,
+            area_name: areaName,
+            method: "full",
+          };
+          if (selectedRobotMapId) syncBody.target_robot_map_id = selectedRobotMapId;
 
-        await apiFetch(`/api/map/maps/${mapId}/sync-to-robot`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(syncBody),
-        });
-
-        // overlay 동기화
-        try {
+          await apiFetch(`/api/map/maps/${mapId}/sync-to-robot`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(syncBody),
+          });
+        } else {
+          // ── POI 동기화 : 충전소·작업위치·가상벽만 전송. 재시작 없음(수 초).
           await apiFetch(`/api/map/maps/${mapId}/sync-overlays`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ robot_ip: robot.ip_address }),
           });
-        } catch {
-          // overlay 실패해도 맵 동기화는 성공
         }
 
         setResults((prev) =>
           prev.map((r) =>
             r.sn === robot.sn
-              ? { ...r, status: "success" as const, message: "맵 업로드 + overlay 적용 완료" }
+              ? {
+                  ...r,
+                  status: "success" as const,
+                  message:
+                    syncMode === "map"
+                      ? "맵 업로드 완료 — 로봇 재시작 후 POI·가상벽 자동 재적용(약 90초)"
+                      : "POI·가상벽 적용 완료",
+                }
               : r
           )
         );
@@ -199,10 +207,15 @@ export function MapSyncModal({
     onClose();
   };
 
+  // 툴바에서 어떤 버튼으로 열었는지에 따라 실행 모드를 맞춘다
+  useEffect(() => {
+    if (open) setMode(propMode);
+  }, [open, propMode]);
+
   const hasResults = results.length > 0;
 
   return (
-    <Modal open={open} onClose={handleClose} title="맵 동기화 (Sync)" width="460px">
+    <Modal open={open} onClose={handleClose} title="로봇 동기화" width="600px">
       {!hasResults ? (
         <>
           <div className="robot-connect__search">
@@ -336,17 +349,35 @@ export function MapSyncModal({
         </div>
       )}
 
-      <div className="robot-connect__actions">
+      {!hasResults && (
+        <div style={{
+          marginTop: 12, padding: "8px 10px", fontSize: 12, lineHeight: 1.6,
+          background: "var(--bg-surface-2)", border: "1px solid var(--border)",
+          borderRadius: 6, color: "var(--text-secondary)",
+        }}>
+          {mode === "poi" ? (
+            <div><b>POI 동기화</b> — 충전소 · 작업위치 · <b>가상벽</b>만 전송합니다. 로봇 재시작 없이 몇 초면 끝납니다.</div>
+          ) : (
+            <div><b>맵 동기화</b> — SLAM 맵 자체를 교체합니다. <b>로봇이 재시작되어 60~90초</b> 걸리며,
+              POI·가상벽은 재시작 완료 후 자동으로 다시 적용됩니다.</div>
+          )}
+          <div style={{ marginTop: 4, opacity: 0.8 }}>선택된 로봇 {selectedSns.size}대</div>
+        </div>
+      )}
+
+      <div className="robot-connect__actions" style={{ flexWrap: "wrap" }}>
         <button className="btn" onClick={handleClose} disabled={syncing}>
           {hasResults ? "닫기" : "취소"}
         </button>
         {!hasResults && (
           <button
             className="btn btn--primary"
-            onClick={handleSync}
+            onClick={() => handleSync(mode)}
             disabled={selectedSns.size === 0 || syncing}
           >
-            {syncing ? "동기화 중..." : `동기화 (${selectedSns.size}대)`}
+            {syncing
+              ? (mode === "map" ? "맵 동기화 중..." : "POI 동기화 중...")
+              : (mode === "map" ? "맵 동기화 실행" : "POI 동기화 실행")}
           </button>
         )}
       </div>

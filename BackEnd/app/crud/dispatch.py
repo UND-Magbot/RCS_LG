@@ -4,7 +4,7 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
-from app.models.dispatch import DispatchSession, TabletSlot, DispatchReservation, DispatchWaypoint
+from app.models.dispatch import DispatchSession, TabletSlot, DispatchReservation, DispatchWaypoint, JobPoint
 
 
 def get_active_session(db: Session, robot_id: int) -> Optional[DispatchSession]:
@@ -246,7 +246,15 @@ def occupied_poi_ids(db: Session) -> set[int]:
     session_ids: list[int] = []
     for sid, st, c, t in rows:
         session_ids.append(sid)
-        leaving_current = (st == "returning") or (st == "moving" and t is not None)
+        # 'picking_up' 도 떠나는 중이다 — 2026-08-24 배송 모드에서 드러난 케이스.
+        # 배송 워커는 J 하차 후 다음 작업을 이어받을 때 current=이전 J 를 남겨둔 채
+        # status='picking_up' + target=다음 R 로 전이한다. 여기서 picking_up 을 빼면
+        # 로봇이 이미 떠난 J 가 계속 점유로 잡혀, 그 J 를 호출/예약하면
+        # "다른 로봇이 점유 중" 으로 잘못 거부된다(예약이 통째로 사라짐).
+        leaving_current = (
+            st == "returning"
+            or (st in ("moving", "picking_up") and t is not None)
+        )
         if c and not leaving_current:
             s.add(c)
         if t:
@@ -265,3 +273,91 @@ def occupied_poi_ids(db: Session) -> set[int]:
             if pid:
                 s.add(pid)
     return s
+
+
+# ── 작업지점(J) ↔ 랙 보관(R) 매핑 · 랙 점유 상태 ─────────────
+# 2026-08-24 변경 시나리오. 자세한 배경은 models/dispatch.py 의 JobPoint 참조.
+
+def list_job_points(db: Session, area_id: Optional[int] = None) -> list[JobPoint]:
+    q = db.query(JobPoint)
+    if area_id is not None:
+        q = q.filter(JobPoint.area_id == area_id)
+    return q.order_by(JobPoint.j_poi_name.asc()).all()
+
+
+def get_job_point(db: Session, area_id: Optional[int], j_poi_name: str) -> Optional[JobPoint]:
+    """작업지점 이름으로 매핑 조회. area_id 로 먼저 찾고, 없으면 이름만으로 폴백."""
+    row = (
+        db.query(JobPoint)
+        .filter(JobPoint.area_id == area_id, JobPoint.j_poi_name == j_poi_name)
+        .first()
+    )
+    if row:
+        return row
+    # 영역이 아직 안 잡힌 로봇(area_id=None)이나 매핑을 영역 없이 등록한 경우 대비
+    return db.query(JobPoint).filter(JobPoint.j_poi_name == j_poi_name).first()
+
+
+def get_job_point_by_r(db: Session, area_id: Optional[int],
+                      r_poi_name: str) -> Optional[JobPoint]:
+    """랙 보관 위치(R) 이름으로 매핑 조회. get_job_point 의 역방향.
+
+    2026-08-24 현장 배치 확정으로 **호출 버튼이 R 에 놓이게** 되면서 필요해졌다.
+    (작업자는 J 옆이 아니라 랙이 눈앞에 있는 R 옆에서 호출한다 — J 는 100m 밖)
+    area_id 로 먼저 찾고 없으면 이름만으로 폴백하는 규칙은 get_job_point 와 같다.
+    """
+    row = (
+        db.query(JobPoint)
+        .filter(JobPoint.area_id == area_id, JobPoint.r_poi_name == r_poi_name)
+        .first()
+    )
+    if row:
+        return row
+    return db.query(JobPoint).filter(JobPoint.r_poi_name == r_poi_name).first()
+
+
+def upsert_job_point(db: Session, area_id: Optional[int],
+                     j_poi_name: str, r_poi_name: str) -> JobPoint:
+    """매핑 등록/수정. 점유 상태는 건드리지 않는다."""
+    row = (
+        db.query(JobPoint)
+        .filter(JobPoint.area_id == area_id, JobPoint.j_poi_name == j_poi_name)
+        .first()
+    )
+    if row:
+        row.r_poi_name = r_poi_name
+    else:
+        row = JobPoint(area_id=area_id, j_poi_name=j_poi_name, r_poi_name=r_poi_name)
+        db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def delete_job_point(db: Session, area_id: Optional[int], j_poi_name: str) -> bool:
+    row = (
+        db.query(JobPoint)
+        .filter(JobPoint.area_id == area_id, JobPoint.j_poi_name == j_poi_name)
+        .first()
+    )
+    if not row:
+        return False
+    db.delete(row)
+    db.commit()
+    return True
+
+
+def set_job_point_occupied(db: Session, area_id: Optional[int],
+                           j_poi_name: str, occupied: bool) -> Optional[JobPoint]:
+    """J 에 랙을 놓았을 때 True, 작업자가 치우고 [확인] 눌렀을 때 False.
+
+    매핑이 없으면 아무것도 하지 않는다 (점유는 매핑된 지점만 추적).
+    """
+    row = get_job_point(db, area_id, j_poi_name)
+    if not row:
+        return None
+    row.occupied = occupied
+    row.occupied_at = datetime.now() if occupied else None
+    db.commit()
+    db.refresh(row)
+    return row

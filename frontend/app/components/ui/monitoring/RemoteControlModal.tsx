@@ -2,7 +2,9 @@
 
 import { useState, useCallback, useRef, useEffect } from "react";
 
-const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8002";
+// 비워두면 상대경로("/api/...") — 화면을 준 서버에게 그대로 물어본다.
+// localhost 를 폴백으로 두면 다른 PC 에서 열었을 때 원격제어만 조용히 실패한다.
+const API = process.env.NEXT_PUBLIC_API_URL || "";
 
 interface RemoteControlModalProps {
   robotName: string;
@@ -13,6 +15,9 @@ interface RemoteControlModalProps {
 export function RemoteControlModal({ robotName, robotIp, onClose }: RemoteControlModalProps) {
   const [status, setStatus] = useState("");
   const [isRemoteMode, setIsRemoteMode] = useState(false);
+  // 일시정지 상태 — 서버 메모리 플래그를 폴링해서 [작업 정지]/[재개] 를 바꿔 보여준다
+  const [isPaused, setIsPaused] = useState(false);
+  const pausePollRef = useRef<NodeJS.Timeout | null>(null);
   const movingRef = useRef(false);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -65,6 +70,45 @@ export function RemoteControlModal({ robotName, robotIp, onClose }: RemoteContro
     }
     sendTwist(0, 0);
   }, [sendTwist]);
+
+  const fetchPaused = useCallback(async () => {
+    try {
+      const res = await fetch(`${API}/api/robots/remote/paused/${robotIp}`);
+      if (res.ok) setIsPaused(!!(await res.json()).paused);
+    } catch {}
+  }, [robotIp]);
+
+  // 작업 정지 = 일시정지. 현재 이동만 취소하고 그 자리에 세운다.
+  // 잭 상태와 배차 세션은 건드리지 않는다 — [재개] 하면 하던 이동을 그대로 다시 시도한다.
+  // (예전에는 stop-all 을 불러 잭다운까지 했다. 랙을 든 채였으면 그 자리에 내려놓아
+  //  통로에 랙이 남고 되돌리기 어려웠다 → 2026-08-19 변경)
+  const pauseJob = useCallback(async () => {
+    try {
+      const res = await fetch(`${API}/api/robots/remote/pause/${robotIp}`, { method: "POST" });
+      if (res.ok) {
+        setIsPaused(true);
+        showStatus("일시정지 — [재개] 를 누르면 하던 작업을 이어서 진행합니다");
+      } else {
+        showStatus("일시정지 실패");
+      }
+    } catch {
+      showStatus("연결 실패");
+    }
+  }, [robotIp]);
+
+  const resumeJob = useCallback(async () => {
+    try {
+      const res = await fetch(`${API}/api/robots/remote/resume/${robotIp}`, { method: "POST" });
+      if (res.ok) {
+        setIsPaused(false);
+        showStatus("재개 — 하던 이동을 다시 시도합니다");
+      } else {
+        showStatus("재개 실패");
+      }
+    } catch {
+      showStatus("연결 실패");
+    }
+  }, [robotIp]);
 
   const cancelMove = useCallback(async () => {
     try {
@@ -121,6 +165,16 @@ export function RemoteControlModal({ robotName, robotIp, onClose }: RemoteContro
     }
   }, [robotIp]);
 
+  // 일시정지 상태 폴링 — 다른 화면(콘솔)에서 정지시켜도 여기 버튼이 따라 바뀐다
+  useEffect(() => {
+    fetchPaused();
+    pausePollRef.current = setInterval(fetchPaused, 3000);
+    return () => {
+      if (pausePollRef.current) clearInterval(pausePollRef.current);
+      pausePollRef.current = null;
+    };
+  }, [fetchPaused]);
+
   useEffect(() => {
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
@@ -168,16 +222,19 @@ export function RemoteControlModal({ robotName, robotIp, onClose }: RemoteContro
               <div className="remote-modal__section">
                 <h4>이동 제어</h4>
                 <div className="remote-modal__jack-btns">
-                  <button
-                    className="remote-modal__action-btn"
-                    style={{ borderColor: "rgba(245,101,101,0.4)", color: "var(--color-error)" }}
-                    onClick={async () => {
-                      await cancelMove();
-                      try {
-                        await fetch(`${API}/api/robots/remote/stop-all/${robotIp}`, { method: "POST" });
-                      } catch {}
-                    }}
-                  >작업 정지</button>
+                  {isPaused ? (
+                    <button
+                      className="remote-modal__action-btn"
+                      style={{ borderColor: "rgba(61,224,164,0.5)", color: "var(--color-success, #3de0a4)" }}
+                      onClick={resumeJob}
+                    >재개 (이어서 진행)</button>
+                  ) : (
+                    <button
+                      className="remote-modal__action-btn"
+                      style={{ borderColor: "rgba(245,101,101,0.4)", color: "var(--color-error)" }}
+                      onClick={pauseJob}
+                    >작업 정지 (일시정지)</button>
+                  )}
                   <button
                     className="remote-modal__action-btn"
                     style={{ borderColor: "rgba(54,223,200,0.4)", color: "var(--color-info)" }}

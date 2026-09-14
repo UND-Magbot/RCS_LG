@@ -78,7 +78,69 @@ starting → picking_up → moving → awaiting_next ↔ (moving → awaiting_co
 - `awaiting_confirm` : 경유지 도착, **로봇 태블릿 [확인] 대기**
 - `returning` 진입 후 next/end 명령 **전부 무시**
 
-### LG 운영 흐름 (VESA와 다름 — 반드시 구분)
+### ★ 현행 — 배송 모드 (2026-08-24, PoC 기본)
+```
+R 태블릿/콘솔 R 타일에서 [호출]
+  → poi_call() 입구에서 R poi_id 를 매핑된 J poi_id 로 치환 (poi_type == "standby" 일 때)
+  → 이후 로직은 전부 J 기준 — call_to_poi / 워커 / 예약 큐는 한 줄도 안 바뀜
+[적재] 매핑된 R 이동 → align_with_rack → jack_up
+[배송] 짝 J 이동 → jack_down → 전진 이탈 0.7m → job_points.occupied = true
+  → 대기 예약 있으면 그 J 의 R 로 이어서 / 없으면 C1-1 경유 → 충전소 도킹
+[해제] 작업자가 J 에서 [확인] → POST /poi/{J}/rack-cleared → occupied = false
+```
+
+**모드 분기는 `job_mapping_for_poi()` 하나.** 매핑이 있으면 `_worker_loop_delivery`,
+없으면 아래 인터랙티브 모드. **롤백 = 매핑 삭제** (`DELETE /job-points/{J}?area_id=`).
+
+| 함수 | 역할 |
+|---|---|
+| `_worker_loop_delivery` | 배송 워커 본체 |
+| `job_mapping_for_poi` | J poi_id → `{j_name, r_name, area_id}` |
+| `_pickup_at_poi` / `_dropoff_at_poi` / `_park_at_charger` | 단위 동작 |
+| `_set_j_occupied` | 하차 시 점유 표시 |
+| **`rack_occupied_at_poi`** | **예약 소화 경로용 랙 점유 가드** |
+
+⚠️ **이름이 비슷한 두 "점유"를 헷갈리지 말 것**
+
+| | 뜻 | 출처 |
+|---|---|---|
+| `occupied_poi_ids()` | 다른 **로봇**이 그 자리를 목표로 잡고 있다 | `dispatch_sessions` |
+| `job_points.occupied` | 그 자리에 **랙**이 놓여 있다 | `job_points` |
+
+`try_fulfill_reservations` 와 `_take_next_reservation_if_continuable` 이 앞엣것만 보고 있어서
+랙 점유를 통과시켰다 → `rack_occupied_at_poi()` 로 둘 다 확인하게 함.
+**랙 점유 시 예약은 `waiting` 유지** (소진 처리하면 호출이 통째로 사라짐).
+
+⚠️ **`occupied_poi_ids` 의 "떠나는 중" 판정에 `picking_up` 이 포함돼야 한다**
+```python
+leaving_current = (st == "returning") or (st in ("moving", "picking_up") and t is not None)
+```
+배송 워커는 J 하차 후 이어받을 때 `current=이전 J` 를 남긴 채 `picking_up` + `target=다음 R` 로
+간다. `picking_up` 이 빠져 있으면 **이미 떠난 J 가 점유로 잡혀 호출/예약이 409 로 거부**된다
+(예약이 통째로 사라져 로봇이 충전소로 감 — 2026-08-24 실측).
+
+⚠️ **중지 신호(`RuntimeError`)를 삼키지 말 것**
+`jack_service` 에서 `RuntimeError` 를 던지는 곳은 **중지 두 곳뿐**(`_check_stop`, zone 대기 중 중지).
+`except Exception` 으로 잡아 `False` 를 돌려주면 ①실패 사유가 거짓으로 기록되고
+②`_check_stop` 이 플래그를 `pop` 하므로 **중지가 소비돼 로봇이 다음 작업을 시작**한다.
+`except RuntimeError: raise` 로 워커 루프까지 올려보낼 것.
+
+⚠️ **루프를 `break` 로 빠져나올 때 세션을 반드시 닫을 것**
+`_worker_loop_delivery` 의 '랙 없음' 분기가 `break` 만 하고 상태를 안 바꿔서
+세션이 `picking_up` 으로 남았고, 그 `target(R)` 때문에 **로봇이 충전소에 있는데
+R 타일이 계속 "작업 중"** 으로 보였다(유령 세션).
+
+### 화면 폴링 vs 배차 — 온라인 조회를 나눠 쓴다
+```python
+online_ips_cached(ips)                # 배차 — 정확. 만료 시 실제 조회(느릴 수 있음)
+online_ips_cached(ips, block=False)   # 화면 — 즉답. 캐시 값 주고 갱신은 백그라운드
+```
+오프라인 로봇 1대만 있어도 실조회가 **20초 넘게** 걸려 `console/status` 가 통째로 멈춘다.
+오프라인 판정은 `LIVE_CACHE_TTL_OFFLINE=60s`(온라인 15s).
+
+상세 [docs/08_공정시나리오_변경.md](../../docs/08_공정시나리오_변경.md)
+
+### (참고) 기존 인터랙티브 모드 — 매핑 없는 POI
 ```
 콘솔 1대에서 [로봇 호출] → 가용 로봇 자동 선정(배터리 내림차순 → robot_id 오름차순)
   → 가용 0대면 dispatch_reservations 에 예약 저장(나중에 try_fulfill_reservations 가 자동 배차)
@@ -113,7 +175,10 @@ starting → picking_up → moving → awaiting_next ↔ (moving → awaiting_co
 |---|---|---|
 | GET | `/console` | 콘솔 HTML |
 | GET | `/console/status` | 콘솔 폴링 — POI 상태·점유·`reserved_poi_ids`·가용수 + `robots` |
-| POST | `/poi/{id}/call` | 호출(없으면 예약). body `{robot_type, with_rack}` |
+| POST | `/poi/{id}/call` | 호출(없으면 예약). body `{robot_type, with_rack}`. **R(standby) id 면 매핑된 J 로 치환.** 랙 점유 시 409 |
+| GET/POST/DELETE | `/job-points` | J↔R 매핑 (배송 모드) |
+| POST | `/poi/{id}/rack-cleared` | 랙 치움 [확인] — 점유 해제. **R id 도 허용**(짝 J 를 푼다) |
+| GET | `/tablet/poi/{id}` | 위치별 태블릿 HTML (R=호출 / J=확인) |
 | POST | `/poi/{id}/route` | 경유지 등록 + 출발 |
 | DELETE | `/poi/{id}/reserve` | 예약 취소 |
 | GET | `/robot/{id}/tablet-status` | 로봇 태블릿 폴링 |
@@ -135,6 +200,7 @@ starting → picking_up → moving → awaiting_next ↔ (moving → awaiting_co
 | `dispatch_sessions` | 배차 세션(상태머신 영속) |
 | `dispatch_reservations` | 호출 대기열(LG 고유) |
 | `dispatch_waypoints` | 경유지 |
+| **`job_points`** | **J↔R 매핑 + 랙 점유** (배송 모드). `area_id·j_poi_name·r_poi_name·occupied·occupied_at`. **POI id 가 아니라 이름으로** 저장 — 맵 재동기화로 id 가 바뀌어도 매핑이 안 끊기게 |
 | `areas`/`businesses`/`users`/`activity_logs`/`alarm_logs` | 기본 |
 | `task_*`/`scheduled_tasks` | 레거시 자동모드(미사용, 데이터 보존) |
 

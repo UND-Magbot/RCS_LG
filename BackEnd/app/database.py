@@ -5,6 +5,34 @@ from urllib.parse import quote_plus
 
 # MariaDB 접속 정보 (환경변수 우선, 없으면 기본값)
 import os
+from pathlib import Path as _Path
+
+
+def _load_config_env() -> None:
+    """`BackEnd/config.env` 가 있으면 읽어 환경변수로 넣는다.
+
+    서버 PC 에서 실행 스크립트를 건드리지 않고 이 파일 하나만 고치면 되게 하려는 것.
+    **이미 설정된 환경변수가 우선**하므로, run_local.ps1 로 띄우는 개발 방식은 그대로 동작한다.
+    (외부 라이브러리 없이 처리 — 서버 PC 설치 패키지를 늘리지 않기 위해)
+    """
+    path = _Path(__file__).resolve().parent.parent / "config.env"
+    if not path.is_file():
+        return
+    try:
+        for line in path.read_text(encoding="utf-8-sig").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key, value = key.strip(), value.strip().strip('"').strip("'")
+            if key and key not in os.environ:   # 기존 환경변수를 덮지 않는다
+                os.environ[key] = value
+    except Exception as e:
+        print(f"[DB] config.env 읽기 실패(무시하고 기본값 사용): {e}")
+
+
+_load_config_env()
+
 DB_USER = os.getenv("DB_USER", "root")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "1234")
 DB_HOST = os.getenv("DB_HOST", "192.168.0.21")

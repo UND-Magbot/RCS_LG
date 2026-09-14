@@ -9,6 +9,11 @@ import {
   type WheelEvent,
 } from "react";
 import type { MapCanvasProps } from "@/lib/types/map";
+import {
+  offsetPolyline, corridorWalls, snapAngle,
+  openWallsAtTargets, WORK_POINT_MAX_DIST_M,
+} from "@/lib/geometry";
+import { carriedFootprint } from "@/lib/constants/footprint";
 
 export function MapCanvas({
   pois,
@@ -31,6 +36,15 @@ export function MapCanvas({
   onOffsetChange,
   onImageLoad,
   vwTempPoints = [],
+  vwOffsetPx = 0,
+  vwSide = "left",
+  onCanvasDoubleClick,
+  vwMode = "corridor",
+  vwBase = "wall",
+  vwAngleSnap = true,
+  vwWidthPx = 0,
+  vwAutoGap = false,
+  vwGapPx = 0,
 }: MapCanvasProps) {
   const svgRef = useRef<SVGSVGElement>(null);
   const isPanningRef = useRef(false);
@@ -255,6 +269,7 @@ export function MapCanvas({
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
+        onDoubleClick={() => onCanvasDoubleClick?.()}
         onContextMenu={(e) => e.preventDefault()}
       >
         <g transform={`translate(${offset.x}, ${offset.y}) scale(${zoom}) rotate(${rotation})`}>
@@ -283,33 +298,98 @@ export function MapCanvas({
             />
           ))}
 
-          {/* 가상벽 점 찍기 프리뷰 */}
-          {vwTempPoints.length > 0 && (
-            <g>
-              {/* 찍은 점들 사이 선 */}
-              <polyline
-                points={[
-                  ...vwTempPoints.map((p) => `${p.x},${p.y}`),
-                  ...(vwMousePos ? [`${vwMousePos.x},${vwMousePos.y}`] : []),
-                ].join(" ")}
-                className="map-polygon__firewall--preview"
-                fill="none"
-              />
-              {/* 4점째면 닫히는 선 프리뷰 */}
-              {vwTempPoints.length === 3 && vwMousePos && (
-                <line
-                  x1={vwMousePos.x} y1={vwMousePos.y}
-                  x2={vwTempPoints[0].x} y2={vwTempPoints[0].y}
-                  className="map-polygon__firewall--preview"
-                />
-              )}
-              {/* 찍은 점 표시 */}
-              {vwTempPoints.map((p, i) => (
-                <circle key={i} cx={p.x} cy={p.y} r={4 / zoom}
-                  fill="#ff3c3c" stroke="#fff" strokeWidth={1 / zoom} />
-              ))}
-            </g>
-          )}
+          {/* 가상벽 그리기 프리뷰 — 클릭한 선(회색 점선)과 실제 생성될 선(빨강)을 같이 보여준다 */}
+          {vwTempPoints.length > 0 && (() => {
+            const mp = vwMousePos
+              ? (vwAngleSnap ? snapAngle(vwTempPoints, vwMousePos) : vwMousePos)
+              : null;
+            const clicked = mp ? [...vwTempPoints, mp] : vwTempPoints;
+            const walls =
+              vwMode === "corridor" && clicked.length >= 2
+                ? corridorWalls(clicked, vwOffsetPx, vwWidthPx, vwSide, vwBase)
+                : [offsetPolyline(clicked, vwSide === "left" ? vwOffsetPx : -vwOffsetPx)];
+            const result = walls[0];
+            // 작업지점 출입구까지 반영해서 보여준다 — 프리뷰가 실제 저장될 모양과 같아야 한다
+            const resM = mapMeta?.grid_resolution || 0.05;
+            const shownWalls =
+              vwAutoGap && vwGapPx > 0
+                ? openWallsAtTargets(
+                    walls,
+                    pois
+                      .filter((p) => p.type === "jack" || p.type === "standby")
+                      .map((p) => ({ x: p.x, y: p.y })),
+                    vwGapPx,
+                    WORK_POINT_MAX_DIST_M / resM
+                  )
+                : walls;
+            return (
+              <g>
+                {/* 클릭한 경로 — 오프셋이 있을 때만 따로 표시 */}
+                {Math.abs(vwOffsetPx) > 0.01 && (
+                  <polyline
+                    points={clicked.map((p) => `${p.x},${p.y}`).join(" ")}
+                    fill="none" stroke="#9aa4b2" strokeWidth={1 / zoom}
+                    strokeDasharray={`${3 / zoom},${3 / zoom}`}
+                  />
+                )}
+                {/* 실제로 만들어질 선(들) — 출입구로 끊긴 조각까지 그대로 */}
+                {shownWalls.map((wl, wi) => (
+                  <polyline key={`w${wi}`}
+                    points={wl.map((p) => `${p.x},${p.y}`).join(" ")}
+                    className="map-polygon__firewall--preview"
+                    fill="none"
+                  />
+                ))}
+                {/* 찍은 점 표시 */}
+                {vwTempPoints.map((p, i) => (
+                  <circle key={i} cx={p.x} cy={p.y} r={4 / zoom}
+                    fill="#ff3c3c" stroke="#fff" strokeWidth={1 / zoom} />
+                ))}
+
+                {/* 치수 — 구간별 길이(가운데)와 진행 중 구간/합계(마우스 옆) */}
+                {(() => {
+                  const res = mapMeta?.grid_resolution || 0.05;
+                  const fs = 11 / zoom;
+                  const segs = [];
+                  for (let i = 0; i < result.length - 1; i++) {
+                    const a = result[i], b = result[i + 1];
+                    const len = Math.hypot(b.x - a.x, b.y - a.y) * res;
+                    if (len < 0.25) continue;            // 너무 짧으면 글자가 겹친다
+                    segs.push(
+                      <text key={`seg${i}`}
+                        x={(a.x + b.x) / 2} y={(a.y + b.y) / 2 - 4 / zoom}
+                        fontSize={fs} fill="#ffd36d" stroke="#000"
+                        strokeWidth={2.5 / zoom} paintOrder="stroke"
+                        textAnchor="middle" style={{ pointerEvents: "none" }}>
+                        {len.toFixed(2)} m
+                      </text>
+                    );
+                  }
+                  let total = 0;
+                  for (let i = 0; i < result.length - 1; i++) {
+                    total += Math.hypot(result[i + 1].x - result[i].x,
+                                        result[i + 1].y - result[i].y) * res;
+                  }
+                  return (
+                    <g>
+                      {segs}
+                      {mp && (
+                        <text x={mp.x + 10 / zoom} y={mp.y - 10 / zoom}
+                          fontSize={fs} fill="#fff" stroke="#000"
+                          strokeWidth={2.5 / zoom} paintOrder="stroke"
+                          style={{ pointerEvents: "none" }}>
+                          {`합계 ${total.toFixed(2)} m`}
+                          {vwMode === "corridor" ? `  · 통로 ${(vwWidthPx * res).toFixed(2)} m` : ""}
+                          {vwBase === "wall" && Math.abs(vwOffsetPx) > 0.01
+                            ? `  · 벽에서 ${(Math.abs(vwOffsetPx) * res).toFixed(2)} m` : ""}
+                        </text>
+                      )}
+                    </g>
+                  );
+                })()}
+              </g>
+            );
+          })()}
 
           {/* Lines */}
           {lines.map((line) => {
@@ -416,11 +496,14 @@ export function MapCanvas({
                     className={circleClass}
                     strokeWidth={1}
                   />
-                ) : poi.type === "jack" ? (
+                ) : poi.type === "jack" || poi.type === "standby" ? (
                   (() => {
                     const res = mapMeta?.grid_resolution || 0.05;
-                    const rackW = 0.83 / res;
-                    const rackD = 0.87 / res;
+                    // 랙을 든 로봇이 그 자리에서 차지하는 크기 (POI 의 rackSize 기준)
+                    const fpm = carriedFootprint(poi.rackSize);
+                    const rackW = fpm.width / res;
+                    const rackD = fpm.depth / res;
+                    const isStandby = poi.type === "standby";
                     const angle = poi.angle != null ? -poi.angle * (180 / Math.PI) + 90 : 0;
                     return (
                       <g transform={`translate(${poi.x}, ${poi.y}) rotate(${angle})`}>
@@ -429,8 +512,8 @@ export function MapCanvas({
                           y={-rackD / 2}
                           width={rackW}
                           height={rackD}
-                          fill="rgba(155, 89, 182, 0.25)"
-                          stroke={isSelected || isLineStart ? "#fff" : "#9b59b6"}
+                          fill={isStandby ? "rgba(46, 204, 113, 0.22)" : "rgba(155, 89, 182, 0.25)"}
+                          stroke={isSelected || isLineStart ? "#fff" : (isStandby ? "#2ecc71" : "#9b59b6")}
                           strokeWidth={isSelected || isLineStart ? 1 : 0.6}
                           rx={0.5}
                         />
@@ -465,7 +548,9 @@ export function MapCanvas({
                 )}
                 <text
                   x={poi.x}
-                  y={poi.y - (poi.type === "jack" ? (0.87 / (mapMeta?.grid_resolution || 0.05)) / 2 + 3 : 6)}
+                  y={poi.y - (poi.type === "jack" || poi.type === "standby"
+                    ? carriedFootprint(poi.rackSize).depth / (mapMeta?.grid_resolution || 0.05) / 2 + 3
+                    : 6)}
                   className="map-poi__label"
                 >
                   {poi.name}

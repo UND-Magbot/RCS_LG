@@ -77,6 +77,24 @@ export type MapCanvasProps = {
   onOffsetChange: (offset: { x: number; y: number }) => void;
   onImageLoad?: (w: number, h: number) => void;
   vwTempPoints?: { x: number; y: number }[];
+  /** 가상벽 오프셋 (SVG 픽셀). 미리보기를 실제 생성 위치에 그리기 위해 쓴다 */
+  vwOffsetPx?: number;
+  /** 가상벽 오프셋 방향 */
+  vwSide?: "left" | "right";
+  /** 캔버스 더블클릭 — 가상벽 그리기 종료 */
+  onCanvasDoubleClick?: () => void;
+  /** 통로 모드면 한 줄을 그려도 벽 2줄이 만들어진다 */
+  vwMode?: "line" | "corridor";
+  /** 통로 기준선이 '실제 벽'인지 '통로 중심'인지 */
+  vwBase?: "wall" | "center";
+  /** 각도 스냅 사용 여부 (미리보기에도 반영) */
+  vwAngleSnap?: boolean;
+  /** 통로 폭 (SVG 픽셀) */
+  vwWidthPx?: number;
+  /** 작업지점(R/J) 앞 벽을 자동으로 끊어 출입구를 낼지 */
+  vwAutoGap?: boolean;
+  /** 출입구 폭 (SVG 픽셀) */
+  vwGapPx?: number;
 };
 
 export type MapToolbarTopProps = {
@@ -161,4 +179,6 @@ export type MapSyncModalProps = {
   mapId: number;
   areaName: string;
   onSyncComplete?: () => void;
+  /** 툴바에서 어떤 버튼으로 열었는지 — "poi": overlay만(빠름) / "map": 맵 전체(재시작) */
+  mode?: "map" | "poi";
 };

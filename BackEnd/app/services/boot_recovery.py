@@ -105,7 +105,7 @@ def _recover_robot(robot_id: int) -> None:
     try:
         time.sleep(STABILIZE_SEC)  # SLAM 안정화 대기
 
-        from app.routers.map import _find_secret, _correct_map_grid_origin, DOCKING_OFFSET
+        from app.routers.map import _find_secret, _correct_map_grid_origin, DOCK_POSE_OFFSET
 
         db = SessionLocal()
         pose = None
@@ -175,7 +175,7 @@ def relocalize_robot_to_dock(robot_id: int) -> bool:
     ip = secret = None
     pose = None
     try:
-        from app.routers.map import _find_secret, _correct_map_grid_origin, DOCKING_OFFSET
+        from app.routers.map import _find_secret, _correct_map_grid_origin, DOCK_POSE_OFFSET
         robot = db.query(Robot).filter(Robot.id == robot_id).first()
         if not robot or not robot.ip_address:
             return False
@@ -212,9 +212,9 @@ def relocalize_robot_to_dock(robot_id: int) -> bool:
 
         yaw = poi.angle if poi.angle is not None else 0.0
         if use_dock:
-            # 충전소: yaw 방향 DOCKING_OFFSET 앞, 헤딩은 충전소 POI 방향 그대로(180° 뒤집지 않음)
-            tx = poi.world_x + DOCKING_OFFSET * math.cos(yaw)
-            ty = poi.world_y + DOCKING_OFFSET * math.sin(yaw)
+            # 충전소: C1 을 로봇 도킹 위치로 본다(DOCK_POSE_OFFSET=0). 헤딩은 POI 방향 그대로
+            tx = poi.world_x + DOCK_POSE_OFFSET * math.cos(yaw)
+            ty = poi.world_y + DOCK_POSE_OFFSET * math.sin(yaw)
             tyaw = yaw
         else:
             tx, ty, tyaw = poi.world_x, poi.world_y, yaw

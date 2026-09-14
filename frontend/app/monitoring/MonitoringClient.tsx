@@ -146,7 +146,9 @@ const defaultOverlayItems = [
   { label: "내비게이션 경로", checked: true },
   { label: "이동 방향", checked: true },
   { label: "가상 벽", checked: false },
-  { label: "내비게이션 노드", checked: true },
+  // 경유지(W1, W2…) 마커는 기본으로 숨긴다 — 관제 화면에는 경로만 보이면 된다.
+  // 경로선 자체는 "내비게이션 경로"가 그리므로 경유지를 꺼도 길은 보인다.
+  { label: "내비게이션 노드", checked: false },
   { label: "작업 지점", checked: true },
 ];
 
@@ -562,6 +564,26 @@ export function MonitoringClient({ initialDateTime }: Props) {
       }
     }
 
+    // 경유지 체인(W1→W2→…) 을 경로선으로 잇는다.
+    // 배차가 실제로 이 순서대로 통과하므로(백엔드 waypoint_route.plan),
+    // 여기 그려지는 선이 곧 로봇이 다니는 길이다. 라인을 따로 안 그어도 보인다.
+    const wpChain = rawApiElements.pois
+      .filter((p) => p.type === "waypoint" && /^W\d+$/i.test(p.name ?? ""))
+      .map((p) => ({ seq: parseInt(String(p.name).slice(1), 10), p }))
+      .sort((a, b) => a.seq - b.seq);
+
+    for (let i = 0; i < wpChain.length - 1; i++) {
+      const a = wpChain[i].p;
+      const b = wpChain[i + 1].p;
+      segments.push({
+        id: `wchain-${a.id}-${b.id}`,
+        from: { x: a.x + halfW, y: a.y + halfH },
+        to: { x: b.x + halfW, y: b.y + halfH },
+        direction: "bidirectional",
+        lineType: "straight",
+      });
+    }
+
     setApiPois(convertedPois);
     setApiWaypoints(convertedWaypoints);
     setApiRouteWaypoints(routePoints);
@@ -630,8 +652,13 @@ export function MonitoringClient({ initialDateTime }: Props) {
 
     if (!apiRobots.length) return;
 
+    // NEXT_PUBLIC_API_URL 이 비어 있으면(= 백엔드가 이 화면을 직접 서빙하는 정적 빌드)
+    // 지금 접속 중인 주소를 그대로 쓴다. 서버 IP 를 빌드에 박지 않아야
+    // 사내망·포트포워딩 어느 경로로 열어도 WebSocket 이 같은 곳으로 붙는다.
     const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "";
-    const wsBase = API_URL.replace(/^http/, "ws");
+    const wsBase = API_URL
+      ? API_URL.replace(/^http/, "ws")
+      : `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}`;
 
     apiRobots.forEach((robot) => {
       const wsUrl = `${wsBase}/api/map/ws/${robot.ip_address}?topics=/tracked_pose`;

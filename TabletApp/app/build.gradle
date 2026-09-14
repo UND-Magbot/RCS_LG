@@ -35,6 +35,16 @@ android {
             resValue "string", "app_name", "RCS 관리자콘솔"
             buildConfigField "String", "APP_MODE", "\"console\""
         }
+        // 2026-08-24 추가 — 위치(POI)별 태블릿.
+        //   현장은 R1·R2(호출) / J1·J2(확인) 네 곳에 각각 태블릿을 둔다.
+        //   기존 console/robot 은 건드리지 않았다. 별도 applicationId 라 셋 다 동시 설치 가능.
+        poi {
+            dimension "mode"
+            applicationIdSuffix ".poi"
+            versionNameSuffix "-poi"
+            resValue "string", "app_name", "RCS 위치태블릿"
+            buildConfigField "String", "APP_MODE", "\"poi\""
+        }
     }
 
     buildTypes {

@@ -35,9 +35,16 @@ RACK_SPECS: dict[str, dict] = {
         "cargo_to_jack_front_edge_min_distance": 0.05,
     },
     # LG — longjack 로봇 전용 랙 (2026-07 실측: align_with_rack 성공 확인)
+    # margin 0.05 → 0.09 (2026-09-04)
+    #   실물 최대 폭 실측 870mm(캐스터를 바깥으로 최대한 돌린 상태).
+    #   기존 0.05 는 랙 풋프린트를 0.70+0.10=0.80m 로 봐서 7cm 부족했고,
+    #   그만큼 캐스터가 랙 밖으로 튀어나와 '장애물'로 잡힌다(LG2 에서 겪은 것과 같은 문제).
+    #   (0.87-0.70)/2 = 0.085 → 여유를 두어 0.09.
+    #   ※ width/depth 는 라이다가 재는 '다리 중심 간격' 이라 실측대로 두고,
+    #     실물 외형과의 차이는 margin 으로 흡수하는 구조다.
     "LG": {
         "width": 0.70, "depth": 0.50,
-        "margin": [0.05, 0.05, 0.05, 0.05],
+        "margin": [0.09, 0.09, 0.09, 0.09],
         "alignment": "center",
         "alignment_margin_back": 0.02,
         "extra_leg_offset": 0.0,

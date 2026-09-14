@@ -179,6 +179,21 @@
     .btn:disabled { opacity: 0.4; cursor: not-allowed; }
     .btn-danger { background: #c94545; color: #fff; }
 
+    /* 전방 장애물로 로봇이 멈춰 있을 때 뜨는 배너 (2026-09-08 LG 요청).
+       치울 때까지 계속 떠 있는다 — 서버가 알림 목록을 계속 내려주기 때문. */
+    .sf-alert {
+      display: none;
+      background: #b3261e; color: #fff;
+      padding: 18px 20px; margin: 0 0 14px;
+      border-radius: 12px; border: 3px solid #ff8a80;
+      font-size: 26px; font-weight: 800; line-height: 1.4;
+      text-align: center;
+      animation: sf-blink 1.2s ease-in-out infinite;
+    }
+    .sf-alert.show { display: block; }
+    .sf-alert .sf-sub { display: block; margin-top: 6px; font-size: 18px; font-weight: 600; opacity: .92; }
+    @keyframes sf-blink { 0%,100% { filter: brightness(1); } 50% { filter: brightness(1.35); } }
+
     .toast {
       position: fixed;
       bottom: 24px; left: 50%; transform: translateX(-50%);
@@ -387,6 +402,8 @@
     </div>
   </header>
 
+  <div class="sf-alert" id="sf-alert"></div>
+
   <!-- 하단 왼쪽 강제 제어 (운영 모드에서만 표시) -->
   <button class="force-btn-fixed" id="force-btn" onclick="openForceCtrl()" disabled>강제 제어</button>
 
@@ -524,14 +541,37 @@
       return m[s] || s;
     }
 
+    // 응답 순서 보장 — 늦게 도착한 옛 응답이 최신 화면을 덮지 않게 한다.
+    // (콘솔과 같은 이유. 버튼이 활성↔비활성으로 깜빡이던 원인)
+    let refreshSeq = 0;
+
+    // 전방 장애물로 멈춘 로봇 배너. 서버가 목록을 계속 주므로 치울 때까지 떠 있는다.
+    function renderSafetyAlert(list) {
+      const el = document.getElementById("sf-alert");
+      if (!el) return;
+      if (!list.length) { el.classList.remove("show"); el.textContent = ""; return; }
+      el.innerHTML = list.map(a => {
+        const d = (a.distance_m == null) ? "" : ` · 앞 ${Number(a.distance_m).toFixed(2)} m`;
+        return `⚠ ${a.robot_name} 이(가) 장애물에 막혀 ${a.seconds}초째 멈춰 있습니다`
+             + `<span class="sf-sub">앞을 막고 있는 물건을 치워 주세요${d}</span>`;
+      }).join("<hr style='border:0;border-top:1px solid rgba(255,255,255,.35);margin:10px 0'>");
+      el.classList.add("show");
+    }
+
     async function refresh() {
       if (NEEDS_CONFIG) return;  // 설정 모드에선 폴링 불필요
+      const seq = ++refreshSeq;
+      let d;
       try {
-        state = await api(`/api/dispatch/poi/${POI_ID}/status`);
-        render();
+        d = await api(`/api/dispatch/poi/${POI_ID}/status`);
       } catch (e) {
         console.error(e);
+        return;
       }
+      if (seq !== refreshSeq) return;   // 더 최신 요청이 있다 → 이 응답은 버린다
+      state = d;
+      renderSafetyAlert(d.safety_alerts || []);
+      render();
     }
 
     // ── 슬롯 설정 모달 ────────────────────────────────────
@@ -599,6 +639,14 @@
         }
       }
 
+      // 배송 모드(job_points 매핑 있음) — R 태블릿은 [호출], J 태블릿은 [확인].
+      // 현장은 R 과 J 가 100m 떨어져 있어서 각각 옆에 태블릿이 놓인다.
+      if (state.paired_poi_name) {
+        if (state.poi_type === "standby") renderRackSource(main);
+        else renderJobPoint(main);
+        return;
+      }
+
       if (state.state === "empty") {
         renderEmpty(main);
       } else if (state.state === "reserved") {
@@ -609,6 +657,146 @@
         renderArrived(main);
       } else {
         renderUnknown(main);
+      }
+    }
+
+    function hhmm(iso) {
+      if (!iso) return "";
+      const d = new Date(iso);
+      if (isNaN(d)) return "";
+      return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+    }
+
+    // ── R 태블릿 (랙 보관 위치) — 호출 버튼이 여기 있다 ─────────────
+    // 작업자는 랙이 눈앞에 있는 R 옆에서 호출한다. 짝 J 에 아직 랙이 남아 있으면
+    // 호출 버튼 자체를 그리지 않는다(치웠는지는 J 옆 작업자만 알 수 있다).
+    function renderRackSource(main) {
+      const jName = state.paired_poi_name;
+      const ps = state.paired_state;
+
+      if (state.rack_present) {
+        const t = hhmm(state.rack_occupied_at);
+        // 버튼을 지우지 않고 비활성으로 남긴다 — 여기가 호출 자리라는 것 자체는 보여야 한다.
+        main.innerHTML = `
+          <div class="call-container">
+            <div class="call-info">
+              현재 위치 <b>${state.poi_name}</b><br/>
+              <b style="color:#f0a04b">${jName} 정리 대기</b>
+            </div>
+            <div class="call-hint">
+              <b>${jName}</b> 에 랙이 있습니다.<br/>
+              ${jName} 에서 랙을 치우고 <b>[확인]</b> 을 누르면 호출할 수 있습니다.
+              ${t ? `<br/>(${t} 하차)` : ""}
+            </div>
+            <div class="call-btn-row">
+              <button class="call-btn call-btn--rack" disabled>
+                <span class="big">🟦 로봇 호출</span>
+                <span class="small">${jName} 정리 후 활성화됩니다</span>
+              </button>
+            </div>
+          </div>`;
+        return;
+      }
+
+      if (ps === "reserved") {
+        main.innerHTML = `
+          <div class="call-container">
+            <div class="call-info">
+              현재 위치 <b>${state.poi_name}</b><br/><b>예약됨</b> — 대기 중
+            </div>
+            <div class="call-hint">가용 로봇이 없어 예약되었습니다. 로봇이 작업을 마치면 먼저 예약한 순서대로 자동 호출됩니다.</div>
+            <div class="call-btn-row">
+              <button class="btn btn-danger" id="cancel-reserve-btn">예약 취소</button>
+            </div>
+          </div>`;
+        document.getElementById("cancel-reserve-btn").onclick = onCancelReserve;
+        return;
+      }
+
+      if (state.state === "calling" || ps === "calling" || ps === "arrived") {
+        const here = state.state === "calling";
+        main.innerHTML = `
+          <div class="call-container">
+            <div class="call-info">
+              현재 위치 <b>${state.poi_name}</b><br/>
+              ${state.robot_name || "로봇"} ${state.robot_battery != null ? "· " + state.robot_battery + "%" : ""}
+            </div>
+            <div class="call-hint">${here ? "로봇이 랙을 가지러 오는 중입니다…" : jName + " 로 배송 중입니다…"}</div>
+            <div class="call-btn-row">
+              <button class="call-btn call-btn--rack" disabled>
+                <span class="big">🟦 로봇 호출</span>
+                <span class="small">작업이 끝나면 활성화됩니다</span>
+              </button>
+            </div>
+          </div>`;
+        return;
+      }
+
+      const canCall = state.available_robot_count > 0;
+      main.innerHTML = `
+        <div class="call-container">
+          <div class="call-info">
+            현재 위치 <b>${state.poi_name}</b><br/>
+            가용 로봇: <b>${state.available_robot_count}대</b>
+          </div>
+          ${canCall ? "" : `<div class="call-hint">가용 로봇이 없습니다 — 누르면 예약되고, 로봇이 작업을 마치면 먼저 예약한 순서대로 자동 호출됩니다.</div>`}
+          <div class="call-btn-row">
+            <button class="call-btn call-btn--rack" id="call-with-rack">
+              <span class="big">${canCall ? "🟦 로봇 호출" : "🟦 예약하기"}</span>
+              <span class="small">여기 랙을 <b>${jName}</b> 로 보냅니다</span>
+            </button>
+          </div>
+        </div>`;
+      document.getElementById("call-with-rack").onclick = () => onCall(true);
+    }
+
+    // ── J 태블릿 (작업지점) — [확인] 버튼만. 호출은 R 에서 한다 ──────
+    function renderJobPoint(main) {
+      const rName = state.paired_poi_name;
+
+      // J 태블릿에는 [확인] **하나만** 둔다. 호출/예약/다음위치 버튼은 절대 그리지 않는다.
+      // 버튼은 항상 같은 자리에 보이고, 랙이 실제로 놓였을 때만 활성화된다.
+      const canConfirm = !!state.rack_present;
+      const t = hhmm(state.rack_occupied_at);
+      let head = "", hint = "";
+
+      if (state.rack_present) {
+        head = `현재 위치 <b>${state.poi_name}</b><br/><b style="color:#f0a04b">랙 있음</b>`;
+        hint = `랙이 놓여 있습니다. 치운 뒤 아래 버튼을 눌러주세요.${t ? `<br/>(${t} 하차)` : ""}`;
+      } else if (state.state === "calling") {
+        head = `현재 위치 <b>${state.poi_name}</b><br/>${state.robot_name || "로봇"} 이동 중`;
+        hint = `${rName} 에서 출발했습니다. 랙이 도착하면 확인 버튼이 활성화됩니다.`;
+      } else if (state.state === "arrived") {
+        head = `현재 위치 <b>${state.poi_name}</b><br/>${state.robot_name || "로봇"} 도착`;
+        hint = "랙을 내려놓는 중입니다. 완료되면 확인 버튼이 활성화됩니다.";
+      } else {
+        head = `현재 위치 <b>${state.poi_name}</b><br/>대기 중`;
+        hint = `이 위치로 랙을 부르려면 <b>${rName}</b> 태블릿에서 호출하세요.`;
+      }
+
+      main.innerHTML = `
+        <div class="call-container">
+          <div class="call-info">${head}</div>
+          <div class="call-hint">${hint}</div>
+          <div class="call-btn-row">
+            <button class="call-btn call-btn--rack" id="rack-clear-btn" ${canConfirm ? "" : "disabled"}>
+              <span class="big">✅ 확인 — 랙을 치웠습니다</span>
+              <span class="small">${canConfirm ? `누르면 <b>${rName}</b> 에서 다시 호출할 수 있습니다` : "랙이 도착하면 활성화됩니다"}</span>
+            </button>
+          </div>
+        </div>`;
+      if (canConfirm) document.getElementById("rack-clear-btn").onclick = onRackCleared;
+    }
+
+    // 작업자가 랙을 치웠다는 확인 — 센서가 없어 이게 유일한 해제 수단이다.
+    async function onRackCleared() {
+      try {
+        await api(`/api/dispatch/poi/${POI_ID}/rack-cleared`, { method: "POST" });
+        toast("확인 완료 — 다시 호출할 수 있습니다");
+      } catch (e) {
+        toast("실패: " + e.message);
+      } finally {
+        refresh();
       }
     }
 
@@ -678,6 +866,13 @@
     }
 
     function renderArrived(main) {
+      // 경유지 순회 중(확인 대기)에는 이 화면에서 다음 위치를 고를 수 없다.
+      // 주도권이 로봇 부착 태블릿의 [확인] 으로 넘어간 구간이기 때문.
+      // 예전에는 아래 그리드를 그대로 띄웠으나 누르면 전부 404 였다.
+      if (state.session_status === "awaiting_confirm") {
+        renderAwaitingConfirm(main);
+        return;
+      }
       const occupied = new Set(state.occupied_poi_ids || []);
       const pois = state.available_pois || [];
       const grid = pois.map(p => {
@@ -713,6 +908,33 @@
       main.querySelectorAll(".poi-btn:not(.occupied)").forEach(b => {
         b.onclick = () => onNext(parseInt(b.dataset.id), b.dataset.name);
       });
+      document.getElementById("end-btn").onclick = onEnd;
+    }
+
+    function renderAwaitingConfirm(main) {
+      const withRack = state.with_rack !== false;
+      const modeLabel = withRack ? "렉 운반 중" : "렉 없이 모드";
+      const endLabel = withRack
+        ? "작업 종료 (랙 반납 + 충전소 복귀)"
+        : "작업 종료 (충전소 복귀)";
+      main.innerHTML = `
+        <div class="robot-info">
+          <div>
+            <div class="name">${state.robot_name || "-"}</div>
+            <div class="meta">${state.poi_name} 도착 · ${modeLabel}</div>
+          </div>
+          <div class="battery">${state.robot_battery != null ? state.robot_battery + "%" : "-"}</div>
+        </div>
+        <div class="panel" style="flex:1; display:flex; flex-direction:column">
+          <h2>경유지 진행 중</h2>
+          <div style="flex:1; display:flex; align-items:center; justify-content:center; text-align:center; color:#9fb0c8; font-size:18px; line-height:1.6">
+            로봇에 부착된 태블릿에서<br/><b style="color:#6dd99b">[확인]</b> 을 눌러야 다음 위치로 이동합니다.
+          </div>
+          <div class="action-row">
+            <button class="btn btn-danger" id="end-btn">${endLabel}</button>
+          </div>
+        </div>
+      `;
       document.getElementById("end-btn").onclick = onEnd;
     }
 
@@ -878,6 +1100,15 @@
       document.getElementById("force-btn").classList.add("hidden");
       openConfig();
     } else {
+      // POI 별 태블릿(MODE==="poi")은 주소에 POI 가 이미 박혀 있어 슬롯 설정이 필요 없다.
+      // 슬롯은 옛 운영 방식(태블릿 1·2·3 번에 POI 를 매핑)의 잔재고, 지금 DB 의
+      // dispatch_slots 는 비어 있다. 게다가 그 화면의 '작업 위치' 목록은 jack POI 만
+      // 주기 때문에 R1·R2 는 고를 수도 없어, 열어봐야 헷갈리기만 한다. → 버튼을 숨긴다.
+      if (MODE === "poi") {
+        // .hidden 은 .force-btn-fixed 전용으로만 정의돼 있어 여기선 안 먹는다 → 직접 감춘다
+        const cfgBtn = document.getElementById("config-btn");
+        if (cfgBtn) cfgBtn.style.display = "none";
+      }
       refresh();
       polling = setInterval(refresh, 2000);
     }

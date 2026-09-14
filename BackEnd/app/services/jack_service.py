@@ -424,8 +424,9 @@ def robot_post(ip: str, path: str, json_body: dict | None = None, retries: int =
                 raise
 
 
-def robot_patch(ip: str, path: str, json_body: dict) -> dict:
-    r = requests.patch(robot_url(ip, path), json=json_body, timeout=HTTP_TIMEOUT)
+def robot_patch(ip: str, path: str, json_body: dict, timeout: Optional[float] = None) -> dict:
+    r = requests.patch(robot_url(ip, path), json=json_body,
+                       timeout=(HTTP_TIMEOUT if timeout is None else timeout))
     r.raise_for_status()
     return r.json()
 
@@ -478,6 +479,36 @@ def create_move(ip: str, move_type: str, target_x: float, target_y: float,
 
 # 좌표 자체가 잘못된 경우 영원히 도는 것 방지용 대형 한도 (≈ 200 * 5s = 17분)
 SAFE_MOVE_DEFAULT_MAX_ATTEMPTS = 200
+
+# 이동 실패 코드 — 로봇 펌웨어 값.
+# 재시도가 잦은데(2026-09-07 실측: 2~5회차) 사유가 로그에 안 남아 원인을 못 짚었다.
+# 재시도 1회는 retry_delay 5초를 그냥 버리므로, 무엇 때문인지 보이게 한다.
+MOVE_FAIL_REASONS = {
+    0: "없음", 1: "알 수 없음", 2: "맵 획득 실패",
+    3: "출발점이 맵 밖", 4: "도착점이 맵 밖",
+    5: "출발점이 이동 불가 영역", 6: "도착점이 이동 불가 영역",
+    7: "출발점과 도착점이 동일", 8: "글로벌 경로 확장데이터 계산 실패",
+    9: "경로 연결 안 됨", 10: "경로 계산 타임아웃", 11: "글로벌 경로 없음",
+    12: "글로벌 경로에서 출발점 잡기 실패", 13: "글로벌 경로에서 도착점 잡기 실패",
+    14: "경로 계획 장시간 실패", 15: "이동 타임아웃",
+    16: "센서 데이터 이상", 17: "충전 케이블 연결됨", 18: "회전 타임아웃",
+    100: "충전 재시도 초과", 101: "충전독 감지 오류", 102: "도킹 신호 미수신",
+    103: "유효하지 않은 충전독 위치", 104: "이미 충전 중", 105: "충전 전류 미감지",
+    400: "유효하지 않은 트랙 포인트", 401: "트랙 시작점에서 너무 멀리 있음",
+    500: "유효하지 않은 랙 감지 위치", 501: "랙 감지 오류",
+    502: "랙 도킹 재시도 초과", 503: "언로드 지점 점유됨", 504: "언로드 지점 도달 불가",
+}
+
+
+def describe_fail(result: dict) -> str:
+    """이동 결과에서 실패 사유를 사람이 읽을 수 있게. 없으면 빈 문자열."""
+    fr = result.get("fail_reason")
+    if fr in (None, 0):
+        return ""
+    name = MOVE_FAIL_REASONS.get(fr, "정의되지 않은 코드")
+    extra = result.get("fail_reason_str")
+    tail = f" / {extra}" if extra and extra != "None - None" else ""
+    return f" fail_reason={fr}({name}){tail}"
 
 
 def safe_move(ip: str, move_type: str, target_x: float, target_y: float,
@@ -551,7 +582,10 @@ def safe_move(ip: str, move_type: str, target_x: float, target_y: float,
             return result
         # 3) failed / timeout / unknown → 재시도
         fail_msg = result.get("fail_message") or state or "unknown"
-        logger.warning(f"[safe_move] {ip} 이동 미완료 (시도 {attempt}, state={state}): {fail_msg}")
+        logger.warning(
+            f"[safe_move] {ip} 이동 미완료 (시도 {attempt}, state={state}, "
+            f"type={move_type}, id={move_id}, 목표=({target_x:.2f},{target_y:.2f})): "
+            f"{fail_msg}{describe_fail(result)}")
         update_job_status(ip, message=f"이동 미완료 ({fail_msg}) — 재시도 중 ({attempt}회차)")
         if max_attempts is not None and attempt >= max_attempts:
             return last_result
@@ -577,6 +611,11 @@ def wait_move(ip: str, move_id: int, timeout: int = MOVE_TIMEOUT) -> dict:
     return {"state": "timeout", "fail_message": f"Move {move_id} timed out after {timeout}s"}
 
 
+# 잭 상태 판정 임계값 (2026-08-18 실측: 랙 적재 progress=1.0/weight=85, 빈 상태 0/0)
+JACK_UP_PROGRESS_MIN = 0.9      # 이 이상이면 잭이 올라간 것
+JACK_LOADED_WEIGHT_MIN = 10.0   # 이 이상이면 하중이 실린 것 = 랙을 들고 있음
+
+
 def jack_up(ip: str) -> dict:
     return robot_post(ip, "/services/jack_up")
 
@@ -585,8 +624,53 @@ def jack_down(ip: str) -> dict:
     return robot_post(ip, "/services/jack_down")
 
 
-def cancel_current_move(ip: str) -> dict:
-    return robot_patch(ip, "/chassis/moves/current", {"state": "cancelled"})
+def read_jack_state(ip: str, timeout: float = 6.0) -> Optional[dict]:
+    """WS /jack_state 로 잭 상태 1건 읽기. 실패 시 None.
+
+    반환 예: {'state':'hold', 'progress':1.0, 'weight':85}
+    실측(2026-08-18, LG 랙): 잭업+랙적재 progress=1.0 weight=85 / 빈 상태 progress=0.0 weight=0
+    state 는 두 경우 모두 'hold' 라 구분에 쓸 수 없다. progress 와 weight 로 판정할 것.
+    """
+    import websocket  # 선택 의존성 — 여기서만 사용
+    ws = None
+    try:
+        ws = websocket.create_connection(f"ws://{ip}:{ROBOT_PORT}/ws/v2/topics", timeout=timeout)
+        ws.send(_json.dumps({"enable_topic": "/jack_state"}))
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            pkt = _json.loads(ws.recv())
+            if pkt.get("topic") == "/jack_state":
+                return pkt
+    except Exception as e:
+        logger.warning(f"[jack] /jack_state 읽기 실패 ({ip}): {e}")
+    finally:
+        if ws is not None:
+            try:
+                ws.close()
+            except Exception:
+                pass
+    return None
+
+
+def is_rack_loaded(ip: str, timeout: float = 6.0) -> Optional[bool]:
+    """지금 랙을 들고 있는가? 판정 불가(통신 실패)면 None.
+
+    잭이 올라가 있고(progress) 하중이 실려 있어야(weight) 랙을 든 것으로 본다.
+    잭만 올리고 랙이 없으면 weight 가 0 에 가깝다.
+    """
+    st = read_jack_state(ip, timeout=timeout)
+    if not st:
+        return None
+    try:
+        progress = float(st.get("progress") or 0)
+        weight = float(st.get("weight") or 0)
+    except (TypeError, ValueError):
+        return None
+    return progress >= JACK_UP_PROGRESS_MIN and weight >= JACK_LOADED_WEIGHT_MIN
+
+
+def cancel_current_move(ip: str, timeout: Optional[float] = None) -> dict:
+    return robot_patch(ip, "/chassis/moves/current", {"state": "cancelled"}, timeout=timeout)
 
 
 JACK_WAIT_SEC = 10  # 잭 업/다운 고정 대기 시간(초)
@@ -680,8 +764,11 @@ def recover_positioning(ip: str, max_wait_sec: int = 15) -> bool:
 
 # 랙 인식 실패 방어용 — 단계별 회복 후 재시도
 ALIGN_MAX_RETRIES = 4
-ALIGN_BACKOFF_M = 0.5            # 후진 거리 (m) — LiDAR 시야 확보용
-ALIGN_LATERAL_OFFSET_M = 0.3     # 좌/우 우회 거리 (m) — 마지막 시도용
+# (2026-09-08 제거) ALIGN_BACKOFF_M / ALIGN_LATERAL_OFFSET_M
+#   랙 인식 실패 시 후진 0.5m·측면 0.3m 로 물러나던 값이다.
+#   좁은 통로에서 뒤로 물러나는 동작 자체가 위험하다는 현장 판단으로 제거했다.
+#   지금은 제자리에서 기다렸다 다시 시도한다.
+ALIGN_WAIT_SEC = 10              # 재시도 전 제자리 대기 (초)
 
 
 def align_with_retry(ip: str, x: float, y: float, ori: float = 0,
@@ -690,10 +777,15 @@ def align_with_retry(ip: str, x: float, y: float, ori: float = 0,
 
     단계:
       1차) 그대로 시도
-      2차) 재로컬화 후 시도               — 위치 추정 오류 대응
-      3차) 후진 0.5m → 재로컬화 → 시도    — LiDAR 시야 협소 대응
-      4차) 측면 우회 + 재로컬화 → 시도    — 접근 각도 변경 대응
+      2차) 재로컬화 후 시도       — 위치 추정 오류 대응 (로봇은 움직이지 않는다)
+      3차) 제자리 대기 후 재시도
+      4차) 제자리 대기 후 재시도
     모든 단계 실패 시 마지막 결과 반환. cancel(중지)은 즉시 반환.
+
+    ★ 2026-09-08 현장 요구 — **랙을 못 찾아도 뒤로 물러나지 않는다.**
+      예전 3차 후진 0.5m·4차 측면 0.3m 우회를 제거했다.
+      다 쓰고도 실패하면 호출부가 '랙 없음' 으로 처리한다 —
+      대기 예약이 있으면 그 작업으로 넘어가고, 없으면 충전소로 복귀한다(기존 그대로).
     """
     last_result: dict = {}
     for attempt in range(1, max_retries + 1):
@@ -742,45 +834,15 @@ def align_with_retry(ip: str, x: float, y: float, ori: float = 0,
                 except Exception:
                     pass
                 _interruptible_sleep(ip, 2)
-            elif attempt == 2:
-                # 3차 시도 전: 0.5m 후진 + 재로컬화
-                update_job_status(ip, message="랙 인식 실패 — 후진 후 재시도")
-                back_x = x - ALIGN_BACKOFF_M * math.cos(ori)
-                back_y = y - ALIGN_BACKOFF_M * math.sin(ori)
-                try:
-                    bm = create_move(ip, "standard", back_x, back_y, ori)
-                    wait_move(ip, bm, timeout=60)
-                except RuntimeError:
-                    raise
-                except Exception as e:
-                    logger.warning(f"[align_retry] 후진 실패(무시): {e}")
-                _interruptible_sleep(ip, 2)
-                try:
-                    recover_positioning(ip, max_wait_sec=10)
-                except Exception:
-                    pass
-                _interruptible_sleep(ip, 2)
             else:
-                # 4차(마지막) 시도 전: 측면으로 우회 + 재로컬화
-                update_job_status(ip, message="랙 인식 실패 — 측면 우회 후 재시도")
-                # 좌측(ori + 90°) 으로 30cm 이동 후 ori 그대로 정면 복귀
-                side_x = x + ALIGN_LATERAL_OFFSET_M * math.cos(ori + math.pi / 2) \
-                          - ALIGN_BACKOFF_M * math.cos(ori)
-                side_y = y + ALIGN_LATERAL_OFFSET_M * math.sin(ori + math.pi / 2) \
-                          - ALIGN_BACKOFF_M * math.sin(ori)
-                try:
-                    sm = create_move(ip, "standard", side_x, side_y, ori)
-                    wait_move(ip, sm, timeout=60)
-                except RuntimeError:
-                    raise
-                except Exception as e:
-                    logger.warning(f"[align_retry] 우회 이동 실패(무시): {e}")
-                _interruptible_sleep(ip, 2)
-                try:
-                    recover_positioning(ip, max_wait_sec=10)
-                except Exception:
-                    pass
-                _interruptible_sleep(ip, 2)
+                # 3·4차: **제자리에서 대기 후 재시도.** 로봇을 움직이지 않는다.
+                #   (2026-09-08 현장 요구 — 후진 0.5m·측면 우회 0.3m 제거)
+                #   좁은 통로에서 뒤로 물러나는 동작 자체가 위험하다는 판단이다.
+                update_job_status(
+                    ip,
+                    message=f"랙 인식 실패 — 제자리 대기 후 재시도 ({attempt + 1}회차)")
+                logger.info(f"[align_retry] {ip}: 제자리에서 {ALIGN_WAIT_SEC}초 대기 후 재시도")
+                _interruptible_sleep(ip, ALIGN_WAIT_SEC)
         except RuntimeError:
             raise
 

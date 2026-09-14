@@ -3,7 +3,7 @@
 태블릿에서 사람이 매 포지션마다 다음 위치를 누르는 운영 방식.
 잭은 시작 시 1회 업 → 종료 시 1회 다운 (포지션마다 잭 사이클 없음).
 """
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
@@ -106,3 +106,31 @@ class TabletSlot(Base):
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
 
     poi = relationship("MapPOI")
+
+
+class JobPoint(Base):
+    """작업지점(J) ↔ 랙 보관 위치(R) 고정 매핑 + 랙 점유 상태.
+
+    2026-08-24 변경 시나리오용. J1 호출이면 R1, J2 호출이면 R2 에서 랙을 가져온다.
+
+    POI id 가 아니라 **이름**으로 저장하는 이유:
+      맵을 다시 동기화하면 POI 가 삭제·재생성돼 id 가 바뀐다. 그때마다 매핑이
+      끊기면 안 되므로 이름으로 묶는다. (charging_id/standby_id 를 이름으로
+      백업·복원하는 crud/map.py 의 처리와 같은 이유)
+
+    occupied:
+      로봇이 J 에 랙을 내려놓으면 True. 작업자가 랙을 치우고 태블릿에서
+      [확인] 을 누르면 False. True 인 상태로 호출이 오면 배차하지 않고
+      "작업지역에 랙이 있어요" 알람을 띄운다.
+    """
+    __tablename__ = "job_points"
+    __table_args__ = (UniqueConstraint("area_id", "j_poi_name", name="uq_job_point_area_j"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    area_id = Column(Integer, nullable=True, index=True)
+    j_poi_name = Column(String(200), nullable=False)      # 작업지점 이름   예) J1
+    r_poi_name = Column(String(200), nullable=False)      # 랙 보관 위치   예) R1
+    occupied = Column(Boolean, nullable=False, default=False)   # J 에 랙이 놓여 있나
+    occupied_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)

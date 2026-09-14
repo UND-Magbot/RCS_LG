@@ -768,6 +768,50 @@ def api_set_speed(robot_ip: str, body: dict, db: Session = Depends(get_db)):
     return {"ok": True, "max_forward_velocity": speed}
 
 
+@router.post("/voice/test/{robot_ip}")
+def api_voice_test(robot_ip: str, body: dict | None = None, db: Session = Depends(get_db)):
+    """음성 미리듣기 — 콘솔에서 지금 설정으로 한 번 들어본다.
+
+    오디오는 8090 이 아니라 9000 채널이다. 배경은 services/robot_voice.py 참조.
+    """
+    from app.routers.settings import get_voice_settings
+    from app.services import robot_voice
+
+    robot = db.query(Robot).filter(Robot.ip_address == robot_ip, Robot.is_active == True).first()
+    if not robot:
+        raise HTTPException(404, "등록되지 않은 로봇입니다")
+
+    cfg = get_voice_settings()
+    body = body or {}
+    code = robot_voice.play_once(
+        robot_ip,
+        robot.serial_number or "",
+        audio_id=body.get("audio_id", cfg["audio_id"]),
+        url=body.get("url", cfg["url"]),
+        volume=int(body.get("volume", cfg["volume"])),
+        mode=int(body.get("mode", cfg["mode"])),
+        # 미리듣기도 실제 재생과 같은 주소로 보내야 "미리듣기는 되는데 주행 중엔 안 난다"
+        # (또는 그 반대)가 안 생긴다
+        server_port=int(cfg.get("server_port", 8002)),
+        base_url=str(cfg.get("server_url", "")),
+    )
+    # code 0 이 곧 "소리가 났다"는 뜻은 아니다 — 명령을 받았다는 뜻이다
+    return {"ok": code == 0, "code": code}
+
+
+@router.post("/voice/stop/{robot_ip}")
+def api_voice_stop(robot_ip: str, db: Session = Depends(get_db)):
+    """재생 중인 음성 즉시 정지"""
+    from app.routers.settings import get_voice_settings
+    from app.services import robot_voice
+
+    robot = db.query(Robot).filter(Robot.ip_address == robot_ip, Robot.is_active == True).first()
+    if not robot:
+        raise HTTPException(404, "등록되지 않은 로봇입니다")
+    code = robot_voice.stop_play(robot_ip, robot.serial_number or "", int(get_voice_settings()["mode"]))
+    return {"ok": code == 0, "code": code}
+
+
 @router.post("/remote/stop-all/{robot_ip}")
 def api_stop_all(robot_ip: str):
     """모든 작업 정지 (이동 취소 + 잭 다운 + 작업 중단)"""
@@ -807,6 +851,16 @@ def api_resume_robot(robot_ip: str):
     from app.services.jack_service import resume_robot_job
     resume_robot_job(robot_ip)
     return {"ok": True, "message": "재개"}
+
+
+@router.get("/remote/paused/{robot_ip}")
+def api_is_paused(robot_ip: str):
+    """일시정지 상태 조회 — 화면이 [정지]/[재개] 중 무엇을 보여줄지 판단용.
+
+    로봇에 통신하지 않고 서버 메모리 플래그만 읽으므로 폴링해도 부담이 없다.
+    """
+    from app.services.jack_service import is_paused
+    return {"paused": is_paused(robot_ip)}
 
 
 @router.post("/remote/force-return/{robot_ip}")
@@ -977,39 +1031,77 @@ def api_dock_to_charger(robot_ip: str, db: Session = Depends(get_db)):
         except Exception:
             pass
 
-        # 1) standard로 사전 접근 POI(있으면) 또는 충전소 POI 좌표로 이동
-        req.post(
-            f"http://{robot_ip}:8090/chassis/moves",
-            json={
-                "creator": "rcs",
-                "type": "standard",
-                "target_x": ax,
-                "target_y": ay,
-                "target_ori": ayaw,
-            },
-            timeout=10,
-        )
-        # 2) charge 명령 — target_ori 명시 (로봇 정렬 후 정확한 충전기 인식)
+        # ── 접근 → 도킹을 백그라운드에서 순차 진행 ──
+        #
+        # 2026-09-01 변경 — 이전에는 standard 이동을 쏜 뒤 `sleep(8)` 후 무조건 charge 를
+        # 보냈다. 로봇은 새 move 를 받으면 이전 move 를 취소하므로, 8초 안에 도착하지
+        # 못하는 거리에서는 이동이 중간에 끊기고 그 자리에 멈춰버린다.
+        # (사무실은 경로가 짧아 8초로 맞았지만 현장은 거리가 달라 재현됐다.)
+        # → 시간이 아니라 **실제 도착(state=succeeded)** 을 확인한 뒤 charge 를 보낸다.
+        #
+        # 응답은 지금까지처럼 즉시 돌려준다. 태블릿이 이동 끝날 때까지 기다리면 안 된다.
         import threading
-        def _then_charge():
+
+        DOCK_MOVE_TIMEOUT = 300   # 접근 이동 최대 대기(초). LTE 지연·먼 거리 감안
+        DOCK_POLL_SEC = 2.0       # 상태 폴링 주기
+
+        def _approach_then_charge():
             import time as _t
-            _t.sleep(8)  # standard 이동 완료 대기
+            from app.services import jack_service as _js
+
+            # 이전 작업이 남긴 중지 플래그가 있으면 폴링이 즉시 죽는다 → 정리하고 시작
+            _js._stop_flags.pop(robot_ip, None)
+
+            # 1) 사전 접근 POI(있으면) 또는 충전소 좌표로 standard 이동
             try:
-                req.post(
-                    f"http://{robot_ip}:8090/chassis/moves",
-                    json={
-                        "creator": "rcs",
-                        "type": "charge",
-                        "target_x": cx,
-                        "target_y": cy,
-                        "target_ori": cyaw,
-                        "charge_retry_count": 3,
-                    },
-                    timeout=10,
-                )
-            except Exception:
-                pass
-        threading.Thread(target=_then_charge, daemon=True).start()
+                resp = _js.robot_post(robot_ip, "/chassis/moves", {
+                    "creator": "rcs",
+                    "type": "standard",
+                    "target_x": ax,
+                    "target_y": ay,
+                    "target_ori": ayaw,
+                })
+                move_id = resp.get("id")
+            except Exception as e:
+                logger.error(f"[dock] 접근 이동 생성 실패 ({robot_ip}): {e}")
+                return
+            logger.info(f"[dock] 접근 이동 시작 ({robot_ip}) move_id={move_id} "
+                        f"target={approach_name_used or charger.name}")
+
+            # 2) 도착할 때까지 폴링 — 배차 상태(pause/stop)에 얽히지 않도록 여기서 직접 본다
+            state = "timeout"
+            if move_id is not None:
+                deadline = _t.time() + DOCK_MOVE_TIMEOUT
+                while _t.time() < deadline:
+                    try:
+                        state = _js.robot_get(robot_ip, f"/chassis/moves/{move_id}").get("state", "")
+                    except Exception as e:
+                        logger.warning(f"[dock] 이동 상태 조회 실패 (재시도) ({robot_ip}): {e}")
+                        state = ""
+                    if state in ("succeeded", "failed", "cancelled"):
+                        break
+                    _t.sleep(DOCK_POLL_SEC)
+                else:
+                    state = "timeout"
+
+            # 3) 도착했을 때만 charge — 엉뚱한 위치에서 charge 하면 충전기를 못 찾고 멈춘다
+            if state != "succeeded":
+                logger.warning(f"[dock] 접근 이동 미완료 ({robot_ip}) state={state} → 도킹 생략")
+                return
+            logger.info(f"[dock] 접근 완료 ({robot_ip}) → 도킹 명령 전송")
+            try:
+                _js.robot_post(robot_ip, "/chassis/moves", {
+                    "creator": "rcs",
+                    "type": "charge",
+                    "target_x": cx,
+                    "target_y": cy,
+                    "target_ori": cyaw,
+                    "charge_retry_count": 3,
+                })
+            except Exception as e:
+                logger.error(f"[dock] 도킹 명령 실패 ({robot_ip}): {e}")
+
+        threading.Thread(target=_approach_then_charge, daemon=True).start()
         return {"ok": True, "charger": charger.name, "approach": approach_name_used}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

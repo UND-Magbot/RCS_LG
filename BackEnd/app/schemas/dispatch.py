@@ -76,12 +76,25 @@ class DispatchPOIStatusOut(BaseModel):
     robot_name: Optional[str] = None
     robot_ip: Optional[str] = None  # 강제 제어용 — /api/robots/remote/* 호출
     robot_battery: Optional[int] = None
+    rack_present: bool = False  # 이 작업지점에 랙이 놓여 있음 — 치우기 전엔 호출 불가
     with_rack: Optional[bool] = None  # 활성 세션의 with_rack 모드
     session_status: Optional[str] = None
     target_poi_id: Optional[int] = None
     target_poi_name: Optional[str] = None
     available_pois: list[POIBrief] = Field(default_factory=list)
     occupied_poi_ids: list[int] = Field(default_factory=list)
+    # 전방 장애물로 멈춰 있는 로봇 알림 — 태블릿이 배너로 계속 띄운다(2026-09-08 LG 요청).
+    # 치우면 목록에서 빠지고 배너도 사라진다. [{robot_name, seconds, distance_m}]
+    safety_alerts: list[dict] = Field(default_factory=list)
+
+    # ── 2026-08-24 현장 배치 대응 ─────────────────────────────
+    # 호출 버튼은 R(랙 보관), [확인] 버튼은 J(작업지점)에 둔다. R 태블릿은
+    # 100m 떨어진 짝 J 의 상황을 알아야 호출 가능 여부를 판단할 수 있다.
+    poi_type: str = "jack"                      # jack / standby
+    paired_poi_id: Optional[int] = None
+    paired_poi_name: Optional[str] = None
+    paired_state: Optional[str] = None          # 짝 POI 의 state (R 태블릿용)
+    rack_occupied_at: Optional[datetime] = None
     available_robot_count: int = 0
 
 
@@ -115,6 +128,18 @@ class POIConsoleItem(BaseModel):
     can_confirm: bool = False           # 지금 [확인] 가능한지
     next_poi_name: Optional[str] = None  # 확인 시 갈 다음 경유지
     is_last: bool = False               # 마지막 경유지(확인 시 종료)
+
+    # ── 2026-08-24 현장 배치 대응 ─────────────────────────────
+    # 현장은 R(랙 보관)과 J(작업지점)가 100m 떨어져 있고, R 과 J 가 서로
+    # 다른 구역에 짝지어 배치된다. 그래서 호출 버튼은 랙이 눈앞에 있는 R 에,
+    # 랙을 치웠다는 [확인] 버튼은 J 에 둔다.
+    poi_type: str = "jack"                      # jack(작업지점) / standby(랙 보관)
+    paired_poi_id: Optional[int] = None         # 짝 POI (R↔J)
+    paired_poi_name: Optional[str] = None
+    # 짝 작업지점(J)에 랙이 아직 놓여 있나. R 타일은 이 값이 True 면 호출을 막고,
+    # J 타일은 이 값이 True 면 [확인] 버튼만 보여준다. (양쪽 다 같은 J 기준 값)
+    rack_occupied: bool = False
+    rack_occupied_at: Optional[datetime] = None
 
 
 class ConsoleRobotItem(BaseModel):
@@ -184,6 +209,28 @@ class TabletSlotOut(BaseModel):
     poi_id: int
     poi_name: Optional[str] = None
     alias: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+# ── 작업지점(J) ↔ 랙 보관(R) 매핑 (2026-08-24 시나리오) ──
+
+
+class JobPointIn(BaseModel):
+    """매핑 등록/수정 요청."""
+    area_id: Optional[int] = None
+    j_poi_name: str
+    r_poi_name: str
+
+
+class JobPointOut(BaseModel):
+    """매핑 + 현재 랙 점유 상태."""
+    area_id: Optional[int] = None
+    j_poi_name: str
+    r_poi_name: str
+    occupied: bool = False
+    occupied_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True

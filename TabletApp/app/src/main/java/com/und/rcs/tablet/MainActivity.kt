@@ -21,8 +21,22 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
 
-    // 빌드 flavor 로 결정: "console"(관리자 콘솔) / "robot"(로봇 부착 태블릿)
-    private val isConsole: Boolean get() = BuildConfig.APP_MODE == "console"
+    // 빌드 flavor 로 결정되는 동작 모드
+    //   "console" — 관리자 콘솔        → /api/dispatch/console            (서버주소만)
+    //   "robot"   — 로봇 부착 태블릿    → /api/dispatch/robot-tablet/{id}  (서버주소 + 로봇ID)
+    //   "poi"     — 위치별 태블릿       → /api/dispatch/tablet/poi/{id}    (서버주소 + POI ID)
+    //
+    // 2026-08-24 에 "poi" 를 추가했다. 현장은 R1·R2(호출) / J1·J2(확인) 네 곳에
+    // 각각 태블릿을 두는데, 기존 두 모드로는 그 화면을 열 수 없었다.
+    private val mode: String get() = BuildConfig.APP_MODE
+    private val isConsole: Boolean get() = mode == "console"
+    private val isPoi: Boolean get() = mode == "poi"
+
+    /** 이 모드가 서버주소 말고 ID 를 하나 더 받아야 하나 */
+    private val needsId: Boolean get() = !isConsole
+
+    /** 그 ID 를 SharedPreferences 에 어떤 키로 저장할지 */
+    private val idKey: String get() = if (isPoi) "poi_id" else "robot_id"
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -49,32 +63,22 @@ class MainActivity : AppCompatActivity() {
 
         val prefs = getSharedPreferences("config", Context.MODE_PRIVATE)
         val serverUrl = prefs.getString("server_url", "") ?: ""
+        val savedId = prefs.getString(idKey, "") ?: ""
 
-        if (isConsole) {
-            // 관리자 콘솔 — 서버 주소만 필요
-            if (serverUrl.isEmpty()) {
-                showConfigDialog(prefs) { url, id -> loadPage(url, id) }
-            } else {
-                loadPage(serverUrl, "")
-            }
+        if (serverUrl.isEmpty() || (needsId && savedId.isEmpty())) {
+            showConfigDialog(prefs) { url, id -> loadPage(url, id) }
         } else {
-            // 로봇 부착 태블릿 — 서버 주소 + 로봇 ID
-            val robotId = prefs.getString("robot_id", "") ?: ""
-            if (serverUrl.isEmpty() || robotId.isEmpty()) {
-                showConfigDialog(prefs) { url, id -> loadPage(url, id) }
-            } else {
-                loadPage(serverUrl, robotId)
-            }
+            loadPage(serverUrl, savedId)
         }
     }
 
-    private fun loadPage(serverUrl: String, robotId: String) {
+    private fun loadPage(serverUrl: String, id: String) {
         webView.webViewClient = WebViewClient()
         val base = serverUrl.trimEnd('/')
-        val url = if (isConsole) {
-            "$base/api/dispatch/console"
-        } else {
-            "$base/api/dispatch/robot-tablet/$robotId"
+        val url = when (mode) {
+            "console" -> "$base/api/dispatch/console"
+            "poi"     -> "$base/api/dispatch/tablet/poi/$id"
+            else      -> "$base/api/dispatch/robot-tablet/$id"
         }
         webView.loadUrl(url)
     }
@@ -105,20 +109,33 @@ class MainActivity : AppCompatActivity() {
         layout.addView(label("서버 주소"))
         layout.addView(etUrl)
 
-        // 로봇 태블릿 모드일 때만 로봇 ID 입력란 표시
-        val etId: EditText? = if (!isConsole) {
+        // 콘솔 말고는 ID 를 하나 더 받는다 (로봇 ID / POI ID)
+        val etId: EditText? = if (needsId) {
             EditText(this).apply {
-                setText(prefs.getString("robot_id", ""))
-                hint = "예: 1, 2, 3 … (로봇 ID)"
+                setText(prefs.getString(idKey, ""))
+                hint = if (isPoi) "관제 화면의 위치 ID (예: R1, J1 의 POI ID)"
+                       else "예: 1, 2, 3 … (로봇 ID)"
                 textSize = 22f
                 inputType = android.text.InputType.TYPE_CLASS_NUMBER
             }.also {
-                layout.addView(label("로봇 ID"))
+                layout.addView(label(if (isPoi) "위치(POI) ID" else "로봇 ID"))
                 layout.addView(it)
+                if (isPoi) {
+                    layout.addView(TextView(this).apply {
+                        text = "이 태블릿을 놓을 자리의 POI ID 를 넣으세요.\n" +
+                               "R(랙 보관) 이면 [로봇 호출], J(작업지점) 이면 [확인] 화면이 뜹니다."
+                        textSize = 13f
+                        setPadding(0, (6 * dp).toInt(), 0, 0)
+                    })
+                }
             }
         } else null
 
-        val title = if (isConsole) "관리자 콘솔 설정" else "로봇 태블릿 설정"
+        val title = when (mode) {
+            "console" -> "관리자 콘솔 설정"
+            "poi"     -> "위치 태블릿 설정"
+            else      -> "로봇 태블릿 설정"
+        }
 
         AlertDialog.Builder(this)
             .setTitle(title)
@@ -127,10 +144,10 @@ class MainActivity : AppCompatActivity() {
             .setPositiveButton("시작") { _, _ ->
                 val url = etUrl.text.toString().trim().trimEnd('/')
                 val id = etId?.text?.toString()?.trim() ?: ""
-                val ok = url.isNotEmpty() && (isConsole || id.isNotEmpty())
+                val ok = url.isNotEmpty() && (!needsId || id.isNotEmpty())
                 if (ok) {
                     val edit = prefs.edit().putString("server_url", url)
-                    if (!isConsole) edit.putString("robot_id", id)
+                    if (needsId) edit.putString(idKey, id)
                     edit.apply()
                     onConfirm(url, id)
                 } else {

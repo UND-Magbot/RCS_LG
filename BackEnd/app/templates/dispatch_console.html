@@ -20,6 +20,8 @@
     .robots-badge {
       font-size: clamp(12px, 1.5vw, 16px); background: #1e3a5a; color: #6db5ff;
       padding: 6px 14px; border-radius: 999px; font-weight: 600; white-space: nowrap;
+      /* 태블릿 앱이 우측 상단에 띄우는 [설정] 버튼과 겹치지 않도록 여백 확보 */
+      margin-right: clamp(64px, 8.5vw, 170px);
     }
     .robots-badge.zero { background: #4d2a1e; color: #ffa46d; }
 
@@ -91,6 +93,24 @@
     .dpad-btn.stop { background: #3a2530; }
     .dpad-spacer { width: clamp(72px, 20vw, 96px); }
     .rc-status { margin-top: 12px; text-align: center; color: #6db5ff; font-size: 14px; min-height: 18px; }
+    /* 주행 음성 안내 */
+    .vc-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+    .vc-row:last-of-type { margin-bottom: 0; }
+    .vc-toggle { flex: 1; display: flex; align-items: center; gap: 8px; color: #cfe0ff; font-size: 15px; font-weight: 700; cursor: pointer; }
+    .vc-toggle input { width: 20px; height: 20px; accent-color: #2f6fff; cursor: pointer; }
+    .vc-label { width: 68px; flex-shrink: 0; color: #9fb0c8; font-size: 13px; }
+    .vc-range { flex: 1; accent-color: #2f6fff; cursor: pointer; }
+    .vc-value { width: 44px; flex-shrink: 0; text-align: right; color: #cfe0ff; font-size: 14px; font-weight: 700; }
+    /* 전방 장애물로 멈춘 로봇 배너 (2026-09-08 LG 요청) — 치울 때까지 계속 뜬다 */
+    .sf-alert { display:none; background:#3a1512; border:2px solid #b3261e; color:#ffd7d3;
+                border-radius:10px; padding:12px 16px; margin:0 0 12px;
+                font-size:16px; font-weight:700; line-height:1.5; }
+    .sf-alert.show { display:block; }
+    .sf-alert .sf-sub { font-weight:500; opacity:.85; }
+
+    .vc-hint { margin-top: 8px; color: #6b7b91; font-size: 12px; line-height: 1.5; }
+    .vc-off { opacity: 0.45; pointer-events: none; }
+    .vc-select { flex: 1; background: #1f2733; color: #cfe0ff; border: 1px solid #34405a; border-radius: 7px; padding: 8px 10px; font-size: 14px; cursor: pointer; }
     .grid {
       display: grid;
       gap: clamp(8px, 1.2vw, 16px);
@@ -129,7 +149,8 @@
       padding: clamp(9px, 1.4vh, 14px); font-size: clamp(13px, 1.7vw, 18px); font-weight: 600;
       color: #fff; cursor: pointer; width: 100%;
     }
-    .btn:active { transform: scale(0.98); }
+    .btn:active:not(:disabled) { transform: scale(0.98); }
+    .btn:disabled { opacity: 0.35; cursor: not-allowed; box-shadow: none; }
     .btn-call   { background: #2f6fff; }
     .btn-reserve{ background: #b9852b; }
     .btn-cancel { background: #4a5568; }
@@ -181,6 +202,8 @@
     <h1>배차 콘솔</h1>
     <span class="robots-badge" id="robots-badge">가용 로봇 -</span>
   </header>
+
+  <div class="sf-alert" id="sf-alert"></div>
   <div class="content">
     <main>
       <div class="grid" id="grid"></div>
@@ -198,6 +221,21 @@
       <div class="sub" id="call-hint" style="margin-bottom:14px"></div>
       <div id="call-buttons" style="display:flex; flex-direction:column; gap:10px"></div>
       <button class="btn btn-ghost" id="call-cancel" style="margin-top:16px; background:transparent; color:#8a93a6">취소</button>
+    </div>
+  </div>
+
+  <!-- 랙 점유 알람 모달 (2026-08-24 시나리오) -->
+  <div class="modal-overlay" id="rack-modal">
+    <div class="modal">
+      <h2 id="rack-title">작업지역에 랙이 있어요</h2>
+      <div class="sub" style="margin-bottom:18px; line-height:1.6">
+        랙을 치운 후 <b>확인</b> 버튼을 눌러주세요.<br>
+        확인을 누르면 호출이 이어서 진행됩니다.
+      </div>
+      <div style="display:flex; flex-direction:column; gap:10px">
+        <button class="btn btn-call" id="rack-confirm">확인 — 랙을 치웠습니다</button>
+      </div>
+      <button class="btn btn-ghost" id="rack-cancel" style="margin-top:16px; background:transparent; color:#8a93a6">취소</button>
     </div>
   </div>
 
@@ -227,6 +265,32 @@
     </div>
   </div>
 
+  <!-- 배차 작업 강제 정리 확인 모달 -->
+  <!-- 브라우저 기본 confirm() 은 태블릿 WebView 에서 창이 안 뜨고
+       곧바로 false 를 돌려준다(WebChromeClient 미설정).
+       그래서 버튼이 안 눌리는 것처럼 보였다 → 자체 모달로 대체. -->
+  <!-- z-index 60 : 원격제어 모달(50) 안의 버튼에서 열리므로 그 위에 떠야 한다.
+       같은 z-index 면 DOM 뒤쪽인 remote-modal 이 위로 올라와 가려진다. -->
+  <div class="modal-overlay" id="clear-modal" style="z-index:60">
+    <div class="modal">
+      <h2>배차 작업 강제 종료</h2>
+      <div class="sub" style="margin-bottom:14px">
+        실행 중인 배차 작업을 삭제합니다.<br/>
+        <b>로봇은 움직이지 않고</b> 작업 기록만 정리됩니다.
+      </div>
+      <div class="sub" style="margin-bottom:18px; padding:12px; border-radius:10px;
+                              background:#3a2a12; border:1px solid #6b5320; color:#ffd36d; line-height:1.6">
+        ⚠ 로봇이 <b>랙을 들고 있으면</b> 그대로 든 채 멈춰 있습니다.<br/>
+        바로 호출하면 랙 픽업이 실패하니
+        <b>[대기장소 복귀]</b> 로 반납한 뒤 호출하세요.
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-end" id="clear-ok">강제 종료</button>
+        <button class="btn btn-ghost" id="clear-cancel">취소</button>
+      </div>
+    </div>
+  </div>
+
   <!-- 원격 제어 모달 -->
   <div class="modal-overlay" id="remote-modal">
     <div class="modal remote">
@@ -244,7 +308,8 @@
         <div class="rc-section">
           <h4>이동 제어</h4>
           <div class="rc-grid">
-            <button class="rc-action danger" data-rc="stop">작업 정지</button>
+            <button class="rc-action danger" id="rc-pause" data-rc="pause">작업 정지 (일시정지)</button>
+            <button class="rc-action" id="rc-resume" data-rc="resume" style="display:none; border-color:rgba(61,224,164,0.5); color:#3de0a4">재개 (이어서 진행)</button>
             <button class="rc-action" data-rc="dock">충전소 복귀</button>
             <button class="rc-action" data-rc="standby">대기장소 복귀</button>
             <button class="rc-action" data-rc="restart">시스템 재시작</button>
@@ -287,6 +352,97 @@
             <button class="rc-action up" data-rc="jack_up">잭 업</button>
             <button class="rc-action down" data-rc="jack_down">잭 다운</button>
           </div>
+        </div>
+      </div>
+
+      <!-- 주행 중 음성 안내 (자동/원격 공통) -->
+      <div class="rc-section">
+        <h4>주행 음성 안내</h4>
+        <div class="vc-row">
+          <label class="vc-toggle">
+            <input type="checkbox" id="vc-enabled">
+            <span>주행 중 안내 켜기</span>
+          </label>
+          <button class="rc-action" id="vc-test" style="width:auto; padding:6px 14px">미리듣기</button>
+        </div>
+        <div class="vc-row">
+          <span class="vc-label">안내 음성</span>
+          <select id="vc-audio" class="vc-select"></select>
+        </div>
+        <div class="vc-row">
+          <span class="vc-label">음량</span>
+          <input type="range" id="vc-volume" min="0" max="100" step="5" class="vc-range">
+          <span class="vc-value" id="vc-volume-val">80</span>
+        </div>
+        <div class="vc-row">
+          <span class="vc-label">반복 주기</span>
+          <input type="range" id="vc-interval" min="3" max="20" step="1" class="vc-range">
+          <span class="vc-value" id="vc-interval-val">5초</span>
+        </div>
+        <div class="vc-row">
+          <span class="vc-label">서버 주소</span>
+          <input type="text" id="vc-server-url" class="vc-select" style="flex:1"
+                 placeholder="비워두면 자동 (예: http://10.115.244.11:8002)">
+        </div>
+        <div class="vc-hint" id="vc-hint">로봇이 움직이는 동안 주기마다 안내가 나갑니다.</div>
+        <div class="vc-hint">
+          <b>서버 주소</b>는 <b>로봇이 음원을 받으러 올 주소</b>입니다. 로봇과 서버가 같은 공유기면
+          비워두세요(자동으로 찾습니다). <b>공유기가 서로 다르면</b> 자동 판별이 서버의 내부 주소를
+          알려줘서 로봇이 음원을 못 받습니다 — 그때 <b>서버 공유기의 LTE 주소 + 포워딩 포트</b>를 적으세요.
+          로봇 내장 음성을 고른 경우엔 서버에서 파일을 받아가지 않으므로 이 값과 무관합니다.
+        </div>
+      </div>
+
+      <!-- 주행 속도 (로봇별) -->
+      <div class="rc-section">
+        <h4>주행 속도</h4>
+        <div class="vc-row">
+          <span class="vc-label">최고 속도</span>
+          <input type="range" id="sp-speed" min="0.3" max="1.2" step="0.1" class="vc-range">
+          <span class="vc-value" id="sp-speed-val">-</span>
+        </div>
+        <div class="vc-hint">
+          느릴수록 정지거리가 짧아 안전합니다. 이 로봇에만 적용되며, 서버를 다시 켜도 유지됩니다.
+        </div>
+      </div>
+
+      <!-- 전방 장애물 안전거리 (Yellow/Red) -->
+      <div class="rc-section">
+        <h4>전방 장애물 안전거리</h4>
+        <div class="vc-row">
+          <label class="vc-toggle">
+            <input type="checkbox" id="sz-enabled">
+            <span>사용</span>
+          </label>
+          <span class="vc-value" id="sz-zone">-</span>
+        </div>
+        <div class="vc-row">
+          <span class="vc-label">서행 거리</span>
+          <input type="range" id="sz-yellow" min="0.5" max="6" step="0.1" class="vc-range">
+          <span class="vc-value" id="sz-yellow-val">-</span>
+        </div>
+        <div class="vc-row">
+          <span class="vc-label">정지 거리</span>
+          <input type="range" id="sz-red" min="0.7" max="3" step="0.1" class="vc-range">
+          <span class="vc-value" id="sz-red-val">-</span>
+        </div>
+        <div class="vc-row">
+          <span class="vc-label">서행 속도</span>
+          <input type="range" id="sz-slow" min="0.1" max="1.2" step="0.05" class="vc-range">
+          <span class="vc-value" id="sz-slow-val">-</span>
+        </div>
+        <div class="vc-row">
+          <span class="vc-label">감지 폭</span>
+          <input type="range" id="sz-band" min="0.2" max="1.5" step="0.05" class="vc-range">
+          <span class="vc-value" id="sz-band-val">-</span>
+        </div>
+        <div class="vc-hint">
+          로봇 정면 <b>직사각형 밴드</b> 안의 장애물만 봅니다(부채꼴이면 통로 벽이 계속 잡혀 내내 감속합니다).
+          정지 거리는 0.7 m 아래로 못 내립니다 — 0.7 m/s 기준 실제 정지거리가 0.61 m 입니다.
+          <b>사람과 사물은 구분하지 못합니다</b>. 인증된 안전장치가 아니라 소프트웨어 보조 정지입니다.<br>
+          작업지점(랙 위치·충전소·대기장소) <b>반경 1.9 m 안에서는 판정하지 않습니다</b> —
+          랙 밑 이탈·정렬 재시도가 막히기 때문입니다. 그때는 위 표시가
+          <span style="color:#9aa4b2">작업지점(해제)</span> 로 바뀝니다.
         </div>
       </div>
 
@@ -347,7 +503,30 @@
         grid.innerHTML = '<div class="empty-state">작업 위치(POI)가 없습니다. 맵 관리에서 jack POI를 등록하세요.</div>';
         return;
       }
-      grid.innerHTML = data.pois.map(tileHtml).join("");
+      // 내용이 그대로면 DOM 을 다시 만들지 않는다.
+      // 폴링마다(3초) 타일 전체를 새로 그리면 버튼이 순간적으로 다시 그려져
+      // 누르는 중에 깜빡이거나 클릭이 씹힐 수 있다.
+      const html = orderedPois().map(tileHtml).join("");
+      if (html !== lastGridHtml) {
+        lastGridHtml = html;
+        grid.innerHTML = html;
+      }
+    }
+    let lastGridHtml = "";
+
+    // 배송 모드에서는 R→J 짝끼리 붙여 보여준다.
+    // (이름순 그대로면 J1, J2, R1, R2 로 흩어져 어느 R 이 어느 J 와 짝인지 안 보임)
+    function orderedPois() {
+      const list = data.pois || [];
+      if (!list.some(p => p.paired_poi_name)) return list;
+      const out = [], seen = new Set();
+      list.filter(p => p.poi_type === "standby").forEach(r => {
+        out.push(r); seen.add(r.poi_id);
+        const j = r.paired_poi_id ? list.find(x => x.poi_id === r.paired_poi_id) : null;
+        if (j && !seen.has(j.poi_id)) { out.push(j); seen.add(j.poi_id); }
+      });
+      list.forEach(p => { if (!seen.has(p.poi_id)) out.push(p); });
+      return out;
     }
 
     // ── 로봇 사이드바 ──────────────────────────────────
@@ -398,8 +577,137 @@
       openRemoteModal(btn.dataset.ctrlIp, btn.dataset.ctrlName);
     });
 
+    // 짝 POI 타일 (R↔J). 현장은 R 과 J 가 100m 떨어져 있어서, R 옆 작업자가
+    // J 상황을 볼 수 있어야 한다. 그래서 R 타일이 짝 J 의 상태를 함께 보여준다.
+    function pairedTile(p) {
+      return p.paired_poi_id ? poiById(p.paired_poi_id) : null;
+    }
+
+    function hhmm(iso) {
+      if (!iso) return "";
+      const d = new Date(iso);
+      if (isNaN(d)) return "";
+      return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+    }
+
+    // ── R 타일 (랙 보관 위치) — 호출 버튼이 여기 있다 ──────────────
+    //   작업자는 랙이 눈앞에 있는 R 옆에서 호출한다(J 는 100m 밖이라 안 보임).
+    //   짝 J 에 아직 랙이 남아 있으면 호출 버튼을 아예 그리지 않는다.
+    function rackTileHtml(p) {
+      const j = pairedTile(p);
+      const jName = p.paired_poi_name || "작업지점";
+      let badge = "대기", cls = "empty", body = "";
+
+      if (p.rack_occupied) {
+        badge = jName + " 정리 대기";
+        cls = "reserved";
+        const t = hhmm(p.rack_occupied_at);
+        // 버튼을 지우지 않고 비활성으로 남긴다 — "여기가 호출 자리인데 지금은 못 누른다"가
+        // 바로 보여야 작업자가 화면을 잘못 읽지 않는다.
+        body = `
+          <div class="sub"><b>${jName}</b> 에 랙이 있습니다.<br/>
+          ${jName} 에서 치우고 <b>[확인]</b> 을 눌러야 호출됩니다.${t ? `<br/><span style="opacity:.7">(${t} 하차)</span>` : ""}</div>
+          <button class="btn btn-call" disabled>로봇 호출 — ${jName} 정리 필요</button>`;
+      } else if (p.state === "reserved" || (j && j.state === "reserved")) {
+        // p.state 도 함께 본다 — 호출을 눌러 예약된 직후 낙관적 반영은 R 타일에 찍히는데,
+        // 짝 J 는 다음 폴링 전까지 아직 empty 라서 이 검사가 없으면 버튼이 되돌아가 깜빡인다.
+        badge = "예약됨";
+        cls = "reserved";
+        body = `
+          <div class="sub">예약됨 — 로봇이 생기면<br/>자동으로 ${jName} 배송을 시작합니다</div>
+          <button class="btn btn-cancel" data-action="cancel" data-poi="${(j && j.poi_id) || p.paired_poi_id || p.poi_id}">예약 취소</button>`;
+      } else if (p.state === "calling" || (j && (j.state === "calling" || j.state === "arrived"))) {
+        // 로봇이 이 R 로 랙을 가지러 오는 중이거나, 이미 랙을 싣고 J 로 가는 중
+        const src = (p.state === "calling") ? p : j;
+        badge = "작업 중";
+        cls = "calling";
+        const here = (p.state === "calling");
+        body = `
+          <div class="robot-line">
+            <span class="robot-name">${(src && src.robot_name) || "로봇"}</span>
+            <span class="robot-batt">${(src && src.robot_battery != null) ? src.robot_battery + "%" : ""}</span>
+          </div>
+          <div class="sub">${here ? "랙을 가지러 오는 중…" : jName + " 로 배송 중…"}</div>
+          <button class="btn btn-call" disabled>로봇 호출 — 작업 중</button>`;
+      } else {
+        const canCall = data.available_robot_count > 0;
+        const label = canCall ? `로봇 호출 — ${jName} 로 배송` : "예약하기";
+        const bcls = canCall ? "btn-call" : "btn-reserve";
+        body = `
+          <div class="sub">랙을 <b>${jName}</b> 로 보냅니다</div>
+          <button class="btn ${bcls}" data-action="call" data-poi="${p.poi_id}">${label}</button>`;
+      }
+      return `
+        <div class="tile state-${cls}">
+          <div class="tile-head">
+            <span class="tile-name">${p.poi_name}</span>
+            <span class="tile-badge">${badge}</span>
+          </div>
+          <div class="tile-body">${body}</div>
+        </div>`;
+    }
+
+    // ── J 타일 (작업지점) — [확인] 버튼만. 호출은 R 에서 한다 ────────
+    function jobTileHtml(p) {
+      const rName = p.paired_poi_name || "랙 보관 위치";
+      let badge = stateLabel(p.state), cls = p.state, body = "";
+
+      // J 타일에는 [확인] **하나만** 둔다. 호출/예약/경유지 버튼은 절대 그리지 않는다.
+      // 버튼은 항상 같은 자리에 보이고, 랙이 실제로 놓였을 때만 활성화된다.
+      const canConfirm = !!p.rack_occupied;
+      let head = "";
+      let msg = "";
+
+      if (p.rack_occupied) {
+        badge = "랙 있음";
+        cls = "reserved";
+        const t = hhmm(p.rack_occupied_at);
+        msg = `랙이 놓여 있습니다.<br/>치운 후 확인을 눌러주세요.${t ? `<br/><span style="opacity:.7">(${t} 하차)</span>` : ""}`;
+      } else if (p.state === "reserved") {
+        msg = `예약됨 — 로봇이 생기면<br/>${rName} 에서 랙을 싣고 옵니다`;
+      } else if (p.state === "calling") {
+        head = `
+          <div class="robot-line">
+            <span class="robot-name">${p.robot_name || "로봇"}</span>
+            <span class="robot-batt">${p.robot_battery != null ? p.robot_battery + "%" : ""}</span>
+          </div>`;
+        msg = "랙을 싣고 오는 중…";
+      } else if (p.state === "arrived") {
+        head = `
+          <div class="robot-line">
+            <span class="robot-name">${p.robot_name || "로봇"}</span>
+            <span class="robot-batt">${p.robot_battery != null ? p.robot_battery + "%" : ""}</span>
+          </div>`;
+        msg = "도착 — 랙을 내려놓는 중…";
+      } else {
+        msg = `대기 중<br/><span style="opacity:.7">호출은 <b>${rName}</b> 에서 합니다</span>`;
+      }
+
+      body = `${head}
+        <div class="sub">${msg}</div>
+        <button class="btn btn-call" ${canConfirm ? `data-action="rack-clear" data-poi="${p.poi_id}"` : "disabled"}>확인 — 랙을 치웠습니다</button>`;
+      return `
+        <div class="tile state-${cls}">
+          <div class="tile-head">
+            <span class="tile-name">${p.poi_name}</span>
+            <span class="tile-badge">${badge}</span>
+          </div>
+          <div class="tile-body">${body}</div>
+        </div>`;
+    }
+
     function tileHtml(p) {
+      // 배송 모드(job_points 매핑 있음) — R 타일/J 타일로 갈라 그린다.
+      if (p.paired_poi_name) {
+        return (p.poi_type === "standby") ? rackTileHtml(p) : jobTileHtml(p);
+      }
+      return legacyTileHtml(p);   // 매핑 없는 POI = 기존 인터랙티브 모드 그대로
+    }
+
+    // 매핑이 없는 POI 용 — 종전 화면을 그대로 유지한다(롤백 경로 보존).
+    function legacyTileHtml(p) {
       const canCall = data.available_robot_count > 0;
+
       // 미래 목적지(다음 경유지/이동 목표)로 잡힌 곳만 "경유지 예약"으로 표시.
       // 출발 중인 로봇의 current 위치(occupied 엔 있지만 reserved 엔 없음)는 제외.
       const reserved = new Set(data.reserved_poi_ids || []);
@@ -473,7 +781,29 @@
       else if (action === "route") openRouteModal(poiId);
       else if (action === "end") openEndModal(poiId);
       else if (action === "confirm") doConfirm(parseInt(btn.dataset.robot), btn.dataset.last === "1", poiId);
+      else if (action === "rack-clear") doRackCleared(poiId);
     });
+
+    // ── J 타일 [확인] — 작업자가 랙을 치웠다는 확인 ──────────────
+    // 랙 감지 센서가 없어 시스템은 치웠는지 알 수 없다. 이 버튼이 유일한 해제 수단이며,
+    // 풀려야 짝 R 타일의 호출 버튼이 다시 활성화된다.
+    async function doRackCleared(poiId) {
+      const p = poiById(poiId);
+      const pairId = p && p.paired_poi_id;
+      // 낙관적 반영 — J 와 짝 R 타일 양쪽이 각자 같은 값을 들고 있으므로 둘 다 갱신
+      patchPoi(poiId, { rack_occupied: false, rack_occupied_at: null });
+      if (pairId) patchPoi(pairId, { rack_occupied: false, rack_occupied_at: null });
+      pendingActions++;
+      try {
+        await api(`/api/dispatch/poi/${poiId}/rack-cleared`, { method: "POST" });
+        toast(`${p ? p.poi_name : "작업지점"} 정리 확인 — ${p && p.paired_poi_name ? p.paired_poi_name + " 에서 " : ""}호출할 수 있습니다`);
+      } catch (e) {
+        toast("실패: " + e.message);
+      } finally {
+        pendingActions--;
+        refresh(true);
+      }
+    }
 
     // ── 콘솔에서 로봇 태블릿 [확인] 대행 ────────────────
     async function doConfirm(robotId, isLast, poiId) {
@@ -495,9 +825,24 @@
       }
     }
 
-    // ── 호출/예약 모달 ─────────────────────────────────
+    // ── 호출/예약 ──────────────────────────────────────
     let callPoiId = null;
+
+    // 배송 모드(매핑 있음)는 선택지가 [리프팅 · 렉 포함] 하나뿐이라 모달을 띄우지 않는다.
+    //   · 🍽 서빙 호출  — 로봇이 lifting 1대뿐이라 이 공정에 없음
+    //   · ⬜ 렉 없이    — 배송은 항상 랙을 싣고 간다
+    // 매핑이 없는 POI 는 기존 모달을 그대로 쓴다(롤백 경로 보존).
     function openCallModal(poiId) {
+      const p = poiById(poiId);
+      if (p && p.paired_poi_name) {
+        callPoiId = poiId;
+        doCall("lifting", true);
+        return;
+      }
+      openCallModalLegacy(poiId);
+    }
+
+    function openCallModalLegacy(poiId) {
       callPoiId = poiId;
       const p = poiById(poiId);
       const lift = data.available_lifting_count || 0;
@@ -539,6 +884,14 @@
 
       // 낙관적 반영 — 누르는 즉시 화면 전환 (가용 0대면 예약, 아니면 호출)
       const willReserve = (data.available_robot_count || 0) === 0;
+      if (!willReserve) {
+        // 이 호출이 로봇 1대를 가져간다 → 가용 수를 먼저 줄인다.
+        // 안 줄이면 다음 폴링(2초, 요청이 느리면 더)까지 **다른 R 타일이 "로봇 호출"로
+        // 남아 있어** 작업자가 누를 수 있는 것처럼 보인다. 눌러도 서버가 예약으로
+        // 처리하니 사고는 아니지만, 화면이 사실과 다르게 보이는 구간이 생긴다.
+        data.available_robot_count = Math.max(0, (data.available_robot_count || 1) - 1);
+        data.available_lifting_count = Math.max(0, (data.available_lifting_count || 1) - 1);
+      }
       patchPoi(poiId, willReserve
         ? { state: "reserved", reserved: true, reserved_with_rack: !!withRack }
         : { state: "calling", session_status: "starting", robot_name: null, robot_battery: null });
@@ -557,7 +910,12 @@
           toast(`${r.robot_name || "로봇"} 호출 (${label})`);
         }
       } catch (e) {
-        toast("실패: " + e.message);
+        // 작업지역에 랙이 남아 있어 배차가 거부된 경우 — 치움 확인 모달을 띄운다
+        if (String(e.message || "").indexOf("작업지역에 랙이 있어요") >= 0) {
+          openRackModal(poiId, robotType, withRack);
+        } else {
+          toast("실패: " + e.message);
+        }
       } finally {
         pendingActions--;
         refresh(true);  // 실제 상태 동기화 (실패 시 자동 복원)
@@ -565,6 +923,51 @@
     }
     document.getElementById("call-cancel").onclick =
       () => document.getElementById("call-modal").classList.remove("show");
+
+    // ── 랙 점유 알람 (2026-08-24 시나리오) ──────────────
+    // 로봇이 작업지점에 랙을 내려놓으면 그 지점은 '점유'로 표시된다.
+    // 랙 감지 센서가 없어 작업자가 치웠는지 시스템이 알 수 없으므로,
+    // 이 모달의 [확인] 이 유일한 해제 수단이다.
+    let rackPoiId = null, rackRetry = null;
+
+    function openRackModal(poiId, robotType, withRack) {
+      rackPoiId = poiId;
+      rackRetry = { robotType: robotType, withRack: withRack };
+      const p = (data && data.pois || []).find(x => x.poi_id === poiId);
+      // R 타일에서 떴으면 랙이 남아 있는 곳은 R 이 아니라 짝 J 다 — 그 이름을 보여준다.
+      const where = (p && p.poi_type === "standby" && p.paired_poi_name)
+        ? p.paired_poi_name : (p ? p.poi_name : "작업지역");
+      document.getElementById("rack-title").textContent = where + " 에 랙이 있어요";
+      document.getElementById("rack-modal").classList.add("show");
+    }
+
+    function closeRackModal() {
+      document.getElementById("rack-modal").classList.remove("show");
+      rackPoiId = null; rackRetry = null;
+    }
+
+    document.getElementById("rack-cancel").onclick = closeRackModal;
+
+    document.getElementById("rack-confirm").onclick = async () => {
+      const poiId = rackPoiId, retry = rackRetry;
+      closeRackModal();
+      if (!poiId) return;
+      pendingActions++;
+      try {
+        await api(`/api/dispatch/poi/${poiId}/rack-cleared`, { method: "POST" });
+        toast("확인 완료 — 다시 호출합니다");
+        // 해제만 하고 끝내면 사용자가 호출을 한 번 더 눌러야 한다. 이어서 자동 호출.
+        if (retry) {
+          callPoiId = poiId;
+          await doCall(retry.robotType, retry.withRack);
+        }
+      } catch (e) {
+        toast("실패: " + e.message);
+      } finally {
+        pendingActions--;
+        refresh(true);
+      }
+    };
 
     async function cancelReserve(poiId) {
       patchPoi(poiId, { state: "empty", reserved: false, reserved_with_rack: null });
@@ -730,17 +1133,257 @@
       sendTwist(0, 0);
     }
 
+    // ── 주행 음성 안내 ──────────────────────────────────
+    // 설정은 서버(system_settings.json)에 저장된다. 로봇별이 아니라 시스템 공통.
+    let vcLoaded = false;
+
+    function vcPaint(cfg) {
+      document.getElementById("vc-enabled").checked = !!cfg.enabled;
+      document.getElementById("vc-volume").value = cfg.volume;
+      document.getElementById("vc-volume-val").textContent = cfg.volume;
+      document.getElementById("vc-interval").value = cfg.interval_sec;
+      document.getElementById("vc-interval-val").textContent = cfg.interval_sec + "초";
+      const su = document.getElementById("vc-server-url");
+      if (document.activeElement !== su) su.value = cfg.server_url || "";
+      const cur = cfg.url ? cfg.url : "builtin:" + cfg.audio_id;
+      const sel = document.getElementById("vc-audio");
+      if ([...sel.options].some(o => o.value === cur)) sel.value = cur;
+      const src = cfg.url ? "서버 음원" : "로봇 내장 음성";
+      document.getElementById("vc-hint").textContent =
+        `로봇이 움직이는 동안 ${cfg.interval_sec}초마다 안내가 나갑니다. (${src})`;
+    }
+
+    async function vcLoadAudioList() {
+      if (vcLoaded) return;                 // 목록은 한 번만 받으면 된다
+      try {
+        const res = await fetch("/api/settings/voice/audio-list");
+        if (!res.ok) return;
+        const sel = document.getElementById("vc-audio");
+        sel.innerHTML = "";
+        for (const opt of await res.json()) {
+          const o = document.createElement("option");
+          o.value = opt.value; o.textContent = opt.label;
+          sel.appendChild(o);
+        }
+        vcLoaded = true;
+      } catch (e) { /* 목록을 못 받아도 나머지는 동작해야 한다 */ }
+    }
+
+    async function vcLoad() {
+      await vcLoadAudioList();
+      try {
+        const res = await fetch("/api/settings/voice");
+        if (!res.ok) return;
+        vcPaint(await res.json());
+      } catch (e) { /* 설정을 못 읽어도 모달은 열려야 한다 */ }
+    }
+
+    async function vcSave(changes) {
+      try {
+        const res = await fetch("/api/settings/voice", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(changes),
+        });
+        if (!res.ok) { rcStatus("설정 저장 실패"); return; }
+        vcPaint(await res.json());
+      } catch (e) { rcStatus("설정 저장 실패"); }
+    }
+
+    // 슬라이더는 끌 때마다 저장하면 요청이 쏟아지므로, 손을 뗀 뒤 한 번만 보낸다
+    let vcSaveTimer = null;
+    function vcSaveLater(changes) {
+      clearTimeout(vcSaveTimer);
+      vcSaveTimer = setTimeout(() => vcSave(changes), 400);
+    }
+
+    document.getElementById("vc-enabled").onchange = (e) => {
+      vcSave({ enabled: e.target.checked });
+      rcStatus(e.target.checked ? "주행 음성 안내 켬" : "주행 음성 안내 끔");
+    };
+    document.getElementById("vc-volume").oninput = (e) => {
+      document.getElementById("vc-volume-val").textContent = e.target.value;
+      vcSaveLater({ volume: Number(e.target.value) });
+    };
+    document.getElementById("vc-interval").oninput = (e) => {
+      document.getElementById("vc-interval-val").textContent = e.target.value + "초";
+      vcSaveLater({ interval_sec: Number(e.target.value) });
+    };
+    document.getElementById("vc-server-url").onchange = (e) => {
+      vcSave({ server_url: e.target.value.trim() });
+      rcStatus(e.target.value.trim() ? "서버 주소 저장됨" : "서버 주소 비움 — 자동 판별");
+    };
+    document.getElementById("vc-audio").onchange = (e) => {
+      vcSave({ audio_choice: e.target.value });
+      rcStatus("안내 음성 변경됨");
+    };
+    document.getElementById("vc-test").onclick = async () => {
+      if (!rcIp) return;
+      rcStatus("재생 요청 보냄");
+      try {
+        const res = await fetch(`/api/robots/voice/test/${rcIp}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ volume: Number(document.getElementById("vc-volume").value) }),
+        });
+        const d = await res.json();
+        rcStatus(d.ok ? "재생 명령 전송됨" : "재생 실패");
+      } catch (e) { rcStatus("재생 실패"); }
+    };
+
+    // ── 주행 속도 (로봇별) ─────────────────────────────
+    // POST 는 DB(robots.max_speed) 에도 저장한다. 서버 시작 때 startup 이 그 값을
+    // 로봇에 다시 밀어넣으므로, 여기서 바꾸면 재시작 후에도 유지된다.
+    function spPaint(v) {
+      const n = Number(v);
+      if (!isFinite(n)) return;
+      document.getElementById("sp-speed").value = n;
+      document.getElementById("sp-speed-val").textContent = n.toFixed(1) + " m/s";
+    }
+
+    async function spLoad() {
+      if (!rcIp) return;
+      try {
+        const res = await fetch(`/api/robots/speed/${rcIp}`);
+        if (!res.ok) return;
+        const d = await res.json();
+        spPaint(d.max_forward_velocity);
+      } catch (e) { /* 못 읽어도 모달은 열려야 한다 */ }
+    }
+
+    // 슬라이더는 끌 때마다 저장하면 요청이 쏟아지므로, 손을 뗀 뒤 한 번만 보낸다
+    let spSaveTimer = null;
+    document.getElementById("sp-speed").oninput = (e) => {
+      const v = Number(e.target.value);
+      document.getElementById("sp-speed-val").textContent = v.toFixed(1) + " m/s";
+      clearTimeout(spSaveTimer);
+      spSaveTimer = setTimeout(async () => {
+        if (!rcIp) return;
+        try {
+          const res = await fetch(`/api/robots/speed/${rcIp}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ max_forward_velocity: v }),
+          });
+          rcStatus(res.ok ? `주행 속도 ${v.toFixed(1)} m/s 적용` : "속도 변경 실패");
+        } catch (e2) { rcStatus("속도 변경 실패"); }
+      }, 400);
+    };
+
+    // ── 전방 장애물 안전거리 (Yellow/Red) ───────────────
+    const SZ_FIELDS = [
+      ["sz-yellow", "yellow_m", " m"],
+      ["sz-red", "red_m", " m"],
+      ["sz-slow", "slow_speed", " m/s"],
+      ["sz-band", "band_half_w", " m"],
+    ];
+
+    function szPaint(s) {
+      document.getElementById("sz-enabled").checked = !!s.enabled;
+      for (const [id, key, unit] of SZ_FIELDS) {
+        const v = Number(s[key]);
+        if (!isFinite(v)) continue;
+        document.getElementById(id).value = v;
+        document.getElementById(id + "-val").textContent = v.toFixed(2) + unit;
+      }
+    }
+
+    async function szLoad() {
+      try {
+        const res = await fetch("/api/settings/safety");
+        if (!res.ok) return;
+        szPaint(await res.json());
+      } catch (e) { /* 못 읽어도 모달은 열려야 한다 */ }
+    }
+
+    async function szSave(changes) {
+      try {
+        const res = await fetch("/api/settings/safety", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(changes),
+        });
+        if (!res.ok) {
+          let msg = "설정 저장 실패";
+          try { const j = await res.json(); msg = j.detail || msg; } catch (e) {}
+          rcStatus(msg);
+          szLoad();          // 거부됐으면 화면을 서버 값으로 되돌린다
+          return;
+        }
+        szPaint(await res.json());
+      } catch (e) { rcStatus("설정 저장 실패"); }
+    }
+
+    let szSaveTimer = null;
+    function szSaveLater(changes) {
+      clearTimeout(szSaveTimer);
+      szSaveTimer = setTimeout(() => szSave(changes), 400);
+    }
+
+    document.getElementById("sz-enabled").onchange = (e) => {
+      szSave({ enabled: e.target.checked });
+      rcStatus(e.target.checked ? "안전거리 감시 켬" : "안전거리 감시 끔");
+    };
+    for (const [id, key, unit] of SZ_FIELDS) {
+      document.getElementById(id).oninput = (e) => {
+        const v = Number(e.target.value);
+        document.getElementById(id + "-val").textContent = v.toFixed(2) + unit;
+        szSaveLater({ [key]: v });
+      };
+    }
+
+    // 현재 존 표시 — 이게 없으면 기능이 도는지 눈으로 확인할 방법이 없다
+    let szPollTimer = null;
+    // skip = 작업지점 반경 안이라 판정을 하지 않는 중.
+    // 이걸 "정상" 으로 보여주면 감시 중인 줄 알고 "왜 안 멈추지" 를 추적하게 된다.
+    const SZ_LABEL = { clear: "정상", yellow: "서행", red: "정지", skip: "작업지점(해제)" };
+    const SZ_COLOR = { clear: "#8bd17c", yellow: "#ffd36d", red: "#ff6b6b", skip: "#9aa4b2" };
+    function szStartPoll() {
+      szStopPoll();
+      const tick = async () => {
+        const el = document.getElementById("sz-zone");
+        if (!rcIp) return;
+        try {
+          const res = await fetch("/api/settings/safety/status");
+          if (!res.ok) return;
+          const all = await res.json();
+          const s = all[rcIp];
+          if (!s) { el.textContent = "-"; el.style.color = ""; return; }
+          // 판정 제외 중이면 어느 작업지점 때문인지 보여준다 (거리는 안 재고 있다)
+          let d = "";
+          if (s.zone === "skip") d = s.poi ? ` · ${s.poi}` : "";
+          else if (s.dist != null) d = ` · 앞 ${Number(s.dist).toFixed(2)} m`;
+          el.textContent = (SZ_LABEL[s.zone] || s.zone) + d;
+          el.style.color = SZ_COLOR[s.zone] || "";
+        } catch (e) { /* 폴링 실패는 조용히 */ }
+      };
+      tick();
+      // 300ms — 1초로 두면 존이 바뀌고도 최대 1초 뒤에 보여 실제보다 느려 보인다.
+      // status() 는 메모리 dict 복사라 서버 부하는 사실상 없다.
+      szPollTimer = setInterval(tick, 300);
+    }
+    function szStopPoll() {
+      if (szPollTimer) { clearInterval(szPollTimer); szPollTimer = null; }
+    }
+
     function openRemoteModal(ip, name) {
       rcIp = ip; rcName = name;
       document.getElementById("remote-title").textContent = "원격 제어 — " + name;
       setRcMode(false);
       document.getElementById("rc-status").textContent = "";
       document.getElementById("remote-modal").classList.add("show");
+      rcStartPausePoll();   // 정지/재개 버튼을 현재 상태에 맞춰 표시
+      vcLoad();             // 음성 설정을 서버에서 다시 읽어 화면에 반영
+      spLoad();             // 이 로봇의 현재 주행 속도를 읽어 슬라이더에 반영
+      szLoad();             // 안전거리 설정
+      szStartPoll();        // 현재 존 표시 시작
     }
     async function closeRemoteModal() {
       if (rcRemote) { stopMove(); await changeControlMode("auto"); }
       if (rcIp) rcPost(`twist-close/${rcIp}`);  // 유휴 조종 WS 정리
       document.getElementById("remote-modal").classList.remove("show");
+      rcStopPausePoll();
+      szStopPoll();
       rcIp = null;
     }
     document.getElementById("remote-close").onclick = closeRemoteModal;
@@ -755,8 +1398,15 @@
       const b = e.target.closest("[data-rc]");
       if (!b || !rcIp) return;
       const act = b.dataset.rc;
-      if (act === "stop") {
-        await rcPost(`cancel-move/${rcIp}`); await rcPost(`stop-all/${rcIp}`); rcStatus("작업 정지");
+      if (act === "pause") {
+        // 일시정지 — 현재 이동만 취소하고 그 자리에 세운다. 잭·배차 세션은 그대로.
+        // [재개] 하면 safe_move 가 같은 목적지로 다시 이동해 공정을 이어간다.
+        // (예전에는 stop-all 로 잭다운까지 해서 랙을 그 자리에 내려놓았다 → 2026-08-19 변경)
+        if (await rcPost(`pause/${rcIp}`)) { rcSetPaused(true); rcStatus("일시정지 — [재개] 를 누르면 이어서 진행합니다"); }
+        else rcStatus("일시정지 실패");
+      } else if (act === "resume") {
+        if (await rcPost(`resume/${rcIp}`)) { rcSetPaused(false); rcStatus("재개 — 하던 이동을 다시 시도합니다"); }
+        else rcStatus("재개 실패");
       } else if (act === "dock") { rcStatus(await rcPost(`dock/${rcIp}`) ? "충전소 복귀 명령 전송" : "실패"); }
       else if (act === "standby") { rcStatus(await rcPost(`return-to-standby/${rcIp}`) ? "대기장소 복귀 시작" : "실패"); }
       else if (act === "restart") { rcStatus(await rcPost(`relocalize/${rcIp}`) ? "시스템 재시작 중… (약 90초)" : "실패"); }
@@ -778,11 +1428,49 @@
     });
     document.getElementById("dpad-stop").onclick = stopMove;
 
-    // 배차 작업 강제 정리 (로봇 이동 없이 세션만 종료)
-    document.getElementById("rc-clear").onclick = async () => {
+    // ── 일시정지 상태 표시 ────────────────────────────
+    // 서버 메모리 플래그만 읽는 가벼운 조회. 관제 화면에서 정지시켜도 여기 버튼이 따라 바뀐다.
+    let rcPausePoll = null;
+
+    function rcSetPaused(p) {
+      const bp = document.getElementById("rc-pause");
+      const br = document.getElementById("rc-resume");
+      if (!bp || !br) return;
+      bp.style.display = p ? "none" : "";
+      br.style.display = p ? "" : "none";
+    }
+
+    async function rcRefreshPaused() {
       if (!rcIp) return;
-      if (!confirm("이 로봇의 실행 중인 배차 작업을 삭제할까요?\n(로봇은 움직이지 않고 작업 기록만 정리됩니다)")) return;
-      rcStatus(await rcPost(`clear-dispatch/${rcIp}`) ? "배차 작업을 정리했습니다" : "정리 실패");
+      try {
+        const res = await fetch(`/api/robots/remote/paused/${rcIp}`);
+        if (res.ok) rcSetPaused(!!(await res.json()).paused);
+      } catch (e) {}
+    }
+
+    function rcStartPausePoll() {
+      rcStopPausePoll();
+      rcRefreshPaused();
+      rcPausePoll = setInterval(rcRefreshPaused, 3000);
+    }
+
+    function rcStopPausePoll() {
+      if (rcPausePoll) { clearInterval(rcPausePoll); rcPausePoll = null; }
+    }
+
+    // 배차 작업 강제 정리 (로봇 이동 없이 세션만 종료)
+    document.getElementById("rc-clear").onclick = () => {
+      if (!rcIp) return;
+      document.getElementById("clear-modal").classList.add("show");
+    };
+    document.getElementById("clear-cancel").onclick =
+      () => document.getElementById("clear-modal").classList.remove("show");
+    document.getElementById("clear-ok").onclick = async () => {
+      document.getElementById("clear-modal").classList.remove("show");
+      if (!rcIp) return;
+      rcStatus(await rcPost(`clear-dispatch/${rcIp}`)
+        ? "작업을 정리했습니다 — 랙을 들고 있으면 [대기장소 복귀] 먼저"
+        : "정리 실패");
     };
 
     // ── 폴링 + 낙관적 반영 ─────────────────────────────
@@ -795,15 +1483,56 @@
       if (p) { Object.assign(p, changes); render(); }
     }
 
+    // 응답 순서 보장용 일련번호.
+    //
+    //   기존 코드는 요청을 **보내기 전에만** pendingActions 를 봤다. 그래서
+    //   폴링이 이미 날아간 상태에서 사용자가 버튼을 누르면, 조작 직전에 떠난
+    //   '낡은 응답' 이 뒤늦게 도착해 낙관적 화면을 덮어썼다.
+    //   → [예약 취소] 로 바뀌었다가 [예약하기] 로 되돌아가고, 액션의 refresh(true)
+    //     가 오면 다시 [예약 취소] … 버튼이 오락가락하던 원인.
+    //   같은 이유로 J 의 [확인] 버튼도 rack_occupied 가 옛 값으로 잠깐 덮여
+    //   비활성으로 깜빡였다.
+    let refreshSeq = 0;
+
     async function refresh(force) {
       if (!force && pendingActions > 0) return;
+      const seq = ++refreshSeq;
+      let d;
       try {
-        data = await api("/api/dispatch/console/status");
-        render();
-      } catch (e) { console.error(e); }
+        d = await api("/api/dispatch/console/status");
+      } catch (e) { console.error(e); return; }
+
+      // ① 나보다 늦게 출발한 요청이 이미 있으면 내 응답은 낡은 것 — 버린다
+      if (seq !== refreshSeq) return;
+      // ② 응답을 기다리는 사이 사용자가 조작했으면 낙관적 화면을 덮지 않는다.
+      //    그 조작이 끝나면 자기 refresh(true) 로 진짜 값을 가져온다.
+      if (!force && pendingActions > 0) return;
+
+      data = d;
+      render();
+    }
+
+    // 전방 장애물로 멈춘 로봇 — 서버가 목록을 계속 주므로 치울 때까지 배너가 떠 있는다
+    async function sfAlertTick() {
+      const el = document.getElementById("sf-alert");
+      if (!el) return;
+      try {
+        const res = await fetch("/api/settings/safety/alerts");
+        if (!res.ok) return;
+        const list = await res.json();
+        if (!list.length) { el.classList.remove("show"); el.textContent = ""; return; }
+        el.innerHTML = list.map(a => {
+          const d = (a.distance_m == null) ? "" : ` · 앞 ${Number(a.distance_m).toFixed(2)} m`;
+          return `⚠ <b>${a.robot_name}</b> 이(가) 장애물에 막혀 <b>${a.seconds}초째</b> 멈춰 있습니다`
+               + `<span class="sf-sub"> — 앞을 막고 있는 물건을 치워 주세요${d}</span>`;
+        }).join("<br>");
+        el.classList.add("show");
+      } catch (e) { /* 폴링 실패는 조용히 */ }
     }
 
     refresh(true);
+    sfAlertTick();
+    setInterval(sfAlertTick, 3000);
     pollTimer = setInterval(() => refresh(false), 3000);  // LTE: 부하·데이터 절감 (낙관적 UI가 즉시 반영하므로 체감 지장 없음)
   </script>
 </body>

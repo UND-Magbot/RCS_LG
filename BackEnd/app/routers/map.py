@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import math
+import os
 import uuid
 from pathlib import Path
 from typing import Any, Optional
@@ -124,7 +125,25 @@ def _update_robots_area(db: Session, area_id: str):
     db.commit()
 
 
-DOCKING_OFFSET = 0.3  # POI(로봇 도킹 위치) 기준 충전기는 yaw 반대 방향(뒤쪽)으로 오프셋
+# 충전소 POI(C1) 를 기준으로 재는 두 거리. 물리적으로 다른 값이라 상수를 나눠 둔다.
+#
+#   [충전독] ←── CHARGER_BEHIND_POI ──→ [C1] ←─ DOCK_POSE_OFFSET ─→ [도킹한 로봇 중심]
+#
+# 예전에는 DOCKING_OFFSET 하나(0.3)로 둘 다 처리했는데, 부호도 반대이고 실제 거리도
+# 55cm 대 8cm 로 전혀 달라 어느 쪽도 맞출 수 없었다. 값이 0.9 → 0.0 → 0.3 으로
+# 표류한 것도 그 때문으로 보인다.
+#
+# 2026-09-03 S300(crawler_s300_op5) 실측 — 도킹(isCharging=true) 상태에서 두 번 측정, 재현 확인:
+#   GET /services/query_pose/charger_pose → 충전독 본체 (0.375, 5.136)
+#   WS  /tracked_pose                     → 로봇 중심   (0.770, 5.388)
+#   DB  C1                                →             (0.838, 5.435)
+#   C1→충전독 55.1cm · C1→로봇중심 8.3cm · 충전독→로봇중심 46.8cm
+#
+# 기종이 바뀌면 CHARGER_BEHIND_POI 를 다시 재야 한다. 줄자 없이 구하는 법:
+#   |GET /device/info → robot.charge_contact.pose_2d[1]| + 0.099(충전독 두께) + C1↔로봇 오차
+#   S300: 0.369 + 0.099 + 0.083 = 0.551
+CHARGER_BEHIND_POI = 0.55  # C1 → 충전독 본체 (yaw 반대 방향). 로봇 오버레이 등록용
+DOCK_POSE_OFFSET = 0.0     # C1 = 로봇 도킹 위치로 본다. 남는 8.3cm 는 라이다가 보정하는 범위
 
 
 def _correct_map_grid_origin(db: Session, map_id: int) -> bool:
@@ -241,9 +260,9 @@ def _build_charging_overlay_features(charging_pois: list) -> list[dict]:
         # 도킹 포인트 = POI 위치 그대로 (로봇 도킹 시 중심)
         dock_x = poi.world_x
         dock_y = poi.world_y
-        # 충전기 = POI 기준 yaw 반대 방향으로 DOCKING_OFFSET만큼 뒤
-        charger_x = poi.world_x - DOCKING_OFFSET * math.cos(yaw_rad)
-        charger_y = poi.world_y - DOCKING_OFFSET * math.sin(yaw_rad)
+        # 충전기 = POI 기준 yaw 반대 방향으로 CHARGER_BEHIND_POI 만큼 뒤
+        charger_x = poi.world_x - CHARGER_BEHIND_POI * math.cos(yaw_rad)
+        charger_y = poi.world_y - CHARGER_BEHIND_POI * math.sin(yaw_rad)
         raw_dock_yaw = int(round((yaw_deg + 180) % 360))
         dock_yaw = str(360 if raw_dock_yaw == 0 else raw_dock_yaw)  # 0° → "360" (1SSS 방식)
 
@@ -288,10 +307,33 @@ def _build_charging_overlay_features(charging_pois: list) -> list[dict]:
     return features
 
 
+def _is_firewall_feature(feat: dict) -> bool:
+    """로봇 오버레이의 feature 가 '가상벽'인가.
+
+    판정은 LineString + properties.lineType 으로 한다(규격).
+    레거시 properties.type=="1" 도 우리가 예전에 내보낸 잘못된 형태라 같이 잡는다.
+    → 재전송 시 '기타'로 보존되지 않고 새 것으로 교체되어 중복이 쌓이지 않는다.
+    """
+    if (feat.get("geometry") or {}).get("type") != "LineString":
+        return False
+    props = feat.get("properties") or {}
+    if props.get("lineType") is not None:
+        return True
+    return str(props.get("type", "")) == "1"   # 레거시 (2026-09-04 이전 우리 코드)
+
+
 def _build_firewall_overlay_features(firewall_polygons: list) -> list[dict]:
     """가상벽(firewall) 폴리곤을 로봇 오버레이용 GeoJSON Feature 리스트로 변환.
 
-    AutoXing 로봇 가상벽: overlay type="1", LineString 좌표 (폴리곤 둘레를 닫힌 LineString으로)
+    AutoXing 가상벽: LineString + properties.lineType="2" (폴리곤 둘레를 닫힌 LineString으로)
+
+    ★ 2026-09-04 수정 — 예전에는 properties.type="1" 을 넣었는데 규격에 없는 값이었다.
+      로봇 파서는 도형마다 읽는 키가 다르다(실기·SDK·rb-admin 번들 3곳에서 확인):
+          Point      → properties.type        (9 충전소 / 36 도킹점 / 34 랙점)
+          LineString → properties.lineType    (2 = virtualWall, 1 은 virtualTrack 이라 뜻이 다름)
+          Polygon    → properties.regionType  (1 통행금지 / 2 서행 / 12 통행가능 …)
+      LineString 에서 type 은 아예 읽지 않으므로 예전 값은 무시됐다.
+      실기 확인: type="1" → rb-admin 에 청록색(미분류) / lineType="2" → 빨간색(가상벽).
     """
     features = []
     for poly in firewall_polygons:
@@ -317,7 +359,7 @@ def _build_firewall_overlay_features(firewall_polygons: list) -> list[dict]:
             "properties": {
                 "mapOverlay": True,
                 "name": poly.name or f"VW_{wall_id[:6]}",
-                "type": "1",
+                "lineType": "2",          # MapPolylineType.virtualWall
             },
         })
     return features
@@ -1082,6 +1124,41 @@ def api_delete_saved_map(map_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"맵 삭제 에 실패했습니다: {e}")
 
 
+@router.get("/maps/{map_id}/snap-wall")
+def api_snap_wall(map_id: int, x: float, y: float, radius: float = 0.5,
+                  db: Session = Depends(get_db)):
+    """(x, y) 근처의 실제 벽 좌표를 찾아준다 — 맵 편집기 '벽 스냅' 용.
+
+    가상벽을 벽에서 정확히 N cm 띄워 그리려면 벽이 어디인지 알아야 한다.
+    맵 이미지(occupancy grid)에서 가장 가까운 점유 픽셀을 찾아 월드 좌표로 돌려준다.
+    정확도는 맵 해상도(보통 0.05m)가 상한이다.
+
+    반환: {"found": true, "x":.., "y":.., "distance":..} 또는 {"found": false}
+    """
+    from app.services.map_image import snap_to_wall
+
+    rm = db.query(RobotMap).filter(RobotMap.id == map_id).first()
+    if not rm:
+        raise HTTPException(status_code=404, detail="맵을 찾을 수 없습니다.")
+    if not rm.grid_resolution:
+        raise HTTPException(status_code=400, detail="맵에 grid_resolution 이 없습니다.")
+
+    rel = (rm.image_url or "").replace("/static/", "")
+    png = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                       "static", *rel.split("/"))
+    if not rel or not os.path.exists(png):
+        raise HTTPException(status_code=404, detail="맵 이미지 파일이 없습니다.")
+
+    try:
+        hit = snap_to_wall(png, float(rm.grid_origin_x), float(rm.grid_origin_y),
+                           float(rm.grid_resolution), x, y, radius)
+    except Exception as e:
+        logger.warning(f"[snap-wall] 실패 map={map_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"맵 이미지 판독 실패: {e}")
+
+    return {"found": hit is not None, **(hit or {})}
+
+
 @router.post("/maps/{map_id}/sync-to-robot")
 def api_sync_map_to_robot(map_id: int, body: dict, db: Session = Depends(get_db)):
     """맵 동기화: 소스 로봇의 맵 데이터를 타겟 로봇에 동기화.
@@ -1156,10 +1233,22 @@ def api_sync_map_to_robot(map_id: int, body: dict, db: Session = Depends(get_db)
             detail="서버에 저장된 매핑 데이터가 없습니다. 맵을 다시 저장해주세요.",
         )
 
+    # ── 대상 로봇 맵 ID 결정 ──
+    # ★ 2026-09-04 수정 — 예전에는 이 대입이 아래(full 동기화 직전)에 있었는데
+    #   오버레이 읽기 블록이 그보다 먼저 이 변수를 참조해서 UnboundLocalError 가 났다.
+    #   그 때문에 "로봇 기존 오버레이 보존" 이 한 번도 동작한 적이 없다(로그에 늘 기타=0).
+    body_target_map_id = body.get("target_robot_map_id")
+    effective_robot_map_id = body_target_map_id or rm.robot_map_id
+
+    # 선택한 robot_map_id 를 DB 에도 저장
+    if body_target_map_id and rm.robot_map_id != body_target_map_id:
+        rm.robot_map_id = body_target_map_id
+        db.commit()
+        logger.info(f"[sync] robot_map_id={body_target_map_id} DB 저장 (map_id={map_id})")
+
     # ── 2) 오버레이 구성 (병합 방식: 로봇 기존 오버레이 보존) ──
     # 우리가 관리하는 오버레이 타입
-    CHARGING_TYPES = {"9", "36"}       # 충전소, 도킹포인트
-    FIREWALL_TYPES = {"1"}             # 가상벽
+    CHARGING_TYPES = {"9", "36"}       # 충전소, 도킹포인트 (Point → properties.type)
 
     overlay_data = {"type": "FeatureCollection", "features": []}
     overlay_synced = False
@@ -1191,10 +1280,10 @@ def api_sync_map_to_robot(map_id: int, body: dict, db: Session = Depends(get_db)
                         old_overlays = _json_overlay.loads(r_map.json().get("overlays", "{}"))
                         for feat in old_overlays.get("features", []):
                             feat_type = str(feat.get("properties", {}).get("type", ""))
-                            if feat_type in CHARGING_TYPES:
-                                existing_charging.append(feat)
-                            elif feat_type in FIREWALL_TYPES:
+                            if _is_firewall_feature(feat):
                                 existing_firewall.append(feat)
+                            elif feat_type in CHARGING_TYPES:
+                                existing_charging.append(feat)
                             elif feat_type == "34":
                                 pass  # Shelves Point는 DB에서 새로 생성하므로 기존 것 제외
                             else:
@@ -1303,16 +1392,7 @@ def api_sync_map_to_robot(map_id: int, body: dict, db: Session = Depends(get_db)
             logger.warning(f"[sync] rack.specs 설정 실패: {e}")
 
     # ── 4) full 방식: 서버 데이터로 전체 동기화 ──
-    # body에서 대상 로봇 맵 ID 지정 가능 (프론트에서 선택)
-    body_target_map_id = body.get("target_robot_map_id")
-    effective_robot_map_id = body_target_map_id or rm.robot_map_id
-
-    # 선택한 robot_map_id를 DB에도 저장
-    if body_target_map_id and rm.robot_map_id != body_target_map_id:
-        rm.robot_map_id = body_target_map_id
-        db.commit()
-        logger.info(f"[sync] robot_map_id={body_target_map_id} DB 저장 (map_id={map_id})")
-
+    # (대상 맵 ID 는 위에서 이미 결정했다)
     if sync_method == "full":
         result = _sync_full_from_server(
             mapping_data, robot_ip, target_secret, area_name,
@@ -1417,59 +1497,82 @@ def _sync_full_from_server(
         except Exception as e:
             logger.error(f"[sync:full] 서비스 재시작 실패: {e}")
 
-        # 서비스 재시작 후 Shelves Point overlay 재적용 (백그라운드)
-        shelves_features = [f for f in overlay_data.get("features", [])
-                           if str(f.get("properties", {}).get("type", "")) == "34"]
-        if shelves_features:
+        # ── 서비스 재시작 후 overlay 전체 재적용 (백그라운드) ──
+        # ★ 2026-09-04 수정 — 예전에는 Shelves Point(type 34) 만 재적용했다.
+        #   재시작이 끝나면 로봇이 제 맵을 다시 읽으면서 재시작 직전의 PATCH 를 되돌리는데,
+        #   복구 대상이 type 34 뿐이라 충전소와 가상벽은 그대로 사라졌다.
+        #   (실측 2026-09-04: 가상벽 2개를 PUT/PATCH 했는데 90초 뒤 0개, 옛 overlay 로 롤백)
+        #   → 우리가 관리하는 overlay 전체(충전소·가상벽·Shelves Point)를 다시 넣는다.
+        our_features = overlay_data.get("features", [])
+        if our_features:
             import threading
             _target_map_id = native_map_id  # 대상 맵 ID 고정 (클로저용)
-            def _patch_shelves_after_restart():
-                """재시작 완료 대기 후 Shelves Point overlay PATCH"""
+
+            def _reapply_overlay_after_restart():
+                """재시작 완료를 확인한 뒤 overlay 전체를 다시 적용."""
                 import time as _time
-                _time.sleep(90)  # 재시작 대기 (60-90초)
+
+                # 1) 재시작 완료 대기 — 고정 sleep 대신 실제로 응답할 때까지 폴링
+                deadline = _time.time() + 180
+                alive = False
+                while _time.time() < deadline:
+                    try:
+                        r = http_requests.get(f"http://{target_ip}:8090/device/info", timeout=5)
+                        if r.status_code == 200:
+                            alive = True
+                            break
+                    except Exception:
+                        pass
+                    _time.sleep(5)
+                if not alive:
+                    logger.error(f"[sync:full] 재시작 후 로봇 응답 없음(180초) — overlay 재적용 포기 ({target_ip})")
+                    return
+                logger.info(f"[sync:full] 재시작 완료 확인 — overlay 재적용 시작 ({target_ip})")
+                _time.sleep(5)   # 서비스가 완전히 자리잡을 여유
+
                 for attempt in range(3):
                     try:
-                        # 대상 맵에 current-map 전환
-                        http_requests.post(
-                            f"http://{target_ip}:8090/chassis/current-map",
-                            headers={"Authorization": f"Secret {target_secret}"},
-                            json={"map_id": _target_map_id}, timeout=10,
-                        )
-                        _time.sleep(3)
-
-                        # 대상 맵의 overlay 읽기
                         r_map = http_requests.get(
                             f"http://{target_ip}:8090/maps/{_target_map_id}",
                             headers={"Authorization": f"Secret {target_secret}"},
                             timeout=10,
                         )
                         if r_map.status_code != 200:
-                            _time.sleep(15)
+                            _time.sleep(10)
                             continue
                         existing_ov = _json.loads(r_map.json().get("overlays", "{}"))
                         existing_feats = existing_ov.get("features", [])
 
-                        # 기존 Shelves Point 제거 후 새로 추가
-                        merged = [f for f in existing_feats
-                                  if str(f.get("properties", {}).get("type", "")) != "34"]
-                        merged.extend(shelves_features)
+                        # 우리가 관리하는 것(충전소 9/36 · Shelves Point 34 · 가상벽)은 걷어내고
+                        # 나머지(로봇이 자체로 갖고 있던 것)는 보존한 뒤 우리 것을 얹는다.
+                        keep = []
+                        for f in existing_feats:
+                            ft = str(f.get("properties", {}).get("type", ""))
+                            if ft in ("9", "36", "34") or _is_firewall_feature(f):
+                                continue
+                            keep.append(f)
+                        merged = keep + list(our_features)
 
-                        new_ov = _json.dumps({"type": "FeatureCollection", "features": merged})
                         http_requests.patch(
                             f"http://{target_ip}:8090/maps/{_target_map_id}",
                             headers={"Authorization": f"Secret {target_secret}"},
-                            json={"overlays": new_ov}, timeout=10,
+                            json={"overlays": _json.dumps(
+                                {"type": "FeatureCollection", "features": merged})},
+                            timeout=15,
                         )
                         # current-map 재선택 → overlay 리로드 (포즈 저장/복원해 리셋 방지)
                         _reselect_current_map_keep_pose(target_ip, target_secret, _target_map_id)
-                        logger.info(f"[sync:full] Shelves Point {len(shelves_features)}개 재적용 완료 (맵 {_target_map_id})")
+                        logger.info(f"[sync:full] overlay 재적용 완료 (맵 {_target_map_id}): "
+                                    f"보존={len(keep)} + 우리것={len(our_features)} = {len(merged)}")
                         return
                     except Exception as ex:
-                        logger.warning(f"[sync:full] Shelves Point 재적용 시도 {attempt+1} 실패: {ex}")
-                        _time.sleep(15)
+                        logger.warning(f"[sync:full] overlay 재적용 시도 {attempt+1} 실패: {ex}")
+                        _time.sleep(10)
+                logger.error(f"[sync:full] overlay 재적용 3회 모두 실패 ({target_ip})")
 
-            threading.Thread(target=_patch_shelves_after_restart, daemon=True).start()
-            logger.info(f"[sync:full] Shelves Point 재적용 예약됨 (90초 후, 맵 {_target_map_id}, {len(shelves_features)}개)")
+            threading.Thread(target=_reapply_overlay_after_restart, daemon=True).start()
+            logger.info(f"[sync:full] overlay 재적용 예약됨 (재시작 완료 대기, 맵 {_target_map_id}, "
+                        f"{len(our_features)}개)")
 
         # 이전 sync 맵 삭제
         for sid in sync_map_ids:
@@ -1665,7 +1768,8 @@ def api_sync_overlays_to_robot(map_id: int, body: dict, db: Session = Depends(ge
             for feat in old_overlays.get("features", []):
                 feat_type = str(feat.get("properties", {}).get("type", ""))
                 # 충전소, 가상벽, Shelves Point 제외 → 나머지 보존
-                if feat_type not in CHARGING_TYPES and feat_type != "1" and feat_type != "34":
+                if (feat_type not in CHARGING_TYPES and feat_type != "34"
+                        and not _is_firewall_feature(feat)):
                     existing_other.append(feat)
     except Exception as e:
         logger.warning(f"[sync-overlays] 기존 overlay 읽기 실패: {e}")
@@ -1773,6 +1877,15 @@ def _sync_patch_to_robot(
         logger.info(f"[sync:patch] PATCH 완료: {target_ip} id={target_map_id}")
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"타겟 로봇 맵 PATCH 에 실패했습니다: {e}")
+
+    # ★ 2026-09-04 추가 — PATCH 는 맵 '레코드'만 고친다.
+    #   주행 중인 로봇 메모리의 맵은 그대로라서 current-map 을 다시 걸어야 반영된다.
+    #   (실증: PATCH 만 하면 GET /maps/{id} 는 새 값인데 /map/info 는 옛 값 그대로였다)
+    #   sync-overlays 경로에는 원래 있던 처리인데 이쪽에만 빠져 있었다.
+    try:
+        _reselect_current_map_keep_pose(target_ip, target_secret, target_map_id)
+    except Exception as e:
+        logger.warning(f"[sync:patch] current-map 재선택 실패(오버레이는 저장됨): {e}")
 
     return {
         "message": "오버레이 동기화 완료",
@@ -1997,10 +2110,10 @@ def api_relocalize_robots(body: dict, db: Session = Depends(get_db)):
             yaw_rad = poi.angle if poi.angle is not None else 0.0
 
             if use_docking_offset:
-                # 충전소: yaw 방향으로 DOCKING_OFFSET 앞에 위치, 헤딩은 충전소 POI 방향 그대로.
+                # 충전소: C1 을 로봇 도킹 위치로 본다(DOCK_POSE_OFFSET=0). 헤딩은 POI 방향 그대로.
                 # (예전엔 yaw+π 로 뒤집었으나 실제 도킹 헤딩과 180° 어긋나 반대로 서던 문제 → 제거)
-                target_x = poi.world_x + DOCKING_OFFSET * math.cos(yaw_rad)
-                target_y = poi.world_y + DOCKING_OFFSET * math.sin(yaw_rad)
+                target_x = poi.world_x + DOCK_POSE_OFFSET * math.cos(yaw_rad)
+                target_y = poi.world_y + DOCK_POSE_OFFSET * math.sin(yaw_rad)
                 target_yaw = yaw_rad
             else:
                 # 대기지점: 정확한 좌표, POI 각도 그대로

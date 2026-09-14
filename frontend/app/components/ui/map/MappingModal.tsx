@@ -9,6 +9,11 @@ import { useAlert } from "@/lib/context/AlertContext";
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "";
 
 function getWsUrl(httpUrl: string): string {
+  // 비어 있으면(= 백엔드가 이 화면을 직접 서빙하는 정적 빌드) 지금 접속 중인 주소를 쓴다.
+  // 서버 IP 를 빌드에 박으면 포트포워딩으로 들어온 접속에서 WebSocket 이 깨진다.
+  if (!httpUrl) {
+    return `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}`;
+  }
   return httpUrl.replace(/^http/, "ws");
 }
 
