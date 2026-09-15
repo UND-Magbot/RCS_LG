@@ -82,6 +82,26 @@
       font-size: 15px; opacity: 0; transition: opacity 0.2s; pointer-events: none; z-index: 80;
     }
     #toast.show { opacity: 1; }
+
+    /* 비상정지 전체화면 배너 (LGIT 요청 6번).
+       버튼이 눌려 있는 동안 화면 전체를 덮는다 — 다른 버튼을 눌러봐야 로봇이
+       움직이지 않으므로, 원인을 먼저 보여주는 쪽이 맞다. 해제되면 사라진다. */
+    #estop-overlay {
+      position: fixed; inset: 0; z-index: 200;
+      display: none; flex-direction: column;
+      align-items: center; justify-content: center; text-align: center;
+      background: #8e1b14; color: #fff;
+      padding: clamp(20px, 5vw, 60px); gap: clamp(16px, 3vh, 34px);
+      animation: es-blink 1.2s ease-in-out infinite;
+    }
+    #estop-overlay.show { display: flex; }
+    #estop-overlay .es-title {
+      font-size: clamp(30px, 7vw, 74px); font-weight: 900; line-height: 1.2;
+    }
+    #estop-overlay .es-sub {
+      font-size: clamp(17px, 3vw, 32px); font-weight: 700; line-height: 1.6; opacity: .95;
+    }
+    @keyframes es-blink { 0%,100% { filter: brightness(1); } 50% { filter: brightness(1.35); } }
   </style>
 </head>
 <body>
@@ -108,6 +128,12 @@
         <button class="btn btn-ghost" id="end-cancel">취소</button>
       </div>
     </div>
+  </div>
+
+  <!-- 비상정지 배너 (LGIT 요청 6번). 눌려 있는 동안만 뜬다. -->
+  <div id="estop-overlay">
+    <div class="es-title">🛑 비상정지 작동 중</div>
+    <div class="es-sub">비상정지 버튼이 눌려 있습니다.<br/>해제해야 작업을 계속할 수 있습니다.</div>
   </div>
 
   <div id="toast"></div>
@@ -144,11 +170,21 @@
       return `<div class="steps">${items}</div>`;
     }
 
+    // 비상정지 배너 — 서버가 estop:true 를 주는 동안만 떠 있고, 풀리면 사라진다.
+    // 통신이 안 돼 '모름' 인 경우 서버가 false 를 주므로 배너는 뜨지 않는다
+    // (통신 장애를 비상정지로 보여주면 거짓 경보가 된다 — estop_monitor.py 참조).
+    function renderEstop() {
+      const el = document.getElementById("estop-overlay");
+      if (!el) return;
+      el.classList.toggle("show", !!(state && state.estop));
+    }
+
     function render() {
       const badge = document.getElementById("badge");
       const main = document.getElementById("main");
       const confirmBtn = document.getElementById("confirm-btn");
       const endBtn = document.getElementById("end-btn");
+      renderEstop();
       if (!state) return;
 
       // 활성 배차 없음

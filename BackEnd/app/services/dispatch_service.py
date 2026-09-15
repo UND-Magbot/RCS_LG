@@ -29,6 +29,9 @@ from app.crud import dispatch as dispatch_crud
 from app.services import jack_service
 from app.services import waypoint_route
 from app.services.thread_utils import safe_thread
+# 로그·알림 문구에 쓸 **표시용** 이름. 조회 키로는 절대 쓰지 않는다
+# (job_points 매핑과 진입점 "<이름>-1" 은 전부 원래 이름 기준이다).
+from app.services.poi_label import label_for as _poi_label
 
 logger = logging.getLogger(__name__)
 
@@ -436,6 +439,96 @@ def _current_xy(robot_ip: str) -> Optional[tuple[float, float]]:
     return None
 
 
+def _current_pose(robot_ip: str) -> Optional[tuple[float, float, float]]:
+    """로봇 현재 (x, y, ori). 못 읽으면 None.
+
+    `_current_xy` 와 달리 **방향까지** 준다 — 출발 자세를 판단하려면 필요하다.
+    """
+    try:
+        from app.routers.map import _read_tracked_pose  # 순환 import 방지
+        pose = _read_tracked_pose(robot_ip, timeout=3.0)
+        if pose and pose.get("position"):
+            return (float(pose["position"][0]), float(pose["position"][1]),
+                    float(pose.get("ori", 0.0)))
+    except Exception as e:
+        logger.warning(f"[route] 현재 포즈 읽기 실패 ({robot_ip}): {e}")
+    return None
+
+
+# 경유지 체인에 들어가기 전 제자리 회전을 시킬 최소 각도(도).
+# 이보다 작으면 로봇이 경로선 안에서 스스로 흡수하므로 굳이 돌리지 않는다.
+FACE_ROUTE_MIN_DEG = 15.0
+# 그 회전에 쓸 시간 상한(초). 제자리 회전이라 길 필요가 없다.
+FACE_ROUTE_TIMEOUT = 40
+
+# 랙을 든 직후 진입점으로 빠져나오는 동작(_escape_after_pickup).
+# 이보다 가까우면 이미 나와 있는 것으로 보고 생략한다.
+PICKUP_ESCAPE_MIN_M = 0.30
+PICKUP_ESCAPE_TIMEOUT = 40
+
+
+def _face_route_start(worker: _Worker, route_coords: Optional[str]) -> None:
+    """경유지 체인으로 출발하기 전에 **첫 경유지 쪽으로 제자리 회전**한다.
+
+    왜 필요한가 (2026-09-14 실측)
+      `along_given_route` 는 `detour_tolerance = 0` 이라 **경로선을 1cm 도 벗어날 수
+      없다.** 출발 자세가 경로 방향과 크게 다르면 로봇은 자세를 고치려는 움직임조차
+      이탈로 판정돼 **돌지도 가지도 못하고 선다.**
+        · R1 에서 잭업 직후 자세와 첫 구간 방향이 **58° 달랐다**
+        · `alert 1007 (Not moving for too long)`, 남은거리 25 m 가 3 분간 그대로
+        · costmap 확인 결과 **진행 방향 1.6 m 까지 장애물 없음** — 공간 문제가 아니었다
+
+    회전을 경로 진입 **전에** 제자리에서 끝내므로 경로 이탈은 여전히 0 이다.
+    `detour_tolerance` 를 여는 것과 달리 "지정한 길로만 · 장애물이면 정지" 규칙을
+    하나도 건드리지 않는다.
+
+    실패해도 조용히 넘어간다 — 그 경우 종전과 똑같이 동작할 뿐이다(하위 호환).
+    """
+    if not route_coords:
+        return
+    v = route_coords.split(",")
+    if len(v) < 2:
+        return
+    try:
+        fx, fy = float(v[0]), float(v[1])
+    except ValueError:
+        return
+    xy = _current_xy(worker.robot_ip)
+    if xy is None:
+        return
+    cur = _current_pose(worker.robot_ip)
+    if cur is None:
+        return
+    d = math.hypot(fx - xy[0], fy - xy[1])
+    if d < waypoint_route.ARRIVED_EPS:
+        return                      # 첫 경유지 위 — 방향을 정할 수 없다
+    want = math.atan2(fy - xy[1], fx - xy[0])
+    diff = math.degrees(math.atan2(math.sin(want - cur[2]), math.cos(want - cur[2])))
+    if abs(diff) < FACE_ROUTE_MIN_DEG:
+        return
+    logger.info(
+        f"[route] {worker.robot_ip} 경로 진입 전 제자리 회전 {diff:+.1f}° "
+        f"(현재 {math.degrees(cur[2]):.1f}° → 첫 경유지 방향 {math.degrees(want):.1f}°)")
+    jack_service.update_job_status(worker.robot_ip, message="출발 방향 정렬 중")
+    try:
+        jack_service.safe_move(worker.robot_ip, "standard", xy[0], xy[1], want,
+                               max_attempts=3, timeout=FACE_ROUTE_TIMEOUT)
+    except RuntimeError:
+        raise                       # 사용자 중지는 그대로 올린다
+    except Exception as e:
+        logger.warning(f"[route] 출발 방향 정렬 실패(무시하고 진행): {e}")
+        return
+    # 실제로 돌았는지 확인 — 안 돌았으면 종전과 같은 상황이므로 알아볼 수 있게 남긴다
+    after = _current_pose(worker.robot_ip)
+    if after is not None:
+        left = math.degrees(math.atan2(math.sin(want - after[2]),
+                                       math.cos(want - after[2])))
+        if abs(left) >= FACE_ROUTE_MIN_DEG:
+            logger.warning(
+                f"[route] {worker.robot_ip} 출발 방향 정렬 후에도 {left:+.1f}° 남음 "
+                f"— 경로 진입에서 멈출 수 있다")
+
+
 def _move_via_waypoints(worker: _Worker, x: float, y: float, ori: float, **kw):
     """경유지(W1, W2…)를 거쳐 (x, y) 로 이동.
 
@@ -447,6 +540,8 @@ def _move_via_waypoints(worker: _Worker, x: float, y: float, ori: float, **kw):
         logger.warning(f"[route] {worker.robot_ip} 현재 위치를 못 읽어 경유지를 건너뜀 → standard")
         return jack_service.safe_move(worker.robot_ip, "standard", x, y, ori, **kw)
     mv, extra = waypoint_route.plan(worker.area_id, xy[0], xy[1], x, y)
+    if mv == "along_given_route":
+        _face_route_start(worker, extra.get("route_coordinates"))
     return jack_service.safe_move(worker.robot_ip, mv, x, y, ori, **extra, **kw)
 
 
@@ -537,6 +632,8 @@ def _approach_before_align(worker: _Worker, poi: dict) -> None:
         f"{math.degrees(face):.1f}° (랙 {math.degrees(poi['ori']):.1f}° — 회전은 align 이 한다)")
     jack_service.update_job_status(
         worker.robot_ip, message=f"{poi['name']} 접근 이동({ap['name']})")
+    if mv == "along_given_route":
+        _face_route_start(worker, extra.get("route_coordinates"))
     try:
         jack_service.safe_move(worker.robot_ip, mv, ap["x"], ap["y"], face,
                                **extra, max_attempts=12, timeout=90)
@@ -545,6 +642,61 @@ def _approach_before_align(worker: _Worker, poi: dict) -> None:
     except Exception as e:
         # 접근에 실패해도 정렬은 시도해 본다 (기존 동작으로 자연 폴백)
         logger.warning(f"[route] {poi['name']} 접근 이동 실패(무시): {e}")
+
+
+def _escape_after_pickup(worker: _Worker, poi: dict) -> None:
+    """랙을 든 직후 **좁은 랙 자리에서 진입점으로 빠져나온다** (2026-09-14).
+
+    왜 필요한가 (실측 근거)
+      `align_with_rack` → `jack_up` 이 끝나면 로봇은 **랙 자리 정중앙**에 서 있다.
+        · 2026-09-14 19:43 R1 실측 — 잭업 직후 로봇(-4.09,17.82), R1(-4.13,17.79)
+          까지 **0.05 m**. 말 그대로 그 자리다.
+      그 상태로 `_face_route_start` 가 경로 방향으로 돌리는데, 랙을 들면 풋프린트가
+      **0.95 m 사각형**이 되어 회전 시 대각선이 **반경 0.672 m** 를 휩쓴다.
+      랙 자리는 랙이 딱 들어가는 공간이라 그 여유가 없다. 그래서 로봇이 제자리에서
+      못 돌고 **앞으로 나갔다 되돌아오며** 조금씩 돌린다(현장에서 눈으로 확인).
+
+      같은 날 로그가 랙 유무로 **9배** 차이를 보여준다.
+        | 이동 | 상태   | 각도   | 소요  | 각속도    |
+        | 4721 | 랙 적재 | 66.3° | 26초 |  2.5 °/s |
+        | 4727 | 공차   | 91.3° |  4초 | 22.8 °/s |
+      로봇 최대 각속도가 68.8 °/s 이니 적재 회전은 정상의 **1/28** 로 기어간 셈이다.
+
+    무엇을 하는가
+      회전하기 **전에** 진입점("<R이름>-1")으로 먼저 나온다. 거기는 통로라 공간이
+      나오고, 회전이 4초에 끝난다. R1 실측에서 진입점은 1.28 m 앞이고 로봇이 이미
+      그쪽(각도차 0.5°)을 보고 있어 **그대로 직진**이면 된다.
+
+    ★ 진입점이 없으면 **아무것도 하지 않는다.**
+      랙 각도로 이탈 거리를 추정하는 폴백은 넣지 않았다 — 방향을 잘못 잡으면
+      랙을 든 채 엉뚱한 데로 가기 때문이다. 진입점이 없으면 종전 동작 그대로다.
+
+    실패해도 조용히 넘어간다(하위 호환). 그 경우 종전처럼 랙 자리에서 돈다.
+    """
+    ip = worker.robot_ip
+    name = poi.get("name")
+    entry = _find_entry_poi(worker.area_id, name)
+    if not entry:
+        return                      # 진입점 없음 — 종전 동작
+    cur = _current_pose(ip)
+    if cur is None:
+        logger.warning(f"[pickup] {ip} 현재 포즈를 못 읽어 랙 자리 이탈 생략")
+        return
+    d = math.hypot(entry["x"] - cur[0], entry["y"] - cur[1])
+    if d < PICKUP_ESCAPE_MIN_M:
+        return                      # 이미 진입점 근처 — 움직일 필요 없다
+    logger.info(f"[pickup] {ip} 랙 자리({name}) 이탈 → {entry['name']} "
+                f"{d:.2f} m (여기서 경로 방향으로 회전한다)")
+    jack_service.update_job_status(ip, message=f"{entry['name']} 로 이탈")
+    try:
+        # 자세는 **오던 방향 그대로** 둔다. 여기서 돌리면 좁은 자리에서 도는 것과
+        # 같아지고, 방향은 어차피 다음 단계(_face_route_start)가 잡는다.
+        jack_service.safe_move(ip, "standard", entry["x"], entry["y"], cur[2],
+                               max_attempts=2, timeout=PICKUP_ESCAPE_TIMEOUT)
+    except RuntimeError:
+        raise                       # 사용자 중지는 그대로 올린다
+    except Exception as e:
+        logger.warning(f"[pickup] 랙 자리 이탈 실패(무시하고 진행): {e}")
 
 
 def _pickup_at_standby(worker: _Worker) -> bool:
@@ -571,6 +723,8 @@ def _pickup_at_standby(worker: _Worker) -> bool:
         logger.error(f"[dispatch] jack_up 실패: {e}")
         return False
     time.sleep(JACK_SETTLE_SEC)
+    # 좁은 랙 자리에서 돌지 않도록 진입점으로 먼저 나온다 (2026-09-14)
+    _escape_after_pickup(worker, standby)
     return True
 
 
@@ -621,6 +775,10 @@ def _move_to_entry_poi(worker: _Worker, entry: dict, target: dict) -> bool:
             kw = ({} if lead_mv == "standard" else
                   {"route_coordinates": ",".join(lead),
                    "detour_tolerance": waypoint_route.DETOUR_TOLERANCE})
+            if lead_mv == "along_given_route":
+                # 경로선을 못 벗어나므로 **들어가기 전에** 자세를 맞춘다.
+                # (2026-09-14 — 잭업 직후 58° 어긋나 여기서 멈췄다)
+                _face_route_start(worker, ",".join(lead))
             jack_service.safe_move(ip, lead_mv, lx, ly, face,
                                    max_attempts=12, timeout=90, **kw)
             prev = (lx, ly)
@@ -1264,6 +1422,123 @@ def force_clear(robot_id: int) -> tuple[bool, str]:
     finally:
         db.close()
     return True, "ok"
+
+
+# ── 전역 강제 종료 (LGIT 요청 3번) ────────────────────────────
+#
+# 로봇별 원격제어 패널의 [작업 강제 종료](force_clear)를 **콘솔 상단에서 한 번에**
+# 쓰는 것이다. 두 버튼의 차이는 '대기 중인 호출(예약)을 어떻게 하느냐' 하나뿐이다.
+#
+#   현재 JOB 강제 종료 : 진행 중인 작업만 끊는다. 대기 호출은 살아 있으므로
+#                        로봇이 놓이면 그 호출부터 다시 나간다.
+#   전체 강제 종료     : 진행 중 작업 + 대기 호출까지 전부 없앤다. 처음부터 다시 호출.
+#
+# ★ 로봇은 그 자리에 선다. 충전소로 보내지 않는다(force_clear 의 기존 계약).
+
+
+def _active_robot_ids() -> list[int]:
+    """지금 작업 중인 로봇 id — 메모리 워커 + DB 활성 세션을 합친다.
+
+    워커만 보면 서버 재시작으로 워커가 유실된 '유령 세션' 이 남고,
+    DB 만 보면 세션 만들기 직전의 워커를 놓친다. 둘 다 본다.
+    """
+    ids: set[int] = set()
+    with _workers_lock:
+        ids |= set(_workers.keys())
+    db = SessionLocal()
+    try:
+        for s in dispatch_crud.list_active_sessions(db):
+            if s.robot_id:
+                ids.add(s.robot_id)
+    except Exception:
+        logger.exception("[dispatch] 활성 세션 조회 실패 — 메모리 워커만 정리한다")
+    finally:
+        db.close()
+    return sorted(ids)
+
+
+def force_clear_current() -> int:
+    """진행 중인 작업을 전부 강제 종료. **대기 예약은 그대로 둔다.**
+
+    반환: 정리한 로봇 수
+    """
+    ids = _active_robot_ids()
+    for rid in ids:
+        try:
+            force_clear(rid)
+        except Exception:
+            logger.exception(f"[dispatch] 강제 종료 실패(계속 진행) robot={rid}")
+    logger.warning(f"[dispatch] ★ 현재 JOB 강제 종료 — 로봇 {len(ids)}대 정리 "
+                   f"(대기 예약은 유지)")
+    return len(ids)
+
+
+# 워커가 빠져나가기를 기다리는 시간. 아래 force_clear_all 주석 참조.
+FORCE_CLEAR_DRAIN_SEC = 6.0
+
+
+def force_clear_all() -> dict:
+    """진행 중 작업 + 대기 중인 호출(예약)까지 전부 취소.
+
+    ★ 순서가 중요하다 — **먼저 끊고, 워커가 빠져나간 뒤에 예약을 지운다.**
+      배송 워커는 강제 정리를 감지하면 자기가 선점했던 예약을 `waiting` 으로
+      **되돌린다**(`_worker_loop_delivery` 의 abort 처리 — 호출 자체는 살려두는 게
+      원래 의도다). 예약을 먼저 지우면 그 롤백이 뒤에 실행돼 취소한 호출이
+      되살아난다. 그래서 워커가 정리될 때까지 잠깐 기다렸다가 지운다.
+
+    반환: {"cleared": 로봇 수, "cancelled": 취소한 예약 수}
+    """
+    ids = _active_robot_ids()
+    for rid in ids:
+        try:
+            force_clear(rid)
+        except Exception:
+            logger.exception(f"[dispatch] 강제 종료 실패(계속 진행) robot={rid}")
+
+    # 워커가 빠져나갈 시간을 준다. 다 빠지면 즉시 넘어간다(최대 FORCE_CLEAR_DRAIN_SEC).
+    deadline = time.time() + FORCE_CLEAR_DRAIN_SEC
+    while time.time() < deadline:
+        with _workers_lock:
+            if not _workers:
+                break
+        time.sleep(0.2)
+    with _workers_lock:
+        remaining = list(_workers.keys())
+
+    db = SessionLocal()
+    try:
+        poi_ids = dispatch_crud.cancel_all_waiting_reservations(db)
+    finally:
+        db.close()
+    for pid in poi_ids:
+        _reserve_log("cancelled", None, pid, reason="전체 강제 종료(콘솔)")
+
+    if remaining:
+        # 워커가 제때 안 죽었다 — 그 워커가 뒤늦게 예약을 되살릴 수 있으므로
+        # 잠시 뒤 한 번 더 지운다. (정상 상황에서는 여기까지 오지 않는다)
+        logger.warning(f"[dispatch] 전체 강제 종료 — 워커 {remaining} 가 아직 살아 있음. "
+                       f"5초 뒤 예약을 한 번 더 정리한다")
+        safe_thread(target=_recancel_reservations_later, args=(5.0,),
+                    name="force-clear-recancel").start()
+
+    logger.warning(f"[dispatch] ★ 전체 강제 종료 — 로봇 {len(ids)}대 정리, "
+                   f"대기 호출 {len(poi_ids)}건 취소")
+    return {"cleared": len(ids), "cancelled": len(poi_ids)}
+
+
+def _recancel_reservations_later(delay: float) -> None:
+    """전체 강제 종료 뒤 되살아난 예약을 한 번 더 지운다 (위 주석 참조)."""
+    time.sleep(delay)
+    db = SessionLocal()
+    try:
+        poi_ids = dispatch_crud.cancel_all_waiting_reservations(db)
+    except Exception:
+        logger.exception("[dispatch] 지연 예약 정리 실패")
+        return
+    finally:
+        db.close()
+    for pid in poi_ids:
+        _reserve_log("cancelled", None, pid, reason="전체 강제 종료 — 지연 정리")
 
 
 # ── 재시작 복구 ───────────────────────────────────────────────
@@ -1969,8 +2244,17 @@ def _pickup_at_poi(worker: _Worker, poi: dict) -> bool:
     _approach_before_align(worker, poi)
 
     jack_service.update_job_status(worker.robot_ip, message=f"{poi['name']} 이동 — 랙 정렬")
+    # 도킹(랙 정렬) 실패 안내를 콘솔 + 이 R 태블릿에 띄운다 (LGIT 요청 2번).
+    # ★ 이 경로(배송 모드 R 픽업)에서만 켠다. 인터랙티브 모드의 align 에서 뜨면
+    #   "대차를 정위치해 주세요" 가 랙과 무관한 화면에 뜬다.
+    notify_ctx = {
+        "poi_id": poi.get("id"),
+        "poi_name": poi.get("name"),
+        "poi_label": _poi_label(poi.get("name")),
+    }
     try:
-        result = jack_service.align_with_retry(worker.robot_ip, poi["x"], poi["y"], poi["ori"])
+        result = jack_service.align_with_retry(worker.robot_ip, poi["x"], poi["y"], poi["ori"],
+                                               notify_ctx=notify_ctx)
     except RuntimeError:
         # 사용자 중지(_check_stop / zone 대기 중 중지) 신호. jack_service 에서
         # RuntimeError 를 쓰는 곳은 이 둘뿐이다.
@@ -1997,6 +2281,8 @@ def _pickup_at_poi(worker: _Worker, poi: dict) -> bool:
         logger.error(f"[delivery] jack_up 실패: {e}")
         return False
     time.sleep(JACK_SETTLE_SEC)
+    # 좁은 랙 자리에서 돌지 않도록 진입점으로 먼저 나온다 (2026-09-14)
+    _escape_after_pickup(worker, poi)
     return True
 
 
@@ -2218,7 +2504,11 @@ def _worker_loop_delivery(worker: _Worker, *, first_j_poi_id: int) -> None:
                 _set_db_status(worker.session_id, "returning")
                 _set_target_poi(worker.session_id, None)
                 jack_service.update_job_status(worker.robot_ip, message="랙 없음 — 충전소 복귀")
-                if _park_at_charger(worker) and worker.divert_to is not None:
+                _diverted = _park_at_charger(worker)
+                # "Docking 실패로 충전소로 복귀합니다" 안내는 **여기까지** 떠 있어야 한다.
+                # 복귀가 끝났거나 새 작업으로 전환했으면 역할을 다한 것이므로 내린다.
+                jack_service.clear_dock_notice(worker.robot_ip)
+                if _diverted and worker.divert_to is not None:
                     j_poi_id, res_id = worker.divert_to
                     worker.divert_to = None
                     logger.info(f"[delivery] 복귀 중 새 호출 이어받음 poi={j_poi_id}")

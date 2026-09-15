@@ -726,46 +726,77 @@ def api_cancel_move(robot_ip: str):
 
 @router.get("/speed/{robot_ip}")
 def api_get_speed(robot_ip: str, db: Session = Depends(get_db)):
-    """로봇 속도 조회 (DB 우선, 없으면 로봇에서)"""
+    """로봇 속도 조회.
+
+    ★ 2026-09-14 — 잭 상태별 2단 속도(LGIT 요청 1번)로 확장됐다.
+      `empty_speed`(공차) / `laden_speed`(적재) 가 실제 설정값이고,
+      `max_forward_velocity` 는 **공차 속도와 같은 값**으로 계속 내려준다 —
+      이 키를 읽던 기존 화면·스크립트가 그대로 동작하게 하기 위한 호환 필드다.
+    """
     import requests as req
-    robot = db.query(Robot).filter(Robot.ip_address == robot_ip, Robot.is_active == True).first()
-    speed = robot.max_speed if robot and robot.max_speed else 1.2
+    from app.services import speed_settings, jack_service
+
+    cfg = speed_settings.get(robot_ip)
+    out = {
+        "max_forward_velocity": cfg["empty"],   # 하위호환 (= 공차 속도)
+        "empty_speed": cfg["empty"],
+        "laden_speed": cfg["laden"],
+        "laden": jack_service.is_laden(robot_ip),   # 지금 랙을 들고 있나
+        "max_backward_velocity": 0.5,
+        "max_angular_velocity": 1.2,
+    }
     try:
-        r = req.get(f"http://{robot_ip}:8090/robot-params", timeout=8)
-        params = r.json()
-        return {
-            "max_forward_velocity": speed,
-            "max_backward_velocity": abs(params.get("/wheel_control/max_backward_velocity", -0.5)),
-            "max_angular_velocity": params.get("/wheel_control/max_angular_velocity", 1.2),
-        }
+        params = req.get(f"http://{robot_ip}:8090/robot-params", timeout=8).json()
+        out["max_backward_velocity"] = abs(
+            params.get("/wheel_control/max_backward_velocity", -0.5))
+        out["max_angular_velocity"] = params.get("/wheel_control/max_angular_velocity", 1.2)
     except Exception:
-        return {
-            "max_forward_velocity": speed,
-            "max_backward_velocity": 0.5,
-            "max_angular_velocity": 1.2,
-        }
+        pass          # 로봇이 오프라인이어도 설정값은 보여줘야 한다
+    return out
 
 
 @router.post("/speed/{robot_ip}")
 def api_set_speed(robot_ip: str, body: dict, db: Session = Depends(get_db)):
-    """로봇 속도 변경 (DB 저장 + 로봇 전송)"""
-    import requests as req
-    speed = body.get("max_forward_velocity", 1.2)
-    # 1) DB 먼저 저장
-    robot = db.query(Robot).filter(Robot.ip_address == robot_ip, Robot.is_active == True).first()
+    """로봇 속도 변경 — 공차/적재 둘 다 다룬다.
+
+    받는 키 (전부 선택):
+      · `max_forward_velocity` / `empty_speed` — 공차 속도(랙 없음)
+      · `laden_speed`                          — 적재 속도(랙 있음)
+
+    `max_forward_velocity` 를 공차로 받는 이유는, 기존 콘솔 슬라이더가 그 키로
+    보내고 있었고 그 값이 **랙 없이 달릴 때의 속도**였기 때문이다.
+    공차 값은 DB `robots.max_speed` 에도 같이 저장된다(서버 시작 시 적용 경로 유지).
+
+    로봇에는 **지금 잭 상태에 맞는 쪽만** 보낸다. 적재 중인데 공차 속도를 쏘면
+    랙을 든 채로 빨라진다.
+    """
     import logging
-    logging.getLogger(__name__).info(f"[speed] robot_ip={robot_ip}, found={robot is not None}, speed={speed}")
-    if robot:
-        robot.max_speed = speed
-        db.commit()
-        logging.getLogger(__name__).info(f"[speed] DB saved: {robot.max_speed}")
-    # 2) 로봇에 전송 (실패해도 DB는 이미 저장됨)
-    try:
-        req.post(f"http://{robot_ip}:8090/robot-params",
-                 json={"/wheel_control/max_forward_velocity": speed}, timeout=10)
-    except Exception:
-        pass
-    return {"ok": True, "max_forward_velocity": speed}
+    from app.services import speed_settings, jack_service
+
+    empty = body.get("empty_speed", body.get("max_forward_velocity"))
+    laden = body.get("laden_speed")
+    if empty is None and laden is None:
+        raise HTTPException(status_code=400,
+                            detail="empty_speed 또는 laden_speed 가 필요합니다")
+
+    cfg = speed_settings.set_speeds(
+        robot_ip,
+        empty=float(empty) if empty is not None else None,
+        laden=float(laden) if laden is not None else None,
+    )
+    # 지금 상태에 해당하는 값만 로봇에 적용한다 (실패해도 설정은 이미 저장됨)
+    applied = jack_service.apply_state_speed(robot_ip)
+    logging.getLogger(__name__).info(
+        f"[speed] {robot_ip} 저장 공차={cfg['empty']} 적재={cfg['laden']} "
+        f"(현재 {'적재' if jack_service.is_laden(robot_ip) else '공차'}, 적용={applied})")
+    return {
+        "ok": True,
+        "max_forward_velocity": cfg["empty"],   # 하위호환
+        "empty_speed": cfg["empty"],
+        "laden_speed": cfg["laden"],
+        "laden": jack_service.is_laden(robot_ip),
+        "applied": applied,
+    }
 
 
 @router.post("/voice/test/{robot_ip}")
@@ -831,6 +862,8 @@ def api_stop_all(robot_ip: str):
     # 3) 잭이 올라가 있으면 잭 다운
     try:
         req.post(f"http://{robot_ip}:8090/services/jack_down", json={}, timeout=10)
+        from app.services import jack_service
+        jack_service.set_laden(robot_ip, False)   # 2단 속도 플래그도 같이 내린다
     except Exception:
         pass
     return {"ok": True, "message": "모든 작업이 정지되었습니다"}
@@ -1119,6 +1152,12 @@ def api_jack_control(robot_ip: str, action: str):
             json={},
             timeout=10,
         )
+        # 이 경로는 jack_service 를 거치지 않고 로봇을 직접 친다.
+        # 2단 속도(요청 1번)의 적재 플래그가 여기서 어긋나면, 원격으로 잭을 올린
+        # 로봇이 공차 속도로 달리게 된다 → 여기서도 같이 갱신한다.
+        if r.status_code < 400:
+            from app.services import jack_service
+            jack_service.set_laden(robot_ip, action == "jack_up")
         return {"status": r.status_code}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

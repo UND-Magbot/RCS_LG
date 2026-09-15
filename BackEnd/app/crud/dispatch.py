@@ -208,6 +208,25 @@ def cancel_reservation(db: Session, poi_id: int) -> bool:
     return True
 
 
+def cancel_all_waiting_reservations(db: Session) -> list[int]:
+    """대기 중 예약을 **전부** 취소하고, 취소된 예약의 POI id 목록을 돌려준다.
+
+    콘솔의 [전체 강제 종료] 전용이다(LGIT 요청 3번). 단건 취소(cancel_reservation)를
+    POI 마다 반복하면 중간에 새 예약이 끼어들 수 있어 '전부'가 보장되지 않는다.
+    """
+    rows = (
+        db.query(DispatchReservation)
+        .filter(DispatchReservation.status == "waiting")
+        .all()
+    )
+    poi_ids = [r.poi_id for r in rows]
+    for r in rows:
+        r.status = "cancelled"
+    if rows:
+        db.commit()
+    return poi_ids
+
+
 def mark_reservation(db: Session, reservation_id: int, status: str) -> None:
     r = db.query(DispatchReservation).filter(DispatchReservation.id == reservation_id).first()
     if not r:

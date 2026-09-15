@@ -96,6 +96,13 @@ async def lifespan(application: FastAPI):
         robot_voice.start()
     except Exception as e:
         log.warning(f"[startup] robot_voice 시작 실패: {e}")
+    # 비상정지(E-STOP) 감시 (LGIT 요청 6번) — 로봇 태블릿 배너용 상태 캐시
+    log.info("[startup] estop_monitor.start...")
+    try:
+        from app.services import estop_monitor
+        estop_monitor.start()
+    except Exception as e:
+        log.warning(f"[startup] estop_monitor 시작 실패: {e}")
     # 전방 장애물 안전거리 Yellow/Red (LGIT 요청 4번) — 설정에서 켜야 동작한다
     log.info("[startup] safety_zone.start...")
     try:

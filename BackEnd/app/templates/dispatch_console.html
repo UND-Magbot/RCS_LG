@@ -118,6 +118,59 @@
       grid-template-columns: repeat(auto-fill, minmax(min(100%, clamp(150px, 20vw, 240px)), 1fr));
     }
 
+    /* ── 구역 2분할 (LGIT 요청 5번) ─────────────────────────
+       구역 정보(static/poi_labels.json)가 있을 때만 이 배치로 바뀐다.
+       설정 파일을 지우면 .grid 단일 그리드로 그대로 돌아간다(롤백 경로). */
+    .grid.zoned {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      align-items: start;
+    }
+    /* 좁은 화면(태블릿 세로·작은 창)에서는 위아래로 쌓는다 */
+    @media (max-width: 900px) {
+      .grid.zoned { grid-template-columns: 1fr; }
+    }
+    .zone-col {
+      background: #141a23; border: 1px solid #232b38; border-radius: 14px;
+      padding: clamp(8px, 1.2vw, 14px);
+      display: flex; flex-direction: column; gap: clamp(8px, 1.2vw, 14px);
+    }
+    .zone-head {
+      display: flex; align-items: center; gap: 10px;
+      font-size: clamp(14px, 1.9vw, 19px); font-weight: 800; color: #cfe0ff;
+      padding: 2px 4px 8px; border-bottom: 1px solid #232b38;
+    }
+    .zone-head .zone-count { font-size: 13px; font-weight: 600; color: #6b7b91; }
+    /* 구역이 지정되지 않은 POI — 아래에 한 줄로 몰아 종전 그리드 그대로 */
+    .zone-etc { grid-column: 1 / -1; }
+    .zone-etc .zone-head { color: #9fb0c8; }
+
+    /* 관제 알림 배너 (강제 종료 확인 · 도킹 실패) — services/notice_service.py */
+    .nt-alert { display: none; margin: 0 0 12px; }
+    .nt-alert.show { display: block; }
+    .nt-item {
+      background: #3a2a12; border: 2px solid #b3801e; color: #ffe6bd;
+      border-radius: 10px; padding: 12px 16px; margin-bottom: 8px;
+      font-size: 16px; font-weight: 700; line-height: 1.6; white-space: pre-line;
+      display: flex; align-items: center; gap: 14px;
+    }
+    .nt-item.danger { background: #3a1512; border-color: #b3261e; color: #ffd7d3; }
+    .nt-item .nt-msg { flex: 1; }
+    .nt-item .nt-ack {
+      flex-shrink: 0; border: none; border-radius: 10px; cursor: pointer;
+      background: #2f6fff; color: #fff; font-weight: 800;
+      padding: 12px 22px; font-size: 16px;
+    }
+
+    /* 헤더 전역 버튼 (강제 종료) */
+    .gc-btn {
+      border: 1px solid #5a2b35; background: transparent; color: #ff9d9d;
+      border-radius: 10px; padding: 8px 14px; font-weight: 700; cursor: pointer;
+      font-size: clamp(12px, 1.5vw, 15px); white-space: nowrap;
+    }
+    .gc-btn:active { transform: scale(0.97); }
+    .gc-btn.hard { background: #5a1f1f; color: #ffd7d3; border-color: #b3261e; }
+
     .tile {
       border-radius: 14px;
       padding: clamp(10px, 1.6vw, 18px);
@@ -200,10 +253,15 @@
 <body>
   <header>
     <h1>배차 콘솔</h1>
+    <!-- 전역 강제 종료 (LGIT 요청 3번). 로봇은 그 자리에 정지한다 — 충전소로 보내지 않는다. -->
+    <button class="gc-btn" id="gc-current">현재 JOB 강제 종료</button>
+    <button class="gc-btn hard" id="gc-all">전체 강제 종료</button>
     <span class="robots-badge" id="robots-badge">가용 로봇 -</span>
   </header>
 
   <div class="sf-alert" id="sf-alert"></div>
+  <!-- 관제 알림 (강제 종료 확인 · 도킹 실패). ack_required 면 [확인] 을 눌러야 사라진다 -->
+  <div class="nt-alert" id="nt-alert"></div>
   <div class="content">
     <main>
       <div class="grid" id="grid"></div>
@@ -221,6 +279,18 @@
       <div class="sub" id="call-hint" style="margin-bottom:14px"></div>
       <div id="call-buttons" style="display:flex; flex-direction:column; gap:10px"></div>
       <button class="btn btn-ghost" id="call-cancel" style="margin-top:16px; background:transparent; color:#8a93a6">취소</button>
+    </div>
+  </div>
+
+  <!-- 전역 강제 종료 확인 모달 (LGIT 요청 3번) -->
+  <div class="modal-overlay" id="gc-modal">
+    <div class="modal">
+      <h2 id="gc-title">작업 강제 종료</h2>
+      <div class="sub" id="gc-hint" style="margin-bottom:18px; line-height:1.7"></div>
+      <div style="display:flex; flex-direction:column; gap:10px">
+        <button class="btn btn-end" id="gc-ok">강제 종료</button>
+      </div>
+      <button class="btn btn-ghost" id="gc-cancel" style="margin-top:16px; background:transparent; color:#8a93a6">취소</button>
     </div>
   </div>
 
@@ -393,16 +463,24 @@
         </div>
       </div>
 
-      <!-- 주행 속도 (로봇별) -->
+      <!-- 주행 속도 (로봇별) — 잭 상태별 2단 (LGIT 요청 1번) -->
       <div class="rc-section">
         <h4>주행 속도</h4>
         <div class="vc-row">
-          <span class="vc-label">최고 속도</span>
+          <span class="vc-label" style="width:104px">공차 속도<br><span style="font-size:11px">(랙 없음)</span></span>
           <input type="range" id="sp-speed" min="0.3" max="1.2" step="0.1" class="vc-range">
           <span class="vc-value" id="sp-speed-val">-</span>
         </div>
+        <div class="vc-row">
+          <span class="vc-label" style="width:104px">적재 속도<br><span style="font-size:11px">(랙 있음)</span></span>
+          <input type="range" id="sp-laden" min="0.3" max="1.2" step="0.1" class="vc-range">
+          <span class="vc-value" id="sp-laden-val">-</span>
+        </div>
+        <div class="vc-hint" id="sp-now">현재 상태: -</div>
         <div class="vc-hint">
-          느릴수록 정지거리가 짧아 안전합니다. 이 로봇에만 적용되며, 서버를 다시 켜도 유지됩니다.
+          랙을 들면 무게중심이 높아지고 제동거리가 길어집니다. <b>적재 속도를 공차보다 낮게</b> 두세요.
+          잭 업/다운에 맞춰 자동으로 전환되며, 이 로봇에만 적용되고 서버를 다시 켜도 유지됩니다.
+          (전방 장애물 서행 0.3 · 정지 0 은 이 설정과 별개로 그대로 동작합니다)
         </div>
       </div>
 
@@ -497,22 +575,128 @@
       badge.className = "robots-badge" + (data.available_robot_count === 0 ? " zero" : "");
 
       renderRobots();
+      renderNotices();
 
       const grid = document.getElementById("grid");
       if (!data.pois.length) {
+        grid.className = "grid";
         grid.innerHTML = '<div class="empty-state">작업 위치(POI)가 없습니다. 맵 관리에서 jack POI를 등록하세요.</div>';
         return;
       }
       // 내용이 그대로면 DOM 을 다시 만들지 않는다.
       // 폴링마다(3초) 타일 전체를 새로 그리면 버튼이 순간적으로 다시 그려져
       // 누르는 중에 깜빡이거나 클릭이 씹힐 수 있다.
-      const html = orderedPois().map(tileHtml).join("");
-      if (html !== lastGridHtml) {
+      const zones = data.zones || [];
+      const html = zones.length ? zonedHtml(zones) : orderedPois().map(tileHtml).join("");
+      const cls = zones.length ? "grid zoned" : "grid";
+      if (html !== lastGridHtml || cls !== grid.className) {
         lastGridHtml = html;
+        grid.className = cls;   // #grid 자체는 유지 — 클릭 위임이 여기 걸려 있다
         grid.innerHTML = html;
       }
     }
     let lastGridHtml = "";
+
+    // ── 구역 2분할 (LGIT 요청 5번) ─────────────────────────
+    // 좌: 자재실(R1·J2) / 우: EOL(R2·J1). 구역 순서는 서버(poi_labels.json)가 정한다.
+    // 구역이 지정되지 않은 POI 는 아래 "기타" 칸에 종전 그리드 그대로 그린다.
+    function zonedHtml(zones) {
+      const list = orderedPois();
+      let html = "";
+      for (const z of zones) {
+        const mine = list.filter(p => p.zone === z);
+        if (!mine.length) continue;
+        html += `
+          <section class="zone-col">
+            <div class="zone-head">${z}<span class="zone-count">${mine.length}곳</span></div>
+            <div class="grid">${mine.map(tileHtml).join("")}</div>
+          </section>`;
+      }
+      const etc = list.filter(p => !p.zone);
+      if (etc.length) {
+        html += `
+          <section class="zone-col zone-etc">
+            <div class="zone-head">기타<span class="zone-count">${etc.length}곳</span></div>
+            <div class="grid">${etc.map(tileHtml).join("")}</div>
+          </section>`;
+      }
+      return html;
+    }
+
+    // ── 관제 알림 배너 ─────────────────────────────────────
+    // ack_required 인 알림은 [확인] 을 눌러야 사라진다(강제 종료 안내).
+    // 그 외(도킹 실패)는 조건이 풀리면 서버가 알아서 내린다.
+    function renderNotices() {
+      const el = document.getElementById("nt-alert");
+      if (!el) return;
+      const list = data.notices || [];
+      if (!list.length) { el.classList.remove("show"); el.innerHTML = ""; return; }
+      el.innerHTML = list.map(n => {
+        const danger = (n.kind || "").indexOf("dock_fail") === 0 ? " danger" : "";
+        const ack = n.ack_required
+          ? `<button class="nt-ack" data-ack="${n.id}">확인</button>` : "";
+        return `<div class="nt-item${danger}"><span class="nt-msg">${n.message}</span>${ack}</div>`;
+      }).join("");
+      el.classList.add("show");
+    }
+
+    document.getElementById("nt-alert").addEventListener("click", async (e) => {
+      const btn = e.target.closest("[data-ack]");
+      if (!btn) return;
+      btn.disabled = true;
+      try {
+        await api(`/api/dispatch/notices/${btn.dataset.ack}/ack`, { method: "POST" });
+      } catch (err) { toast("확인 처리 실패: " + err.message); }
+      refresh(true);
+    });
+
+    // ── 전역 강제 종료 (LGIT 요청 3번) ─────────────────────
+    let gcMode = null;   // "current" | "all"
+
+    function openGcModal(mode) {
+      gcMode = mode;
+      const title = document.getElementById("gc-title");
+      const hint = document.getElementById("gc-hint");
+      if (mode === "current") {
+        title.textContent = "현재 JOB 강제 종료";
+        hint.innerHTML = "진행 중인 작업을 즉시 중지합니다.<br/>"
+          + "로봇은 <b>그 자리에 정지</b>합니다 (충전소로 가지 않습니다).<br/>"
+          + "<b>대기 중인 호출은 그대로 남습니다.</b>";
+      } else {
+        title.textContent = "전체 강제 종료";
+        hint.innerHTML = "진행 중인 작업과 <b>대기 중인 호출까지 전부</b> 취소합니다.<br/>"
+          + "로봇은 <b>그 자리에 정지</b>합니다 (충전소로 가지 않습니다).<br/>"
+          + "다시 시작하려면 처음부터 호출해야 합니다.";
+      }
+      document.getElementById("gc-modal").classList.add("show");
+    }
+    function closeGcModal() {
+      gcMode = null;
+      document.getElementById("gc-modal").classList.remove("show");
+    }
+    document.getElementById("gc-current").onclick = () => openGcModal("current");
+    document.getElementById("gc-all").onclick = () => openGcModal("all");
+    document.getElementById("gc-cancel").onclick = closeGcModal;
+    document.getElementById("gc-modal").onclick = (e) => {
+      if (e.target.id === "gc-modal") closeGcModal();
+    };
+    document.getElementById("gc-ok").onclick = async () => {
+      const mode = gcMode;
+      closeGcModal();
+      if (!mode) return;
+      pendingActions++;
+      try {
+        const r = await api(`/api/dispatch/force-clear/${mode}`, { method: "POST" });
+        toast(mode === "current"
+          ? `작업 중지 — 로봇 ${r.cleared || 0}대`
+          : `전체 중지 — 로봇 ${r.cleared || 0}대 · 대기 호출 ${r.cancelled || 0}건 취소`);
+      } catch (e) {
+        toast("강제 종료 실패: " + e.message);
+      } finally {
+        pendingActions--;
+        refresh(true);
+      }
+    };
 
     // 배송 모드에서는 R→J 짝끼리 붙여 보여준다.
     // (이름순 그대로면 J1, J2, R1, R2 로 흩어져 어느 R 이 어느 J 와 짝인지 안 보임)
@@ -1231,14 +1415,27 @@
       } catch (e) { rcStatus("재생 실패"); }
     };
 
-    // ── 주행 속도 (로봇별) ─────────────────────────────
-    // POST 는 DB(robots.max_speed) 에도 저장한다. 서버 시작 때 startup 이 그 값을
-    // 로봇에 다시 밀어넣으므로, 여기서 바꾸면 재시작 후에도 유지된다.
-    function spPaint(v) {
+    // ── 주행 속도 (로봇별) — 잭 상태별 2단 ─────────────
+    // 공차(랙 없음) / 적재(랙 있음) 두 값을 따로 저장한다.
+    // 공차 값은 서버가 DB(robots.max_speed) 에도 써두므로, 서버 시작 때 로봇에
+    // 다시 밀어넣는 기존 경로가 그대로 살아 있다 → 재시작 후에도 유지된다.
+    function spPaintOne(id, v) {
       const n = Number(v);
       if (!isFinite(n)) return;
-      document.getElementById("sp-speed").value = n;
-      document.getElementById("sp-speed-val").textContent = n.toFixed(1) + " m/s";
+      document.getElementById(id).value = n;
+      document.getElementById(id + "-val").textContent = n.toFixed(1) + " m/s";
+    }
+    function spPaint(d) {
+      // 구버전 응답(숫자 하나)도 받아준다
+      if (typeof d === "number") { spPaintOne("sp-speed", d); return; }
+      spPaintOne("sp-speed", d.empty_speed != null ? d.empty_speed : d.max_forward_velocity);
+      spPaintOne("sp-laden", d.laden_speed);
+      const now = document.getElementById("sp-now");
+      if (now) {
+        now.textContent = d.laden
+          ? "현재 상태: 랙 적재 중 — 적재 속도로 주행합니다"
+          : "현재 상태: 랙 없음 — 공차 속도로 주행합니다";
+      }
     }
 
     async function spLoad() {
@@ -1246,29 +1443,35 @@
       try {
         const res = await fetch(`/api/robots/speed/${rcIp}`);
         if (!res.ok) return;
-        const d = await res.json();
-        spPaint(d.max_forward_velocity);
+        spPaint(await res.json());
       } catch (e) { /* 못 읽어도 모달은 열려야 한다 */ }
     }
 
     // 슬라이더는 끌 때마다 저장하면 요청이 쏟아지므로, 손을 뗀 뒤 한 번만 보낸다
-    let spSaveTimer = null;
-    document.getElementById("sp-speed").oninput = (e) => {
-      const v = Number(e.target.value);
-      document.getElementById("sp-speed-val").textContent = v.toFixed(1) + " m/s";
-      clearTimeout(spSaveTimer);
-      spSaveTimer = setTimeout(async () => {
-        if (!rcIp) return;
-        try {
-          const res = await fetch(`/api/robots/speed/${rcIp}`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ max_forward_velocity: v }),
-          });
-          rcStatus(res.ok ? `주행 속도 ${v.toFixed(1)} m/s 적용` : "속도 변경 실패");
-        } catch (e2) { rcStatus("속도 변경 실패"); }
-      }, 400);
-    };
+    const spSaveTimers = {};
+    function spBind(id, key, label) {
+      document.getElementById(id).oninput = (e) => {
+        const v = Number(e.target.value);
+        document.getElementById(id + "-val").textContent = v.toFixed(1) + " m/s";
+        clearTimeout(spSaveTimers[id]);
+        spSaveTimers[id] = setTimeout(async () => {
+          if (!rcIp) return;
+          const body = {};
+          body[key] = v;
+          try {
+            const res = await fetch(`/api/robots/speed/${rcIp}`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(body),
+            });
+            rcStatus(res.ok ? `${label} ${v.toFixed(1)} m/s 저장` : "속도 변경 실패");
+            if (res.ok) spPaint(await res.json());
+          } catch (e2) { rcStatus("속도 변경 실패"); }
+        }, 400);
+      };
+    }
+    spBind("sp-speed", "empty_speed", "공차 속도");
+    spBind("sp-laden", "laden_speed", "적재 속도");
 
     // ── 전방 장애물 안전거리 (Yellow/Red) ───────────────
     const SZ_FIELDS = [

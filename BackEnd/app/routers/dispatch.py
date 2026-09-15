@@ -32,6 +32,10 @@ from app.schemas.dispatch import (
 )
 from app.crud import dispatch as dispatch_crud
 from app.services import dispatch_service
+# 화면에 보일 이름만 한글로 바꾼다. **조회 키로는 절대 쓰지 말 것** —
+# job_points 매핑·진입점("<이름>-1")·로봇 overlay 가 전부 원래 이름에 묶여 있다.
+from app.services.poi_label import label_for as _label, zone_for as _zone, zone_order as _zone_order
+from app.services import notice_service
 from app.models.dispatch import DispatchSession as DispatchSessionModel
 from app.models.robot import Robot as RobotModel, RobotStatus
 
@@ -118,8 +122,10 @@ def _list_available_pois(db: Session, robot_id: Optional[int] = None) -> list[PO
             .order_by(MapPOI.name.asc())
             .all()
         )
+    # name 은 **표시용**이다 — 호출부(태블릿 경유지 선택)는 id 로 보내므로 안전하다.
     return [
-        POIBrief(id=p.id, name=p.name, poi_type=p.poi_type, world_x=p.world_x, world_y=p.world_y)
+        POIBrief(id=p.id, name=_label(p.name), poi_type=p.poi_type,
+                 world_x=p.world_x, world_y=p.world_y)
         for p in pois
     ]
 
@@ -348,8 +354,24 @@ def _count_available_robots(db: Session) -> int:
     if not idle_robots:
         return 0
     # 2) 라이브 ONLINE 체크 (TTL 캐시 — 배차 선정 로직과 동일)
+    #
+    # ★ 2026-09-14 — **기다리지 않는다**(block=False).
+    #   이 값은 POI 태블릿의 "가용 로봇 N대" 표시와 [호출]/[예약하기] 라벨에만 쓴다.
+    #   태블릿은 2초마다 폴링하는데, 오프라인 로봇이 한 대라도 등록돼 있으면
+    #   캐시 만료(LIVE_CACHE_TTL_OFFLINE=60초)마다 조회가 타임아웃을 끝까지
+    #   기다려 폴링이 수십 초 멈췄다. 그동안 버튼 상태가 얼어 작업자가 여러 번 누른다.
+    #   콘솔(console/status)은 2026-08-24 에 이미 block=False 로 뺐는데
+    #   **이 경로만 빠져 있었다.**
+    #
+    #   필터 조건(is_active / 워커 없음 / 배터리)은 그대로다 — 위 docstring 의
+    #   "find_available_robot() 과 같아야 한다" 는 조건에 대한 것이고, 여기서
+    #   바뀌는 건 온라인 판정의 **최신성**뿐이다. 실제 배차는 여전히 block=True
+    #   로 정확히 판정한다(dispatch_service.find_available_robot).
+    #   캐시가 뒤처져도 결과는 무해하다 — 화면이 '1대' 인데 실제 0대면 호출이
+    #   예약으로 잡히고(기존 정상 경로), '0대' 인데 실제 1대면 예약 후 자동 호출된다.
     try:
-        online_ips = dispatch_service.online_ips_cached([r.ip_address for r in idle_robots])
+        online_ips = dispatch_service.online_ips_cached(
+            [r.ip_address for r in idle_robots], block=False)
         return sum(1 for r in idle_robots if r.ip_address in online_ips)
     except Exception:
         # 라이브 서비스 자체가 죽었으면 폴백 — 등록된 idle 수 그대로
@@ -411,6 +433,22 @@ def _safety_alerts() -> list[dict]:
         return safety_zone.active_alerts()
     except Exception:
         return []
+
+
+def _estop_pressed(robot_ip: Optional[str]) -> bool:
+    """비상정지가 눌려 있는가 (요청 6번). **캐시 조회일 뿐 로봇을 직접 치지 않는다.**
+
+    태블릿이 3초마다 폴링하는 경로라 여기서 로봇에 REST 를 걸면 LTE 지연이
+    그대로 화면 멈춤이 된다. 실제 조회는 estop_monitor 백그라운드 스레드가 한다.
+    '모름(None)'은 False 로 내린다 — 통신 장애를 비상정지로 보여주면 거짓 경보다.
+    """
+    if not robot_ip:
+        return False
+    try:
+        from app.services import estop_monitor
+        return estop_monitor.is_pressed(robot_ip) is True
+    except Exception:
+        return False
 
 
 def _poi_status(db: Session, poi_id: int) -> DispatchPOIStatusOut:
@@ -522,9 +560,12 @@ def _poi_status(db: Session, poi_id: int) -> DispatchPOIStatusOut:
     occupied = sorted(dispatch_crud.occupied_poi_ids(db))
     available = [p for p in available if p.id != poi_id]
 
+    # ★ 여기서부터가 '표시 계층' 이다. 위쪽 조회(paired_name 으로 MapPOI 검색,
+    #   job_point 매핑 조회)는 전부 **원래 이름** 으로 끝났고, 이제 화면에 내보낼
+    #   문자열만 한글로 바꾼다. 순서를 뒤집으면 매핑이 통째로 끊긴다.
     return DispatchPOIStatusOut(
         poi_id=poi_id,
-        poi_name=poi_name,
+        poi_name=_label(poi_name),
         state=state,
         reserved=reserved,
         reserved_with_rack=reserved_with_rack,
@@ -535,17 +576,18 @@ def _poi_status(db: Session, poi_id: int) -> DispatchPOIStatusOut:
         with_rack=with_rack_val,
         session_status=session_status,
         target_poi_id=target_id,
-        target_poi_name=target_name,
+        target_poi_name=_label(target_name),
         available_pois=available,
         occupied_poi_ids=occupied,
         available_robot_count=_count_available_robots(db),
         rack_present=rack_present,
         poi_type=poi_type,
         paired_poi_id=paired_id,
-        paired_poi_name=paired_name,
+        paired_poi_name=_label(paired_name),
         paired_state=paired_state,
         rack_occupied_at=rack_at,
         safety_alerts=_safety_alerts(),
+        notices=notice_service.list_for(notice_service.poi_target(poi_id)),
     )
 
 
@@ -770,7 +812,9 @@ def _console_status(db: Session) -> ConsoleStatusOut:
             session_status = session.status
             with_rack_val = bool(session.with_rack) if session.with_rack is not None else True
             target_id = session.target_poi_id
-            target_name = poi_name_by_id.get(target_id) if target_id else None
+            # poi_name_by_id 는 **원래 이름** 사전이다(매핑 조회에도 쓰인다).
+            # 화면에 나가는 값만 여기서 한글로 바꾼다.
+            target_name = _label(poi_name_by_id.get(target_id)) if target_id else None
             r = robots.get(session.robot_id)
             if r:
                 robot_id = r.id
@@ -795,6 +839,7 @@ def _console_status(db: Session) -> ConsoleStatusOut:
                     if next_poi_name is None and nxt.poi_id:
                         _np = db.query(MapPOI).filter(MapPOI.id == nxt.poi_id).first()
                         next_poi_name = _np.name if _np else None
+                    next_poi_name = _label(next_poi_name)
                 else:
                     is_last = True
 
@@ -804,11 +849,16 @@ def _console_status(db: Session) -> ConsoleStatusOut:
         if jp:
             paired_name = jp.r_poi_name if jp.j_poi_name == p.name else jp.j_poi_name
 
+        # paired_name 으로 id 를 찾는 것까지는 **원래 이름** 으로 해야 한다.
+        # 화면에 실어 보내는 문자열만 아래에서 한글로 바꾼다.
+        paired_id = poi_id_by_name.get(paired_name) if paired_name else None
+
         items.append(POIConsoleItem(
-            poi_id=p.id, poi_name=p.name, state=state,
+            poi_id=p.id, poi_name=_label(p.name), state=state,
             poi_type=p.poi_type or "jack",
-            paired_poi_id=poi_id_by_name.get(paired_name) if paired_name else None,
-            paired_poi_name=paired_name,
+            zone=_zone(p.name),
+            paired_poi_id=paired_id,
+            paired_poi_name=_label(paired_name),
             rack_occupied=bool(jp.occupied) if jp else False,
             rack_occupied_at=jp.occupied_at if jp else None,
             robot_id=robot_id, robot_name=robot_name, robot_ip=robot_ip,
@@ -821,6 +871,10 @@ def _console_status(db: Session) -> ConsoleStatusOut:
 
     counts = _available_robot_counts(db)
     robot_items = _console_robot_items(db, sessions, poi_name_by_id)
+    # 구역 순서는 설정 파일 순서를 따르되, 지금 화면에 실제로 있는 구역만 남긴다.
+    # (설정에만 있고 POI 가 없는 구역이 빈 칸으로 남으면 화면이 반쪽이 된다)
+    present = {it.zone for it in items if it.zone}
+    zones = [z for z in _zone_order() if z in present]
     return ConsoleStatusOut(
         pois=items,
         robots=robot_items,
@@ -829,6 +883,8 @@ def _console_status(db: Session) -> ConsoleStatusOut:
         available_robot_count=counts["total"],
         available_lifting_count=counts["lifting"],
         available_serving_count=counts["serving"],
+        zones=zones,
+        notices=notice_service.list_for(notice_service.TARGET_CONSOLE),
     )
 
 
@@ -869,7 +925,7 @@ def _console_robot_items(db: Session, sessions: list, poi_name_by_id: dict) -> l
         cur_name = None
         if sess:
             cur = sess.current_poi_id or sess.target_poi_id
-            cur_name = poi_name_by_id.get(cur) if cur else None
+            cur_name = _label(poi_name_by_id.get(cur)) if cur else None
         out.append(ConsoleRobotItem(
             robot_id=r.id,
             robot_name=r.name,
@@ -949,10 +1005,14 @@ def poi_route(poi_id: int, body: DispatchRouteRequest, db: Session = Depends(get
 def _robot_tablet_status(db: Session, robot_id: int) -> RobotTabletStatus:
     robot = db.query(Robot).filter(Robot.id == robot_id).first()
     robot_name = robot.name if robot else None
+    # 비상정지 표시(요청 6번). 배차가 없을 때도 눌려 있으면 알려야 하므로
+    # **세션 유무와 무관하게** 먼저 읽는다.
+    estop = _estop_pressed(robot.ip_address if robot else None)
 
     session = dispatch_crud.get_active_session(db, robot_id)
     if not session:
-        return RobotTabletStatus(robot_id=robot_id, robot_name=robot_name, active=False)
+        return RobotTabletStatus(robot_id=robot_id, robot_name=robot_name,
+                                 active=False, estop=estop)
 
     wps = dispatch_crud.list_waypoints(db, session.id)
     poi_ids = {w.poi_id for w in wps if w.poi_id}
@@ -961,7 +1021,8 @@ def _robot_tablet_status(db: Session, robot_id: int) -> RobotTabletStatus:
     poi_names: dict[int, str] = {}
     if poi_ids:
         for p in db.query(MapPOI).filter(MapPOI.id.in_(poi_ids)).all():
-            poi_names[p.id] = p.name
+            # 로봇 태블릿은 순수 표시 화면이다 — 여기 이름은 조회에 쓰이지 않는다
+            poi_names[p.id] = _label(p.name)
 
     current_poi_id = session.current_poi_id
     current_poi_name = poi_names.get(current_poi_id) if current_poi_id else None
@@ -989,6 +1050,7 @@ def _robot_tablet_status(db: Session, robot_id: int) -> RobotTabletStatus:
         next_poi_name=next_poi_name,
         is_last=is_last,
         can_confirm=can_confirm,
+        estop=estop,
         waypoints=[
             WaypointBrief(seq=w.seq, poi_id=w.poi_id,
                           poi_name=poi_names.get(w.poi_id), status=w.status)
@@ -1076,7 +1138,8 @@ def poi_send_end(poi_id: int):
 def tablet_poi_page(poi_id: int, db: Session = Depends(get_db)):
     """[호환] 위치(POI ID)별 태블릿 페이지."""
     poi = db.query(MapPOI).filter(MapPOI.id == poi_id).first()
-    poi_name = poi.name if poi else f"POI #{poi_id}"
+    # 제목은 표시용이므로 한글 이름이 있으면 그걸 쓴다(요청 4번)
+    poi_name = _label(poi.name) if poi else f"POI #{poi_id}"
     return _render_tablet_html(slot_number=0, poi_id=poi_id, poi_name=poi_name)
 
 
@@ -1109,7 +1172,8 @@ def tablet_slot_page(slot_number: int, db: Session = Depends(get_db)):
         return _render_tablet_html(slot_number=slot_number, poi_id=0,
                                     poi_name=f"슬롯 {slot_number}")
     poi = db.query(MapPOI).filter(MapPOI.id == slot.poi_id).first()
-    poi_name = (slot.alias or (poi.name if poi else f"POI #{slot.poi_id}"))
+    # 슬롯에 별칭을 직접 적어뒀으면 그것이 우선, 없으면 poi_labels.json 의 한글 이름
+    poi_name = (slot.alias or (_label(poi.name) if poi else f"POI #{slot.poi_id}"))
     return _render_tablet_html(slot_number=slot_number,
                                 poi_id=slot.poi_id,
                                 poi_name=poi_name,
@@ -1228,3 +1292,65 @@ def poi_rack_cleared(poi_id: int, db: Session = Depends(get_db)):
         return {"ok": True, "message": "매핑되지 않은 위치입니다 (점유 미추적)"}
     logger.info(f"[dispatch] 랙 치움 확인 — poi={j_name} 점유 해제 (요청: {poi.name})")
     return {"ok": True, "j_poi_name": j_name}
+
+
+# ══════════════════════════════════════════════════════════
+# 관제 알림 (도킹 실패 · 강제 종료 안내)  — services/notice_service.py
+#   대상(target) 규약:  "console"  또는  "poi:<poi_id>"
+#   POI 태블릿은 /poi/{id}/status 응답의 notices 로도 같은 값을 받는다.
+# ══════════════════════════════════════════════════════════
+
+
+@router.get("/notices")
+def list_notices(target: str = "console"):
+    """그 화면에 지금 떠 있어야 하는 알림 목록."""
+    return notice_service.list_for(target)
+
+
+@router.post("/notices/{notice_id:int}/ack")
+def ack_notice(notice_id: int):
+    """[확인] — `ack_required` 알림만 내려간다.
+
+    도킹 실패처럼 '조건이 풀려야 사라지는' 알림은 여기서 지워도 다음 회차에 다시 뜬다.
+    그래서 404 대신 ok=False 로 알려주고 화면은 조용히 넘어가게 한다.
+    """
+    return {"ok": notice_service.ack(notice_id)}
+
+
+# ══════════════════════════════════════════════════════════
+# 전역 강제 종료 (LGIT 요청 3번)
+#   로봇별 원격제어 패널의 [작업 강제 종료] 와 달리 **콘솔 상단에서 한 번에** 끊는다.
+#   로봇은 그 자리에 정지한다 — 이동 명령만 취소하고 물리적으로 움직이지 않는다.
+# ══════════════════════════════════════════════════════════
+
+
+@router.post("/force-clear/current")
+def force_clear_current():
+    """진행 중인 작업만 중지. **대기 중인 호출(예약)은 그대로 둔다.**"""
+    n = dispatch_service.force_clear_current()
+    notice_service.push(
+        notice_service.KIND_JOB_FORCE_CLEAR,
+        "⚠ 현재 작업이 중지되었습니다.\n"
+        "로봇이 그 자리에 정지해 있습니다.\n"
+        "관리자 확인 후 다시 호출해 주세요.",
+        targets=[notice_service.TARGET_CONSOLE],
+        ack_required=True,
+        key="force_clear",
+    )
+    return {"ok": True, "cleared": n}
+
+
+@router.post("/force-clear/all")
+def force_clear_all():
+    """진행 중 작업 + 대기 중인 호출(예약)까지 전부 취소."""
+    result = dispatch_service.force_clear_all()
+    notice_service.push(
+        notice_service.KIND_JOB_FORCE_CLEAR_ALL,
+        "⚠ 전체 작업이 중지되었습니다.\n"
+        "대기 중이던 호출도 모두 취소되었습니다.\n"
+        "관리자 확인 후 처음부터 다시 호출해 주세요.",
+        targets=[notice_service.TARGET_CONSOLE],
+        ack_required=True,
+        key="force_clear",
+    )
+    return {"ok": True, **result}

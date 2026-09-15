@@ -24,7 +24,8 @@
 동작 — 서행도 정지도 **속도로만** 건다
   Yellow 진입 → `max_forward_velocity` 를 `slow_speed` 로
   Red   진입 → `max_forward_velocity` 를 **0** 으로 (2026-09-07 실기에서 0 수용 확인)
-  해제      → 원래 속도(DB `robots.max_speed`) 복구
+  해제      → 원래 속도 복구. **잭 상태별 2단 속도**다 (2026-09-14, LGIT 요청 1번)
+              — 랙을 들었으면 적재 속도, 빈 몸이면 공차 속도. `_base_speed()` 참조
   전이할 때만 명령을 보낸다. 매 틱 쏘지 않는다.
 
 작업지점 주변에서는 판정하지 않는다 (2026-09-07 추가)
@@ -151,6 +152,159 @@ PRECISE_ACTIONS = {"align_with_rack", "charge", "to_unload_point"}
 # 없으면 거리가 임계값 근처에서 흔들릴 때 RED↔YELLOW 를 초 단위로 왕복하며
 # pause/resume 를 반복한다(2026-09-07 실측: 0.99 → 1.16 → 0.91).
 HYSTERESIS_M = 0.30
+
+# ══════════════════════════════════════════════════════════════════
+#  A-3) RED 은 **연속으로 잡혀야** 확정한다 (2026-09-14)
+#
+#  증상 — 랙을 싣고 R1 앞에 갔을 때 이런 일이 반복됐다.
+#      16:59:24  YELLOW  — 앞 2.82 m 서행
+#      16:59:31  ★ RED   — 앞 0.89 m 정지   (점=맵(2.20,3.11))
+#      16:59:32  해제    — 속도 복구          ← **1초 만에**
+#      16:59:58  [safe_move] 이동 미완료 (timeout)
+#    바로 앞 틱에 `맵에 있는 벽 12개 건너뜀` 이 찍혀 있었다. WALL_TOLERANCE_M(0.25)
+#    경계에 걸친 점이 스캔마다 '벽' 과 '새 장애물' 사이를 오간 것이다.
+#    한 번 RED 이 걸리면 속도 0 이 로봇에 들어가고, 1초 뒤 풀려도 그 사이
+#    `along_given_route` 가 진행을 못 해 safe_move 가 타임아웃으로 죽었다.
+#
+#  ★ 2026-09-14 2차 개정 — 적용 조건을 'YELLOW 였나' 에서 **'지금 속도'** 로 바꿨다.
+#    처음에는 "RED 직전엔 거의 항상 YELLOW(서행)를 거치니 YELLOW→RED 에만 붙이면
+#    된다" 고 봤는데, 그날 로그 전수를 세어보니 **19건 중 9건(47%)이
+#    CLEAR/SKIP 에서 곧바로 RED** 였다.
+#      이유 — 거리가 점점 가까워지는 게 아니라, **같은 점이 '벽' 과 '장애물' 사이를
+#      오가기 때문**이다. 벽으로 보던 점이 갑자기 벽이 아니게 되면 거리가
+#      "없음 → 1 m 안" 으로 **점프**한다. 중간(YELLOW)이 없다.
+#    그래서 존이 아니라 **실제 전진 속도**로 판단한다. 정지 여력이 있으면 붙이고,
+#    빠르면 안 붙인다. 그날 RED 19건의 속도 분포가 근거다.
+#      0.05 m/s 이하 10건 (이미 서 있었다) · 0.05~0.35 7건 · 0.58/0.62 2건
+#    → 17건에 확인이 붙고, 빠른 2건은 종전대로 즉시 정지한다.
+#
+#  ★ 확인을 기다리는 동안 존을 **YELLOW 로 올려 서행을 건다.**
+#    CLEAR 에서 직행하는 경우까지 대상이 됐으므로, 아무 제약 없이 달리면서
+#    기다리는 상태가 생기면 안 된다. 서행부터 걸어두고 다음 스캔을 본다.
+RED_CONFIRM_TICKS = 3
+
+# 확인을 붙여도 되는지 판단할 때 쓰는 물리값 (2026-09-04 실측)
+SCAN_PERIOD_SEC = 0.53     # 라이다 /scan_matched_points2 1.86 Hz
+REACTION_SEC = 0.68        # 스캔 지연 0.53 + 판정·POST 0.15
+DECEL_MS2 = 2.0            # control.max_forward_decel -2.0
+# 확인 지연까지 더한 정지거리가 red_m 의 이 비율 안에 들어와야 확인을 붙인다.
+# 1.0 으로 두면 딱 red_m 에서 멈추는 셈이라 여유가 없다.
+CONFIRM_MARGIN = 0.7
+
+
+def confirm_allowed(v: float, red_m: float,
+                    ticks: int = RED_CONFIRM_TICKS) -> bool:
+    """지금 속도 `v` 에서 `ticks` 회 확인을 붙여도 `red_m` 안에 멈출 수 있나.
+
+        정지거리 = (반응 + 확인지연) * v + v^2 / (2 * 감속도)
+
+    | v (m/s) | 3회 확인 시 정지거리 | red_m 1.0 * 0.7 = 0.7 | 확인 |
+    |---------|--------------------|----------------------|------|
+    | 0.10    | 0.177 m            | 통과                  | ⭕   |
+    | 0.25    | 0.451 m            | 통과                  | ⭕   |
+    | 0.35    | 0.640 m            | 통과                  | ⭕   |
+    | 0.40    | 0.736 m            | 초과                  | ❌   |
+    | 0.62    | 1.175 m            | 초과                  | ❌   |
+    """
+    v = abs(float(v))
+    delay = (max(1, ticks) - 1) * SCAN_PERIOD_SEC
+    stop = (REACTION_SEC + delay) * v + (v * v) / (2.0 * DECEL_MS2)
+    return stop <= float(red_m) * CONFIRM_MARGIN
+
+
+# ══════════════════════════════════════════════════════════════════
+#  C안) YELLOW 안에서 **거리별로 속도를 계단으로** 내린다 (2026-09-14)
+#
+#  왜 — 예전에는 YELLOW 전 구간이 `slow_speed`(0.3) 단일값이었다. 그러면
+#    RED 로 넘어가는 순간 0.3 → 0 이라 급정지가 되고, 3 m 지점에서도 이미
+#    0.3 까지 떨어져 통로가 느렸다.
+#
+#  계단으로 하면 **부드러워지면서 동시에 안전해진다.**
+#    · RED 직전 속도가 0.3 → 0.1 로 내려가 정지 폭이 1/3
+#    · 그때 정지거리도 0.227 → 0.071 m 로 짧아진다
+#    · 반대로 3~2 m 구간은 0.3 → 0.4 로 **빨라진다**
+#
+#  안전 검증 (정지거리 = 0.68*v + v^2/4)
+#    | 구간        | 속도 | 정지거리 | 다음 경계까지 | 여유    |
+#    | 3.0 → 2.0 m | 0.40 | 0.312 m  | 1.0 m        | 0.69 m |
+#    | 2.0 → 1.5 m | 0.25 | 0.186 m  | 0.5 m        | 0.31 m |
+#    | 1.5 → 1.0 m | 0.10 | 0.071 m  | 0.5 m        | 0.43 m |
+#    최악(3 m 밖 0.7 로 달리다 1 m 에 갑자기 출현)도 0.599 m 라 0.4 m 남기고 선다.
+#
+#  ※ 통과 시간은 3→1 m 기준 6.7초 → 9.5초로 2.8초 늘어난다. 그 구간은 어차피
+#    장애물이 안 치워지면 RED 로 설 구간이라 실害가 적다.
+#
+#  ※ `slow_speed` 설정값은 **계단 계산이 실패했을 때의 폴백**으로 남는다.
+SLOW_STEPS: list[tuple[float, float]] = [
+    (1.5, 0.10),      # 앞끝 1.5 m 안 → 0.10 m/s
+    (2.0, 0.25),      #        2.0 m 안 → 0.25
+    (3.0, 0.40),      #        3.0 m 안 → 0.40
+]
+
+# 계단을 **빠른 쪽으로 올라갈 때만** 경계를 이만큼 민다.
+# 없으면 2.0 m 경계에서 0.4 ↔ 0.25 가 초 단위로 왕복해 주행이 덜컹거린다.
+# 가까워지는 쪽(느려지는 쪽)은 즉시 적용한다 — 안전은 늦추지 않는다.
+SLOW_STEP_HYST_M = 0.30
+
+
+# ══════════════════════════════════════════════════════════════════
+#  속도 복구 램프 — 풀릴 때 한 번에 전속으로 올리지 않는다 (2026-09-14)
+#
+#  왜 — 해제 순간 `base_speed`(0.7)를 한 번에 쏘면, 1초 뒤 장애물이 다시 잡힐 때
+#    그 사이 가속하던 것을 되돌리느라 **울컥거린다.**
+#      19:45:33  해제 — 속도 복구 0.7 m/s      ← 0.1 에서 곧바로 0.7
+#      19:45:34  YELLOW — 앞 1.14 m 서행 0.1   ← 1초 뒤 도로 0.1
+#      19:45:34  해제 — 속도 복구 0.7          ← 또
+#    같은 1초 안에 0.7 → 0.1 → 0.7 이 오갔다. 그런 왕복이 그 주행에서 4회 있었다.
+#
+#  계단으로 올리면 부수 효과가 크다 — 1초 뒤 다시 잡혀도 그때 속도가 0.25 밖에
+#  안 되어 0.25 → 0 은 거의 느껴지지 않는다.
+#
+#  ★ 올리는 쪽만 늦춘다. **YELLOW/RED 진입은 램프와 무관하게 즉시**다 —
+#    감속·정지를 늦추는 일은 절대 없다. 로봇이 더 천천히 빨라질 뿐이라
+#    안전은 오히려 좋아진다.
+#
+#  ※ 로봇 자체 가속 한계(`max_forward_acc` 0.3 m/s²)는 건드리지 않는다.
+#    그건 이미 부드럽고, 문제는 **명령이 왔다갔다 한 것**이었다.
+SPEED_RAMP_STEPS: list[float] = [0.10, 0.25, 0.40]
+SPEED_RAMP_INTERVAL = 0.6      # 한 단계 올리는 간격(초). 스캔 주기 0.53 보다 약간 길게
+
+
+def ramp_next(cur: float, base: float) -> float:
+    """`cur` 다음 단계 속도. 더 올릴 계단이 없으면 `base`(원래 속도)."""
+    try:
+        for v in SPEED_RAMP_STEPS:
+            if v > float(cur) + 1e-6 and v < float(base) - 1e-6:
+                return v
+        return float(base)
+    except Exception:
+        return float(base)
+
+
+def slow_speed_for(dist, cur, default_slow: float) -> float:
+    """앞끝 거리 `dist` 에 맞는 서행 속도.
+
+    `cur` 는 지금 걸어둔 서행 속도(처음 진입이면 None). 지금 있는 계단에서
+    **벗어나려 할 때만** 그 계단의 경계를 `SLOW_STEP_HYST_M` 만큼 늘려
+    경계 왕복을 막는다.
+
+      예) 0.10 단계(1.5 m)에 있으면 1.8 m 를 넘어야 0.25 로 올라간다.
+          반대로 0.25 단계에서 1.4 m 로 가까워지면 곧바로 0.10 이 된다.
+    """
+    try:
+        if dist is None:
+            return float(default_slow)
+        d = float(dist)
+        for lim, spd in SLOW_STEPS:
+            edge = lim
+            if cur is not None and abs(float(cur) - spd) < 1e-6:
+                edge = lim + SLOW_STEP_HYST_M      # 지금 이 계단 — 벗어나기 어렵게
+            if d <= edge:
+                return spd
+        return SLOW_STEPS[-1][1]
+    except Exception:
+        return float(default_slow)          # 어떤 이유로든 실패하면 종전 단일값
+
 
 # RED 에서 거는 속도. 0 = 완전 정지 (로봇이 0 을 받아주는 것을 2026-09-07 실기 확인).
 # 이동 명령은 살아 있으므로 장애물이 비키면 그 자리에서 이어서 간다.
@@ -279,17 +433,35 @@ def _set_state(ip: str, zone: str, dist: Optional[float],
 
 
 def _base_speed(ip: str) -> float:
-    """이 로봇의 원래 주행 속도(DB). 서행 해제 때 이 값으로 되돌린다."""
-    from app.database import SessionLocal
-    from app.models.robot import Robot
-    db = SessionLocal()
+    """이 로봇의 '원래' 주행 속도. 서행·정지를 풀 때 이 값으로 되돌린다.
+
+    ★ 2026-09-14 — **잭 상태에 따라 값이 달라진다** (LGIT 요청 1번).
+      랙을 들고 있으면 적재 속도(기본 0.8), 빈 몸이면 공차 속도(기본 1.2)다.
+
+      여기를 안 고치면 2단 속도가 **동작하지 않는다.** 잭 업 직후 적재 속도를
+      쏴도, 이 모듈이 YELLOW/RED 해제나 작업지점 SKIP 진입 때마다 옛 단일값으로
+      덮어써 버리기 때문이다(`_release` / SKIP 진입 / CLEAR 복귀 세 군데).
+
+      Yellow 0.3 / Red 0.0 은 **그대로다** — 이 함수는 '해제 후 돌아갈 값' 만 정한다.
+
+    순환 import 주의: safety_zone ↔ jack_service 를 모듈 최상단에서 서로 부르면
+    안 되므로 여기서 지연 import 한다.
+    """
     try:
-        r = db.query(Robot).filter(Robot.ip_address == ip).first()
-        return float(r.max_speed) if (r and r.max_speed) else 1.2
+        from app.services import jack_service, speed_settings
+        return speed_settings.speed_for(ip, jack_service.is_laden(ip))
     except Exception:
-        return 1.2
-    finally:
-        db.close()
+        # 설정·판정이 어떤 이유로든 실패하면 종전 동작(DB 단일값)으로 떨어진다
+        from app.database import SessionLocal
+        from app.models.robot import Robot
+        db = SessionLocal()
+        try:
+            r = db.query(Robot).filter(Robot.ip_address == ip).first()
+            return float(r.max_speed) if (r and r.max_speed) else 1.2
+        except Exception:
+            return 1.2
+        finally:
+            db.close()
 
 
 def _current_move(ip: str, cache: dict) -> tuple[str, bool]:
@@ -640,6 +812,10 @@ def _worker(ip: str) -> None:
             last_speed_sent = 0.0    # 걸어둔 속도를 마지막으로 보낸 시각
             last_speed_fail_log = 0.0
             red_since = 0.0          # RED 이 시작된 시각 — 정적 장애물 알림 판정용
+            red_streak = 0           # RED 이 연속으로 잡힌 횟수 (A-3)
+            last_confirm_log = 0.0
+            slow_now = 0.0           # 지금 걸어둔 서행 속도 (C안 계단)
+            ramp_v = 0.0             # 복구 램프 진행 중인 속도 (0 = 램프 아님)
             alerted = 0.0            # 알림 이력을 마지막으로 남긴 시각
             last_wall_log = 0.0
             front = 0.379        # 자기 앞끝. /robot_model 오면 갱신된다
@@ -738,6 +914,8 @@ def _worker(ip: str) -> None:
                                     f"({nw[0]:.2f} m ≤ {skip_r:.2f}) — 판정 제외")
                         zone = SKIP
                         clear_since = 0.0
+                        slow_now = 0.0
+                        ramp_v = 0.0
                     _set_state(ip, SKIP, None, poi=nw[1])
                     continue
                 if zone == SKIP:
@@ -791,12 +969,44 @@ def _worker(ip: str) -> None:
                 # 전이할 때 한 번만 보내면 ① POST 실패 ② 콘솔 속도 슬라이더가
                 # 덮어쓰는 경우에 "화면엔 정지, 실제로는 주행" 이 된다.
                 if zone in (YELLOW, RED) and now - last_speed_sent >= SPEED_REASSERT_SEC:
+                    # 서행은 **지금 걸어둔 계단값**을 다시 보낸다. 설정값(slow_speed)을
+                    # 보내면 계단으로 내려둔 속도가 매 3초마다 0.3 으로 되돌아간다.
                     if _set_speed(ip, RED_SPEED if zone == RED
-                                  else float(cfg["slow_speed"])):
+                                  else (slow_now or float(cfg["slow_speed"]))):
                         last_speed_sent = now
 
                 want = decide_zone(zone, edge, action,
                                    float(cfg["red_m"]), float(cfg["yellow_m"]))
+
+                # ── A-3) RED 은 연속으로 잡혀야 확정한다 (2026-09-14) ──
+                # 적용 여부는 **지금 속도**로 정한다 — 존이 아니다.
+                # 그날 RED 19건 중 9건이 CLEAR/SKIP 에서 직행이라, 존으로 거르면
+                # 절반을 놓친다(같은 점이 벽↔장애물로 뒤집히면 거리가 점프한다).
+                # 확인을 기다리는 동안에는 **YELLOW 로 올려 서행을 걸어둔다.**
+                # 자세한 근거·계산표는 위 RED_CONFIRM_TICKS / confirm_allowed 참조.
+                # ★ 판정에 쓰는 속도는 **우리가 걸어둔 지령값**이다 (2026-09-14 19:01 실측).
+                #   포즈 델타 추정(fwd_speed)은 튄다 — 계단으로 0.10 m/s 를 걸어둔
+                #   상태인데 추정이 클램프 상한 1.20 으로 찍혀 확인이 안 붙었다.
+                #     19:01:06  서행 단계 0.25 → 0.10 m/s (앞 1.45 m)
+                #     19:01:08  ★ RED — 앞 0.85 m 정지 ... 속도+1.20   ← 실제는 0.10
+                #   포즈가 1 Hz 라 dt 가 작을 때 몇 cm 의 위치추정 흔들림도 큰 속도가 된다.
+                #   지령값은 로봇이 그 이상 못 내므로 **보수적으로 안전**하다.
+                #   YELLOW 가 아니면(CLEAR/SKIP 에서 직행) 전속일 수 있으니 즉시 정지한다.
+                cmd_v = ((slow_now or float(cfg["slow_speed"])) if zone == YELLOW
+                         else MAX_EXTRAPOLATE_SPEED)
+                if want == RED and zone != RED and confirm_allowed(
+                        cmd_v, float(cfg["red_m"])):
+                    red_streak += 1
+                    if red_streak < RED_CONFIRM_TICKS:
+                        if now - last_confirm_log > 3:
+                            logger.info(
+                                f"[safety] {ip} RED 후보 {red_streak}/{RED_CONFIRM_TICKS}"
+                                f" — 앞 {edge:.2f} m, 지령 {cmd_v:.2f} m/s"
+                                f" (추정 {fwd_speed:+.2f}) — 서행 걸고 다음 스캔 확인")
+                            last_confirm_log = now
+                        want = YELLOW      # 확정 전까지 서행. CLEAR 였어도 올린다
+                else:
+                    red_streak = 0
 
                 # (2026-09-08 제거) '회전 중이면 RED 대신 서행' 예외.
                 #   코너에서 밴드가 **맵의 벽**을 훑어 멈추던 것을 막으려던 규칙인데,
@@ -845,6 +1055,28 @@ def _worker(ip: str) -> None:
                     alerted = 0.0
 
                 if want == zone:
+                    # 풀린 뒤 속도를 한 단계씩 올린다 (복구 램프).
+                    # 램프가 끝나면 ramp_v 가 0 이 되고 여기는 아무 일도 하지 않는다.
+                    if zone == CLEAR and ramp_v:
+                        if now - last_speed_sent >= SPEED_RAMP_INTERVAL:
+                            base = _base_speed(ip)
+                            nxt = ramp_next(ramp_v, base)
+                            if _set_speed(ip, nxt):
+                                logger.info(f"[safety] {ip} 속도 복구 {ramp_v:.2f}"
+                                            f" → {nxt:.2f} m/s")
+                                ramp_v = nxt if nxt < base - 1e-6 else 0.0
+                                last_speed_sent = now
+                    # ★ YELLOW 안에서도 거리가 바뀌면 계단을 다시 고른다 (C안).
+                    #   예전에는 여기서 아무것도 안 해서, 한 번 건 서행 속도가
+                    #   존을 벗어날 때까지 그대로였다.
+                    if zone == YELLOW:
+                        spd = slow_speed_for(edge, slow_now,
+                                             float(cfg["slow_speed"]))
+                        if abs(spd - slow_now) > 1e-6 and _set_speed(ip, spd):
+                            logger.info(f"[safety] {ip} 서행 단계 {slow_now:.2f} → "
+                                        f"{spd:.2f} m/s (앞 {edge:.2f} m)")
+                            slow_now = spd
+                            last_speed_sent = now
                     _set_state(ip, zone, edge)
                     continue
 
@@ -863,28 +1095,42 @@ def _worker(ip: str) -> None:
                     # 좌표가 있어야 한다. 로봇 pos·앞끝과 같이 봐야 판단이 된다.
                     where = (f" 점=맵({hit[2]:.2f},{hit[3]:.2f}) 좌우{hit[1]:+.2f}m"
                              f" 중심거리{hit[0]:.2f}m" if hit else "")
+                    ramp_v = 0.0        # 정지는 램프와 무관하게 즉시
                     logger.warning(
                         f"[safety] {ip} ★ RED — 앞 {edge:.2f} m 정지"
                         f" | 로봇({px_e:.2f},{py_e:.2f}) 앞끝{front:.3f}"
                         f" 포즈나이{age:.2f}s 속도{fwd_speed:+.2f}{where}")
                 elif want == YELLOW:
-                    if not _set_speed(ip, float(cfg["slow_speed"])):
+                    # 거리별 계단 속도 (C안). 계단 계산이 실패하면 설정값 폴백.
+                    spd = slow_speed_for(edge, None, float(cfg["slow_speed"]))
+                    if not _set_speed(ip, spd):
                         if now - last_speed_fail_log > 5:
                             logger.warning(f"[safety] {ip} 서행 적용 실패 — "
                                            f"존 유지({zone}) 후 재시도")
                             last_speed_fail_log = now
                         continue
+                    slow_now = spd
+                    ramp_v = 0.0        # 서행 진입도 램프와 무관하게 즉시
                     logger.info(f"[safety] {ip} YELLOW — 앞 {edge:.2f} m 서행 "
-                                f"{cfg['slow_speed']} m/s")
+                                f"{spd} m/s")
                 else:  # CLEAR
                     base = _base_speed(ip)
-                    if not _set_speed(ip, base):
+                    # ★ 한 번에 base 로 올리지 않는다. 직전 서행 속도의 **한 단계 위**
+                    #   부터 시작해 0.6초마다 올린다. 근거는 SPEED_RAMP_STEPS 주석.
+                    start = ramp_next(slow_now if zone == YELLOW else 0.0, base)
+                    if not _set_speed(ip, start):
                         if now - last_speed_fail_log > 5:
                             logger.warning(f"[safety] {ip} 속도 복구 실패 — "
                                            f"존 유지({zone}) 후 재시도")
                             last_speed_fail_log = now
                         continue
-                    logger.info(f"[safety] {ip} 해제 — 속도 복구 {base} m/s")
+                    slow_now = 0.0          # 계단 상태 초기화
+                    ramp_v = start if start < base - 1e-6 else 0.0
+                    if ramp_v:
+                        logger.info(f"[safety] {ip} 해제 — {start:.2f} m/s 부터 "
+                                    f"단계 복구 (목표 {base} m/s)")
+                    else:
+                        logger.info(f"[safety] {ip} 해제 — 속도 복구 {base} m/s")
 
                 zone = want
                 last_speed_sent = now

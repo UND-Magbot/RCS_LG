@@ -36,6 +36,47 @@ def start() -> None:
     _thread = safe_thread(target=_loop, name="boot-recovery")
     _thread.start()
     logger.info("[boot_recovery] 시작 (부팅 후 맵/위치 자동 복구)")
+    # 2단 속도(LGIT 요청 1번)의 '적재 여부' 는 메모리 플래그라 서버 재시작 시 사라진다.
+    # 랙을 든 채로 서버만 다시 켜면 **적재 상태인데 공차 속도로 달리게** 되므로
+    # 실제 잭 상태를 한 번 읽어 보정한다. 느린 작업이라 별도 스레드로 뺀다.
+    safe_thread(target=sync_laden_flags, name="laden-sync").start()
+
+
+def sync_laden_flags() -> None:
+    """실제 잭 상태(progress·weight)를 읽어 적재 플래그를 맞춘다 — 1회성 보정.
+
+    판정 불가(통신 실패)면 **건드리지 않는다.** 모르는 상태를 '공차' 로 단정하면
+    랙을 든 로봇이 빠른 속도로 달린다 — 안전하지 않은 쪽으로 틀리게 된다.
+    """
+    import time
+    from app.database import SessionLocal
+    from app.models.robot import Robot
+    from app.services import jack_service
+
+    time.sleep(3)      # 기동 직후 폭주 방지 (다른 startup 작업과 겹치지 않게)
+    db = SessionLocal()
+    try:
+        rows = db.query(Robot).filter(
+            Robot.is_active == True, Robot.ip_address != None      # noqa: E712,E711
+        ).all()
+        ips = [r.ip_address for r in rows if r.ip_address]
+    except Exception:
+        logger.warning("[boot_recovery] 적재 플래그 보정 — 로봇 목록 조회 실패")
+        return
+    finally:
+        db.close()
+
+    for ip in ips:
+        try:
+            loaded = jack_service.is_rack_loaded(ip)
+        except Exception:
+            loaded = None
+        if loaded is None:
+            logger.info(f"[boot_recovery] {ip} 잭 상태 판정 불가 — 적재 플래그 유지")
+            continue
+        jack_service.set_laden(ip, loaded)
+        logger.info(f"[boot_recovery] {ip} 적재 플래그 보정: "
+                    f"{'랙 있음(적재)' if loaded else '랙 없음(공차)'}")
 
 
 def stop() -> None:
@@ -151,6 +192,19 @@ def _recover_robot(robot_id: int) -> None:
 
         # 2) 충전소 기준 위치재조정 (부팅/동기화 공용 함수)
         relocalize_robot_to_dock(robot_id)
+
+        # 3) 적재 플래그 보정 — 로봇이 재부팅됐으니 잭 상태를 다시 실측한다.
+        #    (2단 속도용. 판정 불가면 건드리지 않는다)
+        if ip:
+            try:
+                from app.services import jack_service
+                loaded = jack_service.is_rack_loaded(ip)
+                if loaded is not None:
+                    jack_service.set_laden(ip, loaded)
+                    logger.info(f"[boot_recovery] {ip} 적재 플래그 보정: "
+                                f"{'랙 있음(적재)' if loaded else '랙 없음(공차)'}")
+            except Exception:
+                logger.warning(f"[boot_recovery] {ip} 적재 플래그 보정 실패(무시)")
     except Exception:
         logger.exception(f"[boot_recovery] 복구 오류 robot_id={robot_id}")
     finally:

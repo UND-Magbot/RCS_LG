@@ -324,3 +324,32 @@ def get_safety_status():
     """로봇별 현재 존(clear/yellow/red)과 전방 최근접 거리 — 콘솔 표시용."""
     from app.services import safety_zone
     return safety_zone.status()
+
+
+# ── POI 표시 이름(한글) · 구역 — LGIT 요청 4·5번 ──────────────
+# 저장소는 BackEnd/static/poi_labels.json 이고, 실제 번역은 services/poi_label.py 가 한다.
+# DB 의 POI 이름(R1/J1…)은 **절대 바꾸지 않는다** — 배경은 poi_label.py 독스트링 참조.
+
+
+class PoiLabelItem(BaseModel):
+    label: str = Field("", max_length=100)
+    zone: str | None = Field(None, max_length=50)
+
+
+@router.get("/poi-labels")
+def get_poi_labels():
+    """POI 영문 이름 → {표시 이름, 구역} 전체 매핑."""
+    from app.services import poi_label
+    return poi_label.all_labels()
+
+
+@router.put("/poi-labels")
+def put_poi_labels(payload: dict[str, PoiLabelItem]):
+    """전체 덮어쓰기. **빈 객체를 보내면 매핑이 비워져 원래 이름으로 돌아간다**(롤백)."""
+    from app.services import poi_label
+    try:
+        return poi_label.save_all(
+            {k: v.model_dump() for k, v in (payload or {}).items()})
+    except Exception as e:
+        logger.exception(f"[settings] poi_labels.json 저장 실패: {e}")
+        raise HTTPException(500, f"표시 이름 저장 실패: {e}")

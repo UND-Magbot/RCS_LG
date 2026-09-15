@@ -60,3 +60,6 @@ __pycache__/
 _logs/run_*/
 _logs/costmap_*/
 BackEnd/_logs/
+
+# 현장 이관용 패치 묶음 (필요할 때 다시 만든다)
+RCS_LG_패치_*.zip

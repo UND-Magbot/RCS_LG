@@ -616,12 +616,64 @@ JACK_UP_PROGRESS_MIN = 0.9      # 이 이상이면 잭이 올라간 것
 JACK_LOADED_WEIGHT_MIN = 10.0   # 이 이상이면 하중이 실린 것 = 랙을 들고 있음
 
 
+# ── 적재 여부(랙을 들고 있는가) — LGIT 요청 1번 2단 속도용 ──────
+#
+# ★ 여기(jack_service)에서 갱신하는 것이 핵심이다.
+#   잭을 올리는 경로가 배차 워커·원격제어·잭 테스트로 여러 갈래인데, 전부 아래
+#   jack_up/jack_down 을 거친다. 여기서 한 번 갱신하면 **모든 호출자가 자동으로
+#   커버된다.** 호출부마다 플래그를 세우면 언젠가 한 군데를 빠뜨린다.
+#
+# 서버 재시작 시 이 값은 사라진다 → boot_recovery 가 is_rack_loaded() 로 1회 보정한다.
+_laden_flags: dict[str, bool] = {}
+
+
+def is_laden(ip: str) -> bool:
+    """지금 랙을 들고 있는 것으로 보는가. 모르면 False(= 공차, 종전 속도)."""
+    return bool(_laden_flags.get(ip, False))
+
+
+def set_laden(ip: str, laden: bool, *, apply_speed: bool = True) -> None:
+    """적재 상태를 바꾸고, 바뀌었으면 그 즉시 해당 속도를 로봇에 1회 적용한다.
+
+    안전존(safety_zone)이 꺼져 있을 수도 있으므로 여기서도 직접 보낸다.
+    켜져 있으면 안전존이 `_base_speed()` 로 같은 값을 계속 유지한다.
+    """
+    before = _laden_flags.get(ip)
+    _laden_flags[ip] = bool(laden)
+    if before == bool(laden) or not apply_speed:
+        return
+    logger.info(f"[speed] {ip} 적재 상태 변경: {before} → {bool(laden)}")
+    apply_state_speed(ip)
+
+
+def apply_state_speed(ip: str) -> bool:
+    """지금 적재 상태에 맞는 속도를 로봇에 적용한다. 실패해도 예외를 올리지 않는다."""
+    try:
+        from app.services import speed_settings
+        v = speed_settings.speed_for(ip, is_laden(ip))
+        r = requests.post(robot_url(ip, "/robot-params"),
+                          json={"/wheel_control/max_forward_velocity": float(v)},
+                          timeout=5)
+        ok = r.status_code < 400
+        logger.info(f"[speed] {ip} {'적재' if is_laden(ip) else '공차'} 속도 "
+                    f"{v} m/s 적용 {'성공' if ok else f'거부(HTTP {r.status_code})'}")
+        return ok
+    except Exception as e:
+        logger.warning(f"[speed] {ip} 속도 적용 실패(무시): {e}")
+        return False
+
+
 def jack_up(ip: str) -> dict:
-    return robot_post(ip, "/services/jack_up")
+    # robot_post 는 실패하면 예외를 던진다 → 여기까지 오면 명령이 접수된 것이다
+    res = robot_post(ip, "/services/jack_up")
+    set_laden(ip, True)
+    return res
 
 
 def jack_down(ip: str) -> dict:
-    return robot_post(ip, "/services/jack_down")
+    res = robot_post(ip, "/services/jack_down")
+    set_laden(ip, False)
+    return res
 
 
 def read_jack_state(ip: str, timeout: float = 6.0) -> Optional[dict]:
@@ -771,8 +823,56 @@ ALIGN_MAX_RETRIES = 4
 ALIGN_WAIT_SEC = 10              # 재시도 전 제자리 대기 (초)
 
 
+# ── 도킹(랙 정렬) 실패 알림 — LGIT 요청 2번 ───────────────────
+# 동작(4회 재시도 후 충전소 복귀)은 **바꾸지 않는다.** 알림만 얹는다.
+#
+# ★ 알림은 배송 모드의 R 픽업에서만 켠다(`notify_ctx` 를 준 호출만).
+#   인터랙티브 모드·경유지 순회의 align 에서도 뜨면 "대차를 정위치해 주세요" 가
+#   랙과 상관없는 화면에 뜬다.
+DOCK_NOTICE_TTL_SEC = 1800.0     # 해제 코드가 어떤 이유로 안 돌아도 30분이면 스스로 사라진다
+
+
+def _dock_notice_key(ip: str) -> str:
+    """로봇 1대당 도킹 알림 1건. 회차가 올라가면 같은 키로 갈아끼운다."""
+    return f"dock_fail:{ip}"
+
+
+def clear_dock_notice(ip: str) -> None:
+    """도킹 실패 알림 해제. 정렬 성공·충전소 복귀 완료 시 호출한다."""
+    try:
+        from app.services import notice_service
+        notice_service.clear(_dock_notice_key(ip))
+    except Exception:
+        pass
+
+
+def _push_dock_notice(ip: str, ctx: dict, attempt: int, max_retries: int,
+                      final: bool = False) -> None:
+    """도킹 실패 안내를 콘솔 + 그 위치 태블릿에 띄운다. 실패해도 주행에 영향 없음."""
+    try:
+        from app.services import notice_service
+        targets = [notice_service.TARGET_CONSOLE]
+        poi_id = ctx.get("poi_id")
+        if poi_id:
+            targets.append(notice_service.poi_target(poi_id))
+        where = ctx.get("poi_label") or ctx.get("poi_name") or ""
+        head = f"[{where}] " if where else ""
+        if final:
+            msg = f"{head}⚠ Docking 실패로 충전소로 복귀합니다."
+            kind = notice_service.KIND_DOCK_FAIL_FINAL
+        else:
+            msg = (f"{head}⚠ Docking에 실패했습니다. 대차를 정위치해 주세요. "
+                   f"({attempt}/{max_retries}회)")
+            kind = notice_service.KIND_DOCK_FAIL
+        notice_service.push(kind, msg, targets=targets,
+                            key=_dock_notice_key(ip), ttl_sec=DOCK_NOTICE_TTL_SEC)
+    except Exception:
+        logger.warning(f"[align_retry] {ip}: 도킹 실패 알림 전송 실패(무시)")
+
+
 def align_with_retry(ip: str, x: float, y: float, ori: float = 0,
-                     max_retries: int = ALIGN_MAX_RETRIES) -> dict:
+                     max_retries: int = ALIGN_MAX_RETRIES,
+                     notify_ctx: Optional[dict] = None) -> dict:
     """align_with_rack 재시도 — "정말 랙이 없는 게 아닌 한 인식되도록" 방어 로직.
 
     단계:
@@ -812,12 +912,18 @@ def align_with_retry(ip: str, x: float, y: float, ori: float = 0,
             if attempt > 1:
                 logger.info(f"[align_retry] {ip}: 재시도 {attempt}회차에 성공")
                 update_job_status(ip, message=f"랙 정렬 재시도 {attempt}회차에 성공")
+            if notify_ctx:
+                clear_dock_notice(ip)      # 성공 = 즉시 해제
             return result
         if state == "cancelled":
             return result
 
         fail_msg = result.get("fail_message") or state
         logger.warning(f"[align_retry] {ip}: 시도 {attempt}/{max_retries} 실패 — {fail_msg}")
+        # 실패 회차를 화면에 알린다(같은 키로 갈아끼우므로 줄이 쌓이지 않는다)
+        if notify_ctx:
+            _push_dock_notice(ip, notify_ctx, attempt, max_retries,
+                              final=(attempt >= max_retries))
 
         if attempt >= max_retries:
             break

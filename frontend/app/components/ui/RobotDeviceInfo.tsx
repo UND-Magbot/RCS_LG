@@ -359,7 +359,12 @@ export function RobotDeviceInfo({
           </div>
 
           <div className="robot-info__battery-row">
-            <span className="robot-info__label">최대 속도</span>
+            {/* 2026-09-14 — 잭 상태별 2단 속도(LGIT 요청 1번)로 바뀌면서
+                이 슬라이더는 **공차(랙 없음) 속도만** 바꾼다. 적재 속도는 배차
+                콘솔(/api/dispatch/console)에서 조절한다. 라벨을 그냥 '최대 속도'
+                로 두면, 랙을 든 로봇에서 이걸 움직였는데 속도가 안 변해 혼란스럽다
+                (백엔드가 지금 잭 상태에 맞는 값만 로봇에 보내기 때문). */}
+            <span className="robot-info__label">공차 속도 (랙 없음)</span>
             <input
               type="range"
               className="robot-info__range"

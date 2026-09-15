@@ -86,6 +86,9 @@ class DispatchPOIStatusOut(BaseModel):
     # 전방 장애물로 멈춰 있는 로봇 알림 — 태블릿이 배너로 계속 띄운다(2026-09-08 LG 요청).
     # 치우면 목록에서 빠지고 배너도 사라진다. [{robot_name, seconds, distance_m}]
     safety_alerts: list[dict] = Field(default_factory=list)
+    # 이 위치 태블릿에 띄울 안내(도킹 실패 등) — services/notice_service.py.
+    # safety_alerts 와 같은 배너 자리를 함께 쓴다. [{id, kind, message, ack_required, seconds}]
+    notices: list[dict] = Field(default_factory=list)
 
     # ── 2026-08-24 현장 배치 대응 ─────────────────────────────
     # 호출 버튼은 R(랙 보관), [확인] 버튼은 J(작업지점)에 둔다. R 태블릿은
@@ -141,6 +144,10 @@ class POIConsoleItem(BaseModel):
     rack_occupied: bool = False
     rack_occupied_at: Optional[datetime] = None
 
+    # 구역(자재실 / EOL …) — 콘솔 2분할 배치용. static/poi_labels.json 에서 온다.
+    # None 이면 콘솔 하단 '기타' 영역에 종전 그리드 그대로 그린다.
+    zone: Optional[str] = None
+
 
 class ConsoleRobotItem(BaseModel):
     """콘솔 사이드바의 로봇 한 장 (상태/배터리 + 직접 제어)."""
@@ -165,6 +172,11 @@ class ConsoleStatusOut(BaseModel):
     available_robot_count: int = 0
     available_lifting_count: int = 0
     available_serving_count: int = 0
+    # 구역 표시 순서 (좌 → 우). poi_labels.json 에 적힌 순서를 그대로 따른다.
+    # 비어 있으면 콘솔은 종전 단일 그리드로 그린다(= 설정 파일만 지우면 롤백).
+    zones: list[str] = Field(default_factory=list)
+    # 콘솔 상단에 띄울 안내(강제 종료 확인 등). [{id, kind, message, ack_required, seconds}]
+    notices: list[dict] = Field(default_factory=list)
 
 
 # ── 경유지 경로 / 로봇 부착 태블릿 ──────────────────────────
@@ -194,6 +206,9 @@ class RobotTabletStatus(BaseModel):
     is_last: bool = False                 # 마지막 경유지 도착(확인 시 종료)
     can_confirm: bool = False             # 지금 [확인] 가능한지 (awaiting_confirm)
     waypoints: list[WaypointBrief] = Field(default_factory=list)
+    # 비상정지 버튼이 눌려 있는가 (LGIT 요청 6번). services/estop_monitor.py 캐시값.
+    # 통신이 안 돼 모르면 False — "모른다"를 "눌렸다"로 보여주면 거짓 경보가 된다.
+    estop: bool = False
 
 
 # ── 슬롯 ─────────────────────────────────────────

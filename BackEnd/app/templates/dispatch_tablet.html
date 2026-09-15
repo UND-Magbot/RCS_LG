@@ -545,16 +545,25 @@
     // (콘솔과 같은 이유. 버튼이 활성↔비활성으로 깜빡이던 원인)
     let refreshSeq = 0;
 
-    // 전방 장애물로 멈춘 로봇 배너. 서버가 목록을 계속 주므로 치울 때까지 떠 있는다.
-    function renderSafetyAlert(list) {
+    // 배너 한 자리에 두 가지를 같이 띄운다 — 신규 UI 를 만들지 않는다.
+    //   ① 전방 장애물로 멈춘 로봇 (safety_alerts)
+    //   ② 관제 알림 (notices) — 도킹 실패 안내 등. 서버가 조건이 풀리면 알아서 내린다.
+    // 둘 다 "서버가 계속 주는 동안 떠 있는" 방식이라 화면 쪽 타이머가 필요 없다.
+    function renderSafetyAlert(list, notices) {
       const el = document.getElementById("sf-alert");
       if (!el) return;
-      if (!list.length) { el.classList.remove("show"); el.textContent = ""; return; }
-      el.innerHTML = list.map(a => {
+      const rows = [];
+      for (const a of (list || [])) {
         const d = (a.distance_m == null) ? "" : ` · 앞 ${Number(a.distance_m).toFixed(2)} m`;
-        return `⚠ ${a.robot_name} 이(가) 장애물에 막혀 ${a.seconds}초째 멈춰 있습니다`
-             + `<span class="sf-sub">앞을 막고 있는 물건을 치워 주세요${d}</span>`;
-      }).join("<hr style='border:0;border-top:1px solid rgba(255,255,255,.35);margin:10px 0'>");
+        rows.push(`⚠ ${a.robot_name} 이(가) 장애물에 막혀 ${a.seconds}초째 멈춰 있습니다`
+                + `<span class="sf-sub">앞을 막고 있는 물건을 치워 주세요${d}</span>`);
+      }
+      for (const n of (notices || [])) {
+        rows.push(`<span style="white-space:pre-line">${n.message}</span>`);
+      }
+      if (!rows.length) { el.classList.remove("show"); el.textContent = ""; return; }
+      el.innerHTML = rows.join(
+        "<hr style='border:0;border-top:1px solid rgba(255,255,255,.35);margin:10px 0'>");
       el.classList.add("show");
     }
 
@@ -570,7 +579,7 @@
       }
       if (seq !== refreshSeq) return;   // 더 최신 요청이 있다 → 이 응답은 버린다
       state = d;
-      renderSafetyAlert(d.safety_alerts || []);
+      renderSafetyAlert(d.safety_alerts || [], d.notices || []);
       render();
     }
 
