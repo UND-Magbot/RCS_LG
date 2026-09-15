@@ -59,8 +59,14 @@ S = {
     "edge": None, "raw": None, "lat": None, "pt": None,
     "move_state": None, "remaining": None, "lag": None, "n_cand": 0,
     "stop": False, "abort": False, "recording": False,
+    # ── /motion_metrics (10 Hz) — 로봇이 보고하는 실제 속도·가속도 ──
+    #   포즈(1 Hz)를 미분해서 속도를 얻으면 감속 구간(0.15초)을 아예 못 본다.
+    #   이 토픽은 가속도를 직접 준다. 가감속 부드러움 판정의 근거가 된다.
+    "v": None, "acc": None, "w": None,
 }
 rows = []          # 현재 회차 기록
+mot_rows = []      # 현재 회차의 /motion_metrics 기록 (10 Hz)
+fmot = None        # 모션 전용 JSONL 파일 핸들
 lock = threading.Lock()
 
 
@@ -68,7 +74,7 @@ def monitor(ip, band, near_min, yellow, abort_m, fout):
     try:
         ws = create_connection(f"ws://{ip}:8090/ws/v2/topics", timeout=10)
         for t in ("/tracked_pose", "/scan_matched_points2", "/robot_model",
-                  "/planning_state"):
+                  "/planning_state", "/motion_metrics"):
             ws.send(json.dumps({"enable_topic": t}))
             time.sleep(0.03)
         ws.settimeout(2.0)
@@ -99,6 +105,20 @@ def monitor(ip, band, near_min, yellow, abort_m, fout):
                 S["move_state"] = m.get("move_state")
                 S["remaining"] = m.get("remaining_distance")
             continue
+        if tp == "/motion_metrics":
+            # 10 Hz. 스캔 행과 따로 **전량** 기록한다 — 감속은 0.15초 만에 끝나서
+            # 1.86 Hz 스캔 행에 얹으면 사라진다.
+            v = m.get("linear_velocity")
+            a = m.get("linear_acc")
+            w = m.get("angular_velocity")
+            with lock:
+                S["v"], S["acc"], S["w"] = v, a, w
+                rec_on = S["recording"]
+            if rec_on and fmot is not None:
+                r = {"t": time.time(), "v": v, "acc": a, "w": w}
+                mot_rows.append(r)
+                fmot.write(json.dumps(r) + "\n")
+            continue
         if tp != "/scan_matched_points2":
             continue
 
@@ -126,6 +146,7 @@ def monitor(ip, band, near_min, yellow, abort_m, fout):
             S["lag"], S["n_cand"] = lag, len(cands)
             ms, rem = S["move_state"], S["remaining"]
             rec_on = S["recording"]
+            v_now, a_now = S["v"], S["acc"]
 
         if rec_on:
             rec = {"t": time.time(), "x": pose[0], "y": pose[1], "ori": pose[2],
@@ -133,7 +154,8 @@ def monitor(ip, band, near_min, yellow, abort_m, fout):
                    "lat": None if hit is None else hit[1],
                    "pt": None if hit is None else [hit[2], hit[3]],
                    "move_state": ms, "remaining": rem, "n_pts": len(pts),
-                   "lag": lag, "n_cand": len(cands)}
+                   "lag": lag, "n_cand": len(cands),
+                   "v": v_now, "acc": a_now}
             rows.append(rec)
             fout.write(json.dumps(rec, ensure_ascii=False) + "\n")
             fout.flush()
@@ -303,7 +325,41 @@ def analyze(run_no, sx, sy, yellow_m, red_m):
         "aborted": S["abort"],
         "samples": len(rows),
     }
+    out.update(motion_summary(mot_rows))
     return out
+
+
+def motion_summary(mrows) -> dict:
+    """`/motion_metrics`(10 Hz) 로 가감속이 얼마나 거친지 잰다.
+
+    ★ 이 지표가 '멈칫' 의 정량 척도다. 사람은 **가속도의 크기**를 느낀다.
+      로봇 설정상 가속은 0.3 m/s², 감속은 2.0 m/s² 까지 허용돼 있어
+      감속 쪽이 7배 거칠다. 그걸 숫자로 확인하려는 것이다.
+
+      v_max        그 회차 최고 속도
+      decel_peak   가장 강했던 감속(음수 가속도의 절댓값). 클수록 덜컹인다
+      decel_p95    상위 5% 감속. 한 번 튄 값에 휘둘리지 않게 같이 본다
+      accel_peak   가장 강했던 가속
+      decel_over_1 감속이 1.0 m/s² 를 넘은 샘플 수 — 체감 덜컹 횟수의 대용
+      n_mot        이 회차에 받은 10 Hz 샘플 수
+    """
+    vs = [r["v"] for r in mrows if r.get("v") is not None]
+    ac = [r["acc"] for r in mrows if r.get("acc") is not None]
+    if not ac:
+        return {"n_mot": 0}
+    dec = [-x for x in ac if x < 0]          # 감속만 (양수로 뒤집음)
+    acc = [x for x in ac if x > 0]
+    dec_sorted = sorted(dec)
+    def p95(xs):
+        return None if not xs else round(xs[min(len(xs) - 1, int(len(xs) * 0.95))], 2)
+    return {
+        "v_max": None if not vs else round(max(vs), 3),
+        "decel_peak": None if not dec else round(max(dec), 2),
+        "decel_p95": p95(dec_sorted),
+        "accel_peak": None if not acc else round(max(acc), 2),
+        "decel_over_1": sum(1 for x in dec if x > 1.0),
+        "n_mot": len(mrows),
+    }
 
 
 def main():
@@ -326,7 +382,10 @@ def main():
     stamp = time.strftime("%Y%m%d_%H%M%S")
     out_path = os.path.join(LOG_DIR, f"safety_repeat_{stamp}.jsonl")
     sum_path = os.path.join(LOG_DIR, f"safety_repeat_{stamp}_summary.json")
+    mot_path = os.path.join(LOG_DIR, f"safety_repeat_{stamp}_motion.jsonl")
     fout = open(out_path, "w", encoding="utf-8")
+    global fmot
+    fmot = open(mot_path, "w", encoding="utf-8")
 
     print(f"[safety_repeat] {a.ip}  {a.runs}회 반복  속도 {a.speed} m/s")
     th = threading.Thread(target=monitor,
@@ -347,6 +406,7 @@ def main():
         print("포즈 수신 실패 — 위치추정 확인 필요")
         S["stop"] = True
         fout.close()
+        fmot.close()
         raise SystemExit(1)
     sx, sy, sori = pose
     # ★ 속도 '원래값'을 여기서 읽으면 안 된다 (2026-09-15 실측).
@@ -378,6 +438,7 @@ def main():
                 p = S["pose"]
                 S["abort"] = False
                 rows.clear()
+                mot_rows.clear()
             if p is None:
                 print("  포즈 없음 — 중단", flush=True)
                 break
@@ -442,6 +503,7 @@ def main():
         S["stop"] = True
         time.sleep(1.5)
         fout.close()
+        fmot.close()
 
     # ── 전체 통계 ──
     ok = [r for r in results if "error" not in r]

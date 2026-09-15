@@ -37,9 +37,17 @@ logger = logging.getLogger(__name__)
 _PATH = Path(__file__).resolve().parent.parent.parent / "static" / "robot_speed.json"
 
 # 안전 기본값.
-#   공차 : 값이 없으면 DB robots.max_speed → 그것도 없으면 아래 값 (종전과 같음)
-#   적재 : 신규. 랙을 들면 제동거리가 길어지므로 더 낮게 잡는다
-DEFAULT_EMPTY = 1.2
+#   공차 : 값이 없으면 DB robots.max_speed → 그것도 없으면 아래 값
+#   적재 : 랙을 들면 제동거리가 길어지므로 더 낮게 잡는다
+#
+# ★ 2026-09-15 — 공차 기본을 1.2 → 0.8 로 내렸다.
+#   1.2 m/s 는 red_m 1.0 m 안에 못 선다. 정지거리 = 0.68*1.2 + 1.2^2/(2*2.0)
+#   = 0.816 + 0.36 = 1.176 m 로 **1.0 m 를 넘는다**(safety_zone.confirm_allowed
+#   와 같은 식). 평소에는 3 m 에서 미리 깎이니 드러나지 않지만, 1 m 안에
+#   갑자기 나타나는 경우에는 물리적으로 못 멈춘다.
+#     0.8 m/s → 0.704 m (0.30 m 여유)   1.2 m/s → 1.176 m (0.18 m 초과)
+#   현장 요청 기본 주행 속도도 0.8 이라 값을 맞췄다.
+DEFAULT_EMPTY = 0.8
 DEFAULT_LADEN = 0.8
 
 # 허용 범위 — 콘솔 슬라이더와 같은 폭. 0 을 쓰면 로봇이 아예 못 움직인다.

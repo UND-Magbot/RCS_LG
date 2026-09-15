@@ -31,20 +31,25 @@ ROBOT_FRONT = 0.379      # footprint 앞끝 (중심 기준)
 ROBOT_BACK = 0.369
 ROBOT_HALF = 0.230       # footprint 반폭
 
-# 랙 적재 = LG2 대차 (2026-09-15 실측, rack.specs 0.64 x 0.545 + margin 0.08)
-#   ★ 앞끝이 안 커진다. 랙 풋프린트 길이 0.705 가 로봇 전장 0.748 보다 **짧기** 때문.
+# 랙 적재 = **LG 대차** (현장에 실제로 들어가는 랙. rack.specs 0.70 x 0.50 + margin 0.09)
+#   LGIT 제출 도면은 LG 랙 기준으로 낸다 (2026-09-15 확정).
+#   ★ 앞끝이 안 커진다. 랙 풋프린트 길이 0.680 이 로봇 전장 0.748 보다 **짧기** 때문.
 #     그래서 앞으로 튀어나오는 건 여전히 로봇 코(0.379)다.
 #     (S300 랙 0.95x0.95 는 앞끝이 0.475 로 커진다 — 랙이 로봇보다 길 때만 바뀐다)
-RACK_HALF = 0.400        # 랙 적재 시 반폭  → 감지 밴드도 이 값이 된다
-RACK_FRONT = 0.3525      # 랙 자체 앞끝. 로봇 앞끝 0.379 보다 안쪽이라 기준은 안 바뀐다
-RACK_BACK = 0.3525
+#   ※ 랙별 감지 폭:  LG 0.880 / LG2 0.800 / S300 0.950 / S600 1.030
+RACK_HALF = 0.440        # 랙 적재 시 반폭  → 감지 밴드도 이 값이 된다 (0.70/2 + 0.09)
+RACK_FRONT = 0.340       # 랙 자체 앞끝. 로봇 앞끝 0.379 보다 안쪽이라 기준은 안 바뀐다
+RACK_BACK = 0.340
 
 YELLOW_M = 3.0
 RED_M = 1.0
 
 # 실제 정지 위치 (앞끝 기준) — min, max, 평균
-STOP_E = (0.594, 0.755, 0.676)   # 공차 10회
-STOP_L = (0.571, 0.783, 0.695)   # LG2 적재 11회
+#   ★ 적재 11회는 **LG2 랙**을 싣고 쟀다. LG 랙에서도 앞끝이 0.379 로 같으므로
+#     (두 랙 다 로봇보다 짧다) 전방 수치는 그대로 유효하다. 랙이 바뀌어 달라지는 건
+#     좌우 감지 폭뿐이다. 근거는 docs/12 §6-2 참조.
+STOP_E = (0.594, 0.755, 0.676)   # 랙 미적재 10회
+STOP_L = (0.571, 0.783, 0.695)   # 랙 적재 11회 (LG2 로 측정)
 
 SLOW_STEPS = [(3.0, 0.40), (2.0, 0.25), (1.5, 0.10)]
 
@@ -196,15 +201,14 @@ def safety_svg() -> str:
 
     ★ 거리는 전부 **footprint 앞끝 기준**이다.
     """
-    W, H = 1280, 700
+    W, H = 1280, 670
     s = 250.0
     cx, cy = 150.0, 330.0
 
-    front = ROBOT_FRONT                       # 공차·LG2 적재 모두 같다
+    front = ROBOT_FRONT                       # 미적재·적재 모두 같다
     near_e = max(0.45, front + 0.25) - front  # 앞끝 기준 근접 무시 = 0.25
 
-    o = _svg(W, H, "안전영역 — 공차 · 랙 적재(LG2)",
-             "반복 주행 실측 · 속도 0.5 m/s · 공차 10회 / 적재 11회")
+    o = _svg(W, H, "안전영역 — 랙 미적재 · 랙 적재")
 
     def X(m):
         return cx + (front + m) * s
@@ -254,12 +258,14 @@ def safety_svg() -> str:
     o += (f'<rect x="{cx-RACK_BACK*s:.1f}" y="{cy-RACK_HALF*s:.1f}" '
           f'width="{(RACK_FRONT+RACK_BACK)*s:.1f}" height="{RACK_HALF*2*s:.1f}" '
           f'fill="{C_PURPLE_L}" stroke="{C_PURPLE}" stroke-width="2"/>\n')
+    # ★ 치수 라벨을 랙 **왼쪽 바깥**에 두면 도면 밖으로 나간다(2026-09-15 수정).
+    #   랙 위쪽 띠(랙 상단 ~ 로봇 상단 사이, 약 42 px)가 비어 있으니 그 안에 넣는다.
     o += (f'<text x="{cx-RACK_BACK*s-8:.0f}" y="{cy-RACK_HALF*s+18:.0f}" '
           f'font-size="13" font-weight="700" fill="{C_PURPLE}" '
-          f'text-anchor="end">LG2 랙</text>\n'
-          f'<text x="{cx-RACK_BACK*s-8:.0f}" y="{cy-RACK_HALF*s+36:.0f}" '
-          f'font-size="11.5" fill="{C_PURPLE}" text-anchor="end">'
-          f'0.80 × 0.705 m</text>\n')
+          f'text-anchor="end">랙</text>\n'
+          f'<text x="{cx-RACK_BACK*s+8:.0f}" y="{cy-RACK_HALF*s+28:.0f}" '
+          f'font-size="11.5" fill="{C_PURPLE}">'
+          f'{RACK_HALF*2:.2f} × {RACK_FRONT+RACK_BACK:.3f} m</text>\n')
 
     # ── 로봇 — 실제 비율 (전후 0.748 × 좌우 0.460) ──
     o += (f'<rect x="{cx-ROBOT_BACK*s:.1f}" y="{cy-ROBOT_HALF*s:.1f}" '
@@ -285,13 +291,16 @@ def safety_svg() -> str:
     o += _dimh(X(0), X(YELLOW_M), y0, "서행 3.0 m", C_YELLOW, 17)
     o += _dimh(X(0), X(RED_M), y0 + 48, "정지 1.0 m", C_RED, 17)
     o += _dim_stop(X(STOP_E[0]), X(STOP_E[1]), X(STOP_E[2]), y0 + 100,
-                   f"실제 정지 · 공차  {STOP_E[0]:.2f} ~ {STOP_E[1]:.2f} m",
+                   f"실제 정지 · 랙 미적재  {STOP_E[0]:.2f} ~ {STOP_E[1]:.2f} m",
                    f"평균 {STOP_E[2]:.2f} m (10회)", C_BLUE)
     o += _dim_stop(X(STOP_L[0]), X(STOP_L[1]), X(STOP_L[2]), y0 + 146,
-                   f"실제 정지 · LG2 적재  {STOP_L[0]:.2f} ~ {STOP_L[1]:.2f} m",
+                   f"실제 정지 · 랙 적재  {STOP_L[0]:.2f} ~ {STOP_L[1]:.2f} m",
                    f"평균 {STOP_L[2]:.2f} m (11회)", C_PURPLE)
 
     # ── 밴드 폭 — 두 조건을 나란히 ──
+    # ★ 치수선은 cy-band 에서 cy+band 까지, 즉 **전체 폭**을 잰다.
+    #   그런데 라벨에 반폭(±0.230 / ±0.400)을 적어 두어 선과 숫자가 안 맞았다
+    #   (2026-09-15 지적받아 수정). 선이 재는 그대로 전체 폭을 적는다.
     xb = X(YELLOW_M) + 26
     o += (f'<line x1="{xb:.1f}" y1="{cy-band_l:.1f}" x2="{xb:.1f}" '
           f'y2="{cy+band_l:.1f}" stroke="{C_PURPLE}" stroke-width="1.8"/>\n'
@@ -300,9 +309,9 @@ def safety_svg() -> str:
           f'<line x1="{xb-5:.1f}" y1="{cy+band_l:.1f}" x2="{xb+5:.1f}" '
           f'y2="{cy+band_l:.1f}" stroke="{C_PURPLE}" stroke-width="1.8"/>\n'
           f'<text x="{xb+10:.1f}" y="{cy-band_l+28:.1f}" font-size="15" '
-          f'font-weight="700" fill="{C_PURPLE}">±0.400 m</text>\n'
+          f'font-weight="700" fill="{C_PURPLE}">{RACK_HALF*2:.3f} m</text>\n'
           f'<text x="{xb+10:.1f}" y="{cy-band_l+46:.1f}" font-size="12.5" '
-          f'fill="{C_PURPLE}">적재 감지 폭</text>\n')
+          f'fill="{C_PURPLE}">랙 적재</text>\n')
     xb2 = xb + 118
     o += (f'<line x1="{xb2:.1f}" y1="{cy-band_e:.1f}" x2="{xb2:.1f}" '
           f'y2="{cy+band_e:.1f}" stroke="{C_YELLOW}" stroke-width="1.8"/>\n'
@@ -311,33 +320,35 @@ def safety_svg() -> str:
           f'<line x1="{xb2-5:.1f}" y1="{cy+band_e:.1f}" x2="{xb2+5:.1f}" '
           f'y2="{cy+band_e:.1f}" stroke="{C_YELLOW}" stroke-width="1.8"/>\n'
           f'<text x="{xb2+10:.1f}" y="{cy-4:.1f}" font-size="15" '
-          f'font-weight="700" fill="#9a7411">±0.230 m</text>\n'
+          f'font-weight="700" fill="#9a7411">{ROBOT_HALF*2:.3f} m</text>\n'
           f'<text x="{xb2+10:.1f}" y="{cy+14:.1f}" font-size="12.5" '
-          f'fill="#9a7411">공차 감지 폭</text>\n')
+          f'fill="#9a7411">랙 미적재</text>\n')
 
     # ── 범례 ──
-    lx, ly = 30, 96
+    # ★ ly 를 내리면 아래 '기준 = 로봇 앞끝' 라벨(y = cy-band_l-46)과 겹친다.
+    lx, ly = 30, 86
     o += (f'<rect x="{lx}" y="{ly}" width="300" height="66" fill="#fafafa" '
           f'stroke="#ddd" rx="5"/>\n')
     o += (f'<rect x="{lx+14}" y="{ly+14}" width="26" height="13" '
           f'fill="{C_YELLOW_L}" stroke="{C_YELLOW}" stroke-width="2"/>\n'
           f'<text x="{lx+50}" y="{ly+25}" font-size="13" fill="#333">'
-          f'공차 (랙 없음) — 실선</text>\n')
+          f'랙 미적재 — 실선</text>\n')
     o += (f'<rect x="{lx+14}" y="{ly+40}" width="26" height="13" '
           f'fill="{C_YELLOW_L}" fill-opacity="0.55" stroke="{C_PURPLE}" '
           f'stroke-width="2" stroke-dasharray="5 3"/>\n'
           f'<text x="{lx+50}" y="{ly+51}" font-size="13" fill="#333">'
-          f'LG2 랙 적재 — 파선</text>\n')
+          f'랙 적재 — 파선</text>\n')
 
     # ── 거리 기준 환산표 ──
-    # ★ by/height 를 키우면 바로 아래 '서행 속도 (m/s)' 라벨(y = cy-band_l-32 = 198)과
-    #   겹친다. 표 아래끝을 182 이하로 유지할 것 (2026-09-15 겹침 1건 수정).
-    bx, by = 700, 86
+    # ★ by/height 를 키우면 바로 아래 '서행 속도 (m/s)' 라벨(y = cy-band_l-32)과
+    #   겹친다. 랙이 커지면 band_l 이 커져 그 라벨이 위로 올라오니 같이 확인할 것
+    #   (LG 랙 기준 band_l=110 → 라벨 y=188, 표 아래끝은 172 이하).
+    bx, by = 700, 76
     o += (f'<rect x="{bx}" y="{by}" width="420" height="96" fill="#fafafa" '
           f'stroke="#ddd" rx="5"/>\n')
     o += (f'<text x="{bx+16}" y="{by+23}" font-size="14" font-weight="700" '
           f'fill="#111">거리 기준</text>\n')
-    for t, xx in (("정지 판정", bx + 200), ("실제 정지 공차/적재", bx + 330)):
+    for t, xx in (("정지 판정", bx + 200), ("실제 정지 미적재/적재", bx + 330)):
         o += (f'<text x="{xx}" y="{by+44}" font-size="12" fill="#999" '
               f'text-anchor="middle">{t}</text>\n')
     rowsv = [("라이다 = 로봇 중심", f"{RED_M+front:.2f}",
@@ -355,10 +366,6 @@ def safety_svg() -> str:
               f'<text x="{bx+330}" y="{yy}" font-size="13.5" font-weight="{bold}" '
               f'fill="{cc}" text-anchor="middle">{c3} m</text>\n')
 
-    o += (f'<text x="30" y="{H-20}" font-size="12.5" fill="#888">'
-          f'랙을 실어도 앞끝(0.379 m)이 같아 서행·정지 거리는 그대로다. '
-          f'LG2 랙 길이 0.705 m 가 로봇 전장 0.748 m 보다 짧기 때문이다. '
-          f'바뀌는 것은 좌우 감지 폭뿐 (±0.230 → ±0.400 m).</text>\n')
     return o + "</svg>\n"
 
 
