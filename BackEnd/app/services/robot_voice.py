@@ -158,6 +158,13 @@ def play_once(ip: str, sn: str, *, audio_id: str = "", url: str = "",
               volume: int = 80, mode: int = 2, duration: int = 8,
               server_port: int = 8002, base_url: str = "") -> Optional[int]:
     """1회 재생. interval 은 펌웨어가 무시하므로 반복은 호출부가 책임진다."""
+    # ★ 재생은 **매 건 남긴다** (2026-09-15).
+    #   종전에는 "주행 시작 — 안내 켬" 전이 때만 로그가 있어서, `interval_sec`
+    #   마다 나가는 반복 재생이 흔적 없이 돌았다. "토글을 껐는데 소리가 난다" 를
+    #   추적할 때 로그로는 아무것도 확인할 수 없어 원인 규명이 크게 늦어졌다.
+    #   한 줄이면 언제·어느 로봇에·무슨 음원이·어떤 볼륨으로 나갔는지 다 남는다.
+    logger.info(f"[voice] 재생 {ip} audio_id={audio_id!r} url={url!r} "
+                f"volume={volume} mode={mode}")
     abs_url = resolve_audio_url(ip, url, server_port, base_url) if url else ""
     return _send_cmd(ip, sn, "startPlayAudio", {
         "mode": mode,
@@ -200,7 +207,15 @@ def _worker(ip: str, sn: str) -> None:
     stopped_since = 0.0
     play_count = 0
     fail_streak = 0
+    disabled_sent = False     # 꺼진 상태에서 정지를 이미 보냈나 (매 프레임 전송 방지)
     logger.info(f"[voice] 감시 시작 — {ip} ({sn})")
+    # ★ 시작 시 남아 있을 수 있는 재생을 한 번 정리한다.
+    #   직전 프로세스가 재생 중에 죽었으면 로봇은 계속 울고 있는데
+    #   새 워커는 playing=False 로 시작해 그걸 모른다.
+    try:
+        stop_play(ip, sn)
+    except Exception:
+        pass
 
     while not _stop_event.is_set():
         ws = None
@@ -232,10 +247,21 @@ def _worker(ip: str, sn: str) -> None:
 
                 cfg = get_voice_settings()
                 if not cfg.get("enabled", False):
-                    if playing:
-                        stop_play(ip, sn, cfg.get("mode", 2))
+                    # ★ 2026-09-15 — `playing` 을 보고 끄면 안 된다.
+                    #   `playing` 은 이 워커 스레드의 **로컬 변수**라, 백엔드가
+                    #   리로드·재시작되면 False 로 초기화된다. 그때 로봇이 아직
+                    #   울리고 있으면 서버는 "재생 안 함"으로 믿어 **정지를 영영
+                    #   안 보냈다** — 토글을 꺼도 소리가 계속 나던 원인.
+                    #   stopPlayAudio 는 멱등이라 그냥 보내도 부작용이 없다.
+                    #   매 프레임 보내지 않도록 최초 1회만 보낸다.
+                    if playing or not disabled_sent:
+                        stop_play(ip, sn, int(cfg.get("mode", 2)))
+                        if playing:
+                            logger.info(f"[voice] {ip} 설정 꺼짐 — 안내 끔")
                         playing = False
+                        disabled_sent = True
                     continue
+                disabled_sent = False      # 다시 켜졌다 — 다음 끄기 때 또 보낸다
 
                 # 판정은 speed(실제 바퀴 속도) 하나만 본다.
                 # moveState 는 "명령을 들고 있는 상태"라서, 경로만 생성되고 못 움직이거나

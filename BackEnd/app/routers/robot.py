@@ -745,11 +745,19 @@ def api_get_speed(robot_ip: str, db: Session = Depends(get_db)):
         "max_backward_velocity": 0.5,
         "max_angular_velocity": 1.2,
     }
+    # ★ 2026-09-15 — 로봇에 **실제로 들어있는** 전진 속도와 안전존 상태를 같이 준다.
+    #   종전에는 저장값만 내려줘서, 안전존이 RED 로 0.0 을 써둔 상태에도 화면엔
+    #   설정값(예: 1.2)이 보였다. 슬라이더를 올려도 안 바뀌는 것처럼 보이는 원인.
+    #   `robot_velocity` 가 `empty_speed`/`laden_speed` 와 다르면 안전존이 제한 중이다.
+    from app.services import safety_zone
+    out["safety_zone"] = (safety_zone.status().get(robot_ip) or {}).get("zone")
+    out["robot_velocity"] = None
     try:
         params = req.get(f"http://{robot_ip}:8090/robot-params", timeout=8).json()
         out["max_backward_velocity"] = abs(
             params.get("/wheel_control/max_backward_velocity", -0.5))
         out["max_angular_velocity"] = params.get("/wheel_control/max_angular_velocity", 1.2)
+        out["robot_velocity"] = params.get("/wheel_control/max_forward_velocity")
     except Exception:
         pass          # 로봇이 오프라인이어도 설정값은 보여줘야 한다
     return out
@@ -784,11 +792,22 @@ def api_set_speed(robot_ip: str, body: dict, db: Session = Depends(get_db)):
         empty=float(empty) if empty is not None else None,
         laden=float(laden) if laden is not None else None,
     )
-    # 지금 상태에 해당하는 값만 로봇에 적용한다 (실패해도 설정은 이미 저장됨)
-    applied = jack_service.apply_state_speed(robot_ip)
+    # ★ 2026-09-15 — 안전존이 서행·정지를 걸어둔 동안에는 **로봇에 직접 쓰지 않는다.**
+    #   종전에는 무조건 즉시 적용해서, RED(속도 0)로 세워둔 로봇에 슬라이더를
+    #   만지면 그 값이 그대로 들어가 **정지해야 할 상황에서 다시 움직일 수 있었다.**
+    #   (safety_zone 의 SPEED_REASSERT_SEC=3.0 이 3초 뒤 되돌리지만, 그 사이가 열려 있다)
+    #
+    #   저장만 해두면 충분하다 — 안전존이 해제할 때 `_base_speed()` 로 이 값을 읽어
+    #   복구한다("해제 — … 목표 1.2 m/s" 로그가 그것이다).
+    #   CLEAR/SKIP 에서는 종전과 완전히 같다.
+    from app.services import safety_zone
+    zone = (safety_zone.status().get(robot_ip) or {}).get("zone")
+    held = zone in ("yellow", "red")
+    applied = False if held else jack_service.apply_state_speed(robot_ip)
     logging.getLogger(__name__).info(
         f"[speed] {robot_ip} 저장 공차={cfg['empty']} 적재={cfg['laden']} "
-        f"(현재 {'적재' if jack_service.is_laden(robot_ip) else '공차'}, 적용={applied})")
+        f"(현재 {'적재' if jack_service.is_laden(robot_ip) else '공차'}, 적용={applied}"
+        + (f" — 안전존 {zone} 이라 즉시 적용 보류, 해제 시 반영)" if held else ")"))
     return {
         "ok": True,
         "max_forward_velocity": cfg["empty"],   # 하위호환
@@ -796,6 +815,7 @@ def api_set_speed(robot_ip: str, body: dict, db: Session = Depends(get_db)):
         "laden_speed": cfg["laden"],
         "laden": jack_service.is_laden(robot_ip),
         "applied": applied,
+        "safety_zone": zone,        # 화면에서 "안전존 제한 중" 을 띄우라고 주는 값
     }
 
 
