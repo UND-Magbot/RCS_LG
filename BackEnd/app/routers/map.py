@@ -1143,9 +1143,15 @@ def api_snap_wall(map_id: int, x: float, y: float, radius: float = 0.5,
     if not rm.grid_resolution:
         raise HTTPException(status_code=400, detail="맵에 grid_resolution 이 없습니다.")
 
+    # ★ 2026-09-15 경로 정정 — dirname 이 한 단계 모자라 `BackEnd/app/static/` 을
+    #   보고 있었다. 실제 정적 폴더는 `BackEnd/static/` 이고 `app/static` 은 아예
+    #   없어서 **이 API 가 항상 404("맵 이미지 파일이 없습니다")** 였다.
+    #   맵 편집기의 '벽 스냅'(가상벽을 벽에서 N cm 띄워 그리는 기능)이 통째로
+    #   죽어 있었다. 이 파일의 다른 곳(STATIC_MAPS_DIR 등)은 전부
+    #   parent.parent.parent 를 쓴다 — 거기에 맞췄다.
     rel = (rm.image_url or "").replace("/static/", "")
-    png = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                       "static", *rel.split("/"))
+    png = str(Path(__file__).resolve().parent.parent.parent / "static"
+              / Path(*rel.split("/")))
     if not rel or not os.path.exists(png):
         raise HTTPException(status_code=404, detail="맵 이미지 파일이 없습니다.")
 

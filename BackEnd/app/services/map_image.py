@@ -200,6 +200,26 @@ def is_wall_at(meta, world_x: float, world_y: float, tolerance_m: float) -> bool
         return False
 
 
+def wall_distance(meta, world_x: float, world_y: float,
+                  max_m: float = 1.0):
+    """(world_x, world_y) 에서 **가장 가까운 맵 벽까지 거리(m)**. 없으면 None.
+
+    `is_wall_at()` 은 "tolerance 안에 벽이 있나"만 알려줘서, 정지가 났을 때
+    *얼마나* 벗어났는지를 사후에 따로 재야 했다(2026-09-15 실측 0.456 m).
+    그 숫자를 로그에 같이 남기려고 만든 진단용 함수다.
+
+    판정에는 쓰지 않는다 — 벽 여부는 그대로 `is_wall_at()` 이 정한다.
+    """
+    if not meta:
+        return None
+    try:
+        hit = snap_to_wall(meta["png"], meta["ox"], meta["oy"], meta["res"],
+                           world_x, world_y, max_m)
+        return None if hit is None else float(hit["distance"])
+    except Exception:
+        return None
+
+
 def segment_blocked(meta, x1: float, y1: float, x2: float, y2: float,
                     clear_m: float, step_m: float = 0.10,
                     skip_ends_m: float = 0.80) -> bool:
