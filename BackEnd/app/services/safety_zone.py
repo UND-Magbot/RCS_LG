@@ -908,7 +908,20 @@ def _worker(ip: str) -> None:
                     if zone != SKIP:
                         # 걸어둔 제약을 먼저 푼다. 안 풀면 속도 0 인 채로 작업지점에
                         # 들어가 랙 밑 이탈이 그대로 막힌다.
-                        if zone in (YELLOW, RED) and not _set_speed(ip, _base_speed(ip)):
+                        #
+                        # ★ 2026-09-15 — `or ramp_v` 추가.
+                        #   종전에는 YELLOW/RED 일 때만 원속도로 되돌렸다. 그런데
+                        #   **복구 램프가 진행 중일 때는 존이 이미 CLEAR** 다
+                        #   (0.10 → 0.25 → 0.40 → base 를 0.6초 간격으로 올리는 중).
+                        #   그 상태로 작업지점에 들어가면 아래에서 ramp_v 를 버려서
+                        #   **0.40 같은 중간 계단값에 갇힌 채로** 빠져나갔다.
+                        #   작업지점을 수시로 드나드는 구조라 이 타이밍이 자주 걸린다.
+                        #
+                        #   실측(2026-09-15 14:19) — RED 해제 후 0.4 까지만 오르고
+                        #   58초간 1.2 로 복구되지 않았다. 슬라이더를 올려도
+                        #   "속도가 안 바뀐다" 고 느껴지던 원인이다.
+                        if (zone in (YELLOW, RED) or ramp_v) and not _set_speed(
+                                ip, _base_speed(ip)):
                             continue          # 해제 실패 — 존을 바꾸지 않고 다음 틱 재시도
                         logger.info(f"[safety] {ip} 작업지점 {nw[1]} 근처"
                                     f"({nw[0]:.2f} m ≤ {skip_r:.2f}) — 판정 제외")
@@ -1093,8 +1106,19 @@ def _worker(ip: str) -> None:
                         continue
                     # 무엇을 보고 멈췄는지 남긴다 — 자기 몸인지 진짜 장애물인지 구분하려면
                     # 좌표가 있어야 한다. 로봇 pos·앞끝과 같이 봐야 판단이 된다.
+                    # ★ 맵 벽까지 거리를 같이 남긴다 (2026-09-15 추가).
+                    #   이 숫자 하나로 정지 원인이 로그에서 바로 갈린다.
+                    #     <= WALL_TOLERANCE_M  : 경계에 걸친 벽 — tolerance 문제
+                    #     그보다 크다          : 실물 장애물이거나 위치추정 오차
+                    #   (2026-09-15 실측 건은 0.46 m 로 tolerance 0.25 의 약 2배였다
+                    #    — tolerance 를 올릴 일이 아니라 맵/위치추정 문제였다.)
+                    #   판정에는 쓰지 않는다. 표시만 한다.
+                    wd = (map_image.wall_distance(meta, hit[2], hit[3])
+                          if hit else None)
                     where = (f" 점=맵({hit[2]:.2f},{hit[3]:.2f}) 좌우{hit[1]:+.2f}m"
-                             f" 중심거리{hit[0]:.2f}m" if hit else "")
+                             f" 중심거리{hit[0]:.2f}m"
+                             f" 맵벽까지{'%.2fm' % wd if wd is not None else '1m밖'}"
+                             if hit else "")
                     ramp_v = 0.0        # 정지는 램프와 무관하게 즉시
                     logger.warning(
                         f"[safety] {ip} ★ RED — 앞 {edge:.2f} m 정지"

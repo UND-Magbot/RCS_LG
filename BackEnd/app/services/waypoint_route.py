@@ -71,6 +71,53 @@ ENTRY_PENALTY = 1.2
 # 경로가 이보다 길어지면 뭔가 잘못된 것 — 안전장치
 MAX_HOPS = 30
 
+# ══════════════════════════════════════════════════════════════════
+#  이동 타임아웃을 **경로 길이에 맞춰** 잡는다 (2026-09-15)
+#
+#  왜 — 호출부가 `timeout=90` 을 경로 길이와 무관하게 고정으로 걸고 있었다.
+#    실측(2026-09-15 12:46:44) — 경유지 6개 26.0 m 체인이 90초를 넘겨 죽고
+#    재시도했다. 재시도 1회에 최소 95초(타임아웃 90 + retry_delay 5)를 태운다.
+#
+#      속도       26 m 주파      90초 안에?
+#      0.90 m/s    28.8초         통과
+#      0.40 m/s    64.9초         빠듯
+#      0.25 m/s   103.8초         ★ 초과
+#      0.10 m/s   259.5초         ★ 대폭 초과
+#
+#    즉 안전존이 **RED(정지)까지 안 가고 서행만 걸어도** 타임아웃이 터진다.
+#    서버가 스스로 속도를 눌러놓고 스스로 타임아웃을 내는 구조였다.
+#
+#  ★ 이 값은 **올리기만 한다.** 호출부가 준 timeout 보다 짧게 잡는 일은 없다
+#    (`max(기존, 계산값)`). 막힌 것을 늦게 감지할 뿐 안전에는 영향이 없다 —
+#    이동 명령은 살아 있고, 안전존과 로봇 자체 회피는 그대로 동작한다.
+TIMEOUT_SPEED = 0.25      # 산정 기준 속도. YELLOW 2단까지는 '정상 주행'으로 보고 기다린다
+TIMEOUT_MARGIN = 1.3      # 가감속·코너 감속 여유
+TIMEOUT_MIN = 90          # 하한 — 종전 고정값. 짧은 경로는 동작이 바뀌지 않는다
+
+
+def route_timeout(coords, sx: float, sy: float,
+                  base: int = 0) -> int:
+    """좌표열을 실제로 따라간 길이로 이동 타임아웃(초)을 잡는다.
+
+    `coords` 는 `"x1,y1,x2,y2,…"` 문자열이거나 그것을 쪼갠 리스트.
+    `base` 는 호출부가 이미 정한 타임아웃 — 결과는 **그보다 작아지지 않는다.**
+    좌표를 못 읽으면 `max(base, TIMEOUT_MIN)` 으로 물러선다(종전 동작).
+    """
+    try:
+        v = coords.split(",") if isinstance(coords, str) else list(coords)
+        pts = [(float(sx), float(sy))]
+        for i in range(0, len(v) - 1, 2):
+            pts.append((float(v[i]), float(v[i + 1])))
+        if len(pts) < 2:
+            return max(base, TIMEOUT_MIN)
+        dist = sum(math.hypot(b[0] - a[0], b[1] - a[1])
+                   for a, b in zip(pts, pts[1:]))
+        need = int(dist / TIMEOUT_SPEED * TIMEOUT_MARGIN)
+        return max(base, TIMEOUT_MIN, need)
+    except Exception as e:
+        logger.warning(f"[route] 타임아웃 산정 실패(기존값 사용): {e}")
+        return max(base, TIMEOUT_MIN)
+
 _NAME_RE = re.compile(r"^W(\d+)$", re.IGNORECASE)
 
 

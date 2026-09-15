@@ -512,7 +512,8 @@ def _face_route_start(worker: _Worker, route_coords: Optional[str]) -> None:
     jack_service.update_job_status(worker.robot_ip, message="출발 방향 정렬 중")
     try:
         jack_service.safe_move(worker.robot_ip, "standard", xy[0], xy[1], want,
-                               max_attempts=3, timeout=FACE_ROUTE_TIMEOUT)
+                               max_attempts=3, timeout=FACE_ROUTE_TIMEOUT,
+                               poll=jack_service.POLL_INTERVAL_SHORT)
     except RuntimeError:
         raise                       # 사용자 중지는 그대로 올린다
     except Exception as e:
@@ -542,6 +543,11 @@ def _move_via_waypoints(worker: _Worker, x: float, y: float, ori: float, **kw):
     mv, extra = waypoint_route.plan(worker.area_id, xy[0], xy[1], x, y)
     if mv == "along_given_route":
         _face_route_start(worker, extra.get("route_coordinates"))
+        # 경로 길이에 맞춰 타임아웃을 올린다(내리지는 않는다). 고정값이면
+        # 긴 체인이 서행 한 번에 타임아웃으로 죽고 처음부터 다시 간다.
+        kw["timeout"] = waypoint_route.route_timeout(
+            extra.get("route_coordinates"), xy[0], xy[1],
+            base=int(kw.get("timeout") or 0))
     return jack_service.safe_move(worker.robot_ip, mv, x, y, ori, **extra, **kw)
 
 
@@ -634,9 +640,11 @@ def _approach_before_align(worker: _Worker, poi: dict) -> None:
         worker.robot_ip, message=f"{poi['name']} 접근 이동({ap['name']})")
     if mv == "along_given_route":
         _face_route_start(worker, extra.get("route_coordinates"))
+    _ap_timeout = (waypoint_route.route_timeout(rc, xy[0], xy[1], base=90)
+                   if mv == "along_given_route" else 90)
     try:
         jack_service.safe_move(worker.robot_ip, mv, ap["x"], ap["y"], face,
-                               **extra, max_attempts=12, timeout=90)
+                               **extra, max_attempts=12, timeout=_ap_timeout)
     except RuntimeError:
         raise  # 중지 신호는 그대로 올려보낸다
     except Exception as e:
@@ -692,7 +700,8 @@ def _escape_after_pickup(worker: _Worker, poi: dict) -> None:
         # 자세는 **오던 방향 그대로** 둔다. 여기서 돌리면 좁은 자리에서 도는 것과
         # 같아지고, 방향은 어차피 다음 단계(_face_route_start)가 잡는다.
         jack_service.safe_move(ip, "standard", entry["x"], entry["y"], cur[2],
-                               max_attempts=2, timeout=PICKUP_ESCAPE_TIMEOUT)
+                               max_attempts=2, timeout=PICKUP_ESCAPE_TIMEOUT,
+                               poll=jack_service.POLL_INTERVAL_SHORT)
     except RuntimeError:
         raise                       # 사용자 중지는 그대로 올린다
     except Exception as e:
@@ -749,7 +758,7 @@ def _move_to_entry_poi(worker: _Worker, entry: dict, target: dict) -> bool:
     if xy is None:
         logger.warning(f"[route] {ip} 현재 위치를 못 읽어 진입점으로 바로 이동")
         r = jack_service.safe_move(ip, "standard", entry["x"], entry["y"], 0,
-                                   max_attempts=12, timeout=90)
+                                   max_attempts=12, timeout=90, poll=jack_service.POLL_INTERVAL_SHORT)
         return str(r.get("state", "")).lower() == "succeeded"
 
     mv, extra = waypoint_route.plan(worker.area_id, xy[0], xy[1],
@@ -779,8 +788,10 @@ def _move_to_entry_poi(worker: _Worker, entry: dict, target: dict) -> bool:
                 # 경로선을 못 벗어나므로 **들어가기 전에** 자세를 맞춘다.
                 # (2026-09-14 — 잭업 직후 58° 어긋나 여기서 멈췄다)
                 _face_route_start(worker, ",".join(lead))
-            jack_service.safe_move(ip, lead_mv, lx, ly, face,
-                                   max_attempts=12, timeout=90, **kw)
+            jack_service.safe_move(
+                ip, lead_mv, lx, ly, face, max_attempts=12,
+                timeout=waypoint_route.route_timeout(lead, xy[0], xy[1], base=90),
+                **kw)
             prev = (lx, ly)
         except RuntimeError:
             raise                            # 사용자 중지
@@ -799,7 +810,7 @@ def _move_to_entry_poi(worker: _Worker, entry: dict, target: dict) -> bool:
         f"(회피 허용), 도착 방향 {math.degrees(face):.1f}°")
     try:
         r = jack_service.safe_move(ip, "standard", entry["x"], entry["y"], face,
-                                   max_attempts=12, timeout=90)
+                                   max_attempts=12, timeout=90, poll=jack_service.POLL_INTERVAL_SHORT)
     except RuntimeError:
         raise
     except Exception as e:
@@ -2335,7 +2346,7 @@ def _dropoff_at_poi(worker: _Worker, poi: dict) -> None:
     fy = poi["y"] + RACK_ESCAPE_M * math.sin(poi["ori"])
     try:
         jack_service.safe_move(worker.robot_ip, "standard", fx, fy, poi["ori"],
-                               max_attempts=6, timeout=60)
+                               max_attempts=6, timeout=60, poll=jack_service.POLL_INTERVAL_SHORT)
     except Exception as e:
         logger.warning(f"[delivery] 전진 이탈 실패(무시): {e}")
 

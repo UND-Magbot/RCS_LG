@@ -52,7 +52,23 @@ def get_docking_point_coords(ip: str, charger_name: str):
     except Exception as e:
         logger.warning(f"[{ip}] 도킹포인트 좌표 조회 실패: {e}")
         return None
-POLL_INTERVAL = 2.0    # LTE 데이터·부하 절감 (이동 상태 폴링 주기)
+# 이동 상태 폴링 주기(초) — "다 갔니?" 를 묻는 간격이다.
+#
+# ★ 2.0 → 0.5 (2026-09-15). 이 값은 안전 파라미터가 아니라 **관찰 주기**다.
+#   로봇이 폴링 사이에 도착하면 그동안 다음 명령이 없어 **그냥 서 있는다.**
+#   평균 대기 = 주기/2 이므로 2.0 은 이동 경계마다 평균 1초를 버렸다.
+#   배송 1사이클은 이동 명령 13개로 쪼개져 있어(회전·경유지체인·진입점·
+#   align·잭·이탈·복귀) 누적 평균 약 13초, 최악 26초가 '멈칫' 으로 보였다.
+#
+# ⚠️ 종전 2.0 의 근거는 "LTE 데이터·부하 절감" 이었다. GET 횟수가 4배가 되므로
+#    현장(M2M 전용망) 이관 전에 **요금제 데이터 한도를 반드시 확인할 것.**
+#    되돌리려면 이 값만 2.0 으로 되돌리면 된다(다른 로직 변경 없음).
+POLL_INTERVAL = 0.5
+
+# 짧은 이동 전용 주기 — 제자리 회전 · 진입점 · 랙 자리 이탈 · 하차 이탈.
+# 이런 이동은 실제 소요가 1~5초라 0.5 주기로도 대기 비중이 5~25% 로 크다.
+# 원래 폴링 횟수가 적은 구간이라 더 조여도 트래픽 증가는 미미하다.
+POLL_INTERVAL_SHORT = 0.2
 MOVE_TIMEOUT = 180     # LTE 지연 감안해 이동 완료 대기 상향 (120 → 180초)
 
 # 실행 중인 작업 추적 (robot_ip → stop flag)
@@ -514,7 +530,7 @@ def describe_fail(result: dict) -> str:
 def safe_move(ip: str, move_type: str, target_x: float, target_y: float,
               target_ori: float = 0, retry_delay: float = 5.0,
               max_attempts: int | None = None, timeout: int = MOVE_TIMEOUT,
-              **extra) -> dict:
+              poll: float | None = None, **extra) -> dict:
     """create_move + wait_move 통합 + 자동 재시도.
 
     "작업이 무조건 이어가도록" 설계:
@@ -555,7 +571,7 @@ def safe_move(ip: str, move_type: str, target_x: float, target_y: float,
             continue
         # 2) 이동 완료 대기
         try:
-            result = wait_move(ip, move_id, timeout=timeout)
+            result = wait_move(ip, move_id, timeout=timeout, poll=poll)
         except RuntimeError:
             raise
         except Exception as e:
@@ -592,7 +608,13 @@ def safe_move(ip: str, move_type: str, target_x: float, target_y: float,
         _interruptible_sleep(ip, retry_delay)
 
 
-def wait_move(ip: str, move_id: int, timeout: int = MOVE_TIMEOUT) -> dict:
+def wait_move(ip: str, move_id: int, timeout: int = MOVE_TIMEOUT,
+              poll: float | None = None) -> dict:
+    """`poll` 은 상태 확인 주기(초). None 이면 POLL_INTERVAL.
+
+    짧은 이동은 `POLL_INTERVAL_SHORT` 를 넘겨 경계 대기를 줄인다.
+    """
+    poll = POLL_INTERVAL if poll is None else float(poll)
     deadline = time.time() + timeout
     saw_pause = False  # 이번 wait 동안 paused 들어간 적 있는지 추적
     while time.time() < deadline:
@@ -607,7 +629,7 @@ def wait_move(ip: str, move_id: int, timeout: int = MOVE_TIMEOUT) -> dict:
             if state == "cancelled" and saw_pause:
                 resp["_paused_cancel"] = True
             return resp
-        time.sleep(POLL_INTERVAL)
+        time.sleep(poll)
     return {"state": "timeout", "fail_message": f"Move {move_id} timed out after {timeout}s"}
 
 
