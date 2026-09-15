@@ -1,0 +1,245 @@
+/* ── Alarm Search Overlay ── */
+.alarm-search__overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--overlay-backdrop);
+  z-index: var(--z-modal);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ── Alarm Search Dialog ── */
+.alarm-search {
+  background: var(--bg-surface-1);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-md);
+  width: 800px;
+  max-width: 94vw;
+  height: 620px;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Header ── */
+.alarm-search__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-4);
+  border-bottom: 1px solid var(--border-panel-header);
+  flex-shrink: 0;
+}
+
+.alarm-search__title {
+  margin: 0;
+  font-size: var(--font-size-title);
+  color: var(--text-primary);
+}
+
+.alarm-search__close {
+  width: 32px;
+  height: 32px;
+  font-size: var(--font-size-lg);
+  border: none;
+}
+
+/* ── Filter Bar ── */
+.alarm-search-filter {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--divider);
+  flex-shrink: 0;
+}
+
+.alarm-search-filter__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.alarm-search-filter__field {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 0 1 auto;
+}
+
+.alarm-search-filter__field--half {
+  flex: 1 1 50%;
+  min-width: 0;
+}
+
+.alarm-search-filter__field--half .alarm-search-filter__input,
+.alarm-search-filter__field--grow .alarm-search-filter__input {
+  flex: 1;
+}
+
+.alarm-search-filter__field--quarter {
+  flex: 0 1 25%;
+  min-width: 0;
+}
+
+.alarm-search-filter__group--half {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex: 1 1 50%;
+  min-width: 0;
+}
+
+.alarm-search-filter__field--grow {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.alarm-search-filter__label {
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.alarm-search-filter__input,
+.alarm-search-filter__select {
+  height: 36px;
+  padding: 0 var(--space-3);
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  color: var(--text-primary);
+  font-size: var(--font-size-md);
+  outline: none;
+  transition: border-color var(--transition-base) var(--ease-default);
+}
+
+.alarm-search-filter__input:focus,
+.alarm-search-filter__select:focus {
+  border-color: var(--color-primary);
+}
+
+.alarm-search-filter__input::placeholder {
+  color: var(--text-muted);
+}
+
+.alarm-search-filter__select {
+  cursor: pointer;
+  appearance: none;
+  flex: 1;
+  min-width: 130px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23888' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  padding-right: 28px;
+}
+
+.alarm-search-filter__select option {
+  background: var(--bg-surface-2);
+  color: var(--text-primary);
+}
+
+/* ── List ── */
+.alarm-search__list {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+.alarm-search__list::-webkit-scrollbar {
+  width: var(--scrollbar-width);
+}
+
+.alarm-search__list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.alarm-search__list::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: var(--scrollbar-radius);
+}
+
+.alarm-search__list::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
+.alarm-search__empty {
+  padding: var(--space-6) var(--space-4);
+  text-align: center;
+  color: var(--text-muted);
+  font-size: var(--font-size-base);
+}
+
+/* ── Alarm Search Item ── */
+.alarm-search-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--divider);
+}
+
+.alarm-search-item:last-child {
+  border-bottom: none;
+}
+
+.alarm-search-item__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.alarm-search-item__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-chip);
+  background: var(--color-success);
+  flex-shrink: 0;
+}
+
+.alarm-search-item__line {
+  font-size: var(--font-size-base);
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.alarm-search-item__code {
+  color: var(--text-secondary);
+}
+
+.alarm-search-item__status--warning {
+  color: var(--color-warning);
+  font-weight: var(--font-weight-semibold);
+}
+
+.alarm-search-item__status--resume {
+  color: var(--color-success);
+  font-weight: var(--font-weight-semibold);
+}
+
+.alarm-search-item__sn {
+  color: var(--text-secondary);
+}
+
+.alarm-search-item__message {
+  color: var(--text-primary);
+}
+
+.alarm-search-item__timestamp {
+  font-size: var(--font-size-md);
+  color: var(--text-secondary);
+  padding-left: calc(8px + var(--space-2));
+}
+
+/* ── Pagination (uses global .pagination classes from globals.css) ── */
+.alarm-search .pagination {
+  padding: var(--space-3) var(--space-4);
+  flex-shrink: 0;
+}

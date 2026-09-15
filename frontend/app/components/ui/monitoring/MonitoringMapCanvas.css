@@ -1,0 +1,22 @@
+.monitoring-canvas-wrap {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  user-select: none;
+  cursor: default;
+}
+
+.monitoring-canvas-wrap.is-pannable {
+  cursor: grab;
+}
+
+.monitoring-canvas-wrap.is-panning {
+  cursor: grabbing;
+}
+
+.monitoring-canvas-wrap canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+}

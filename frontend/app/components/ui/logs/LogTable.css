@@ -1,0 +1,203 @@
+.log-table__wrapper {
+  background: var(--bg-surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  min-height: 476px;
+  max-height: 600px;
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+
+.log-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.log-table thead {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.log-table th {
+  background: var(--bg-table-header);
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: var(--letter-spacing-wide);
+  padding: var(--space-3) var(--space-3);
+  text-align: center;
+  border-bottom: 1px solid var(--border-table-header);
+  white-space: nowrap;
+}
+
+.log-table th:first-child {
+  border-top-left-radius: var(--radius-card);
+}
+
+.log-table th:last-child {
+  border-top-right-radius: var(--radius-card);
+}
+
+.log-table td {
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--font-size-md);
+  color: var(--text-primary);
+  border-bottom: 1px solid var(--divider);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  height: 53px;
+  vertical-align: middle;
+  text-align: center;
+}
+
+.log-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.log-table tbody tr:last-child td:first-child {
+  border-bottom-left-radius: var(--radius-card);
+}
+
+.log-table tbody tr:last-child td:last-child {
+  border-bottom-right-radius: var(--radius-card);
+}
+
+/* ── Row ── */
+.log-table__row--expandable {
+  cursor: pointer;
+}
+
+.log-table__row--expandable:hover {
+  background: var(--bg-surface-2);
+}
+
+/* ── Message column (2-line clamp) ── */
+.log-table__message-cell {
+  text-align: left;
+}
+
+.log-table__message {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: normal;
+  word-break: break-word;
+}
+
+.log-table__message--expanded {
+  display: block;
+  -webkit-line-clamp: unset;
+  overflow: visible;
+  white-space: normal;
+  word-break: break-word;
+}
+
+/* ── Error type badges ── */
+.log-table__error-type {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: var(--radius-badge);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+}
+
+.log-table__error-type--시스템 {
+  background: var(--bg-primary-subtle);
+  color: var(--color-primary);
+}
+
+.log-table__error-type--로봇 {
+  background: var(--bg-warning-subtle);
+  color: var(--color-warning);
+}
+
+.log-table__error-type--사용자 {
+  background: var(--bg-selected);
+  color: var(--text-muted);
+}
+
+/* ── View button ── */
+.log-table__view-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-1) var(--space-3);
+  background: var(--color-primary);
+  border: 1px solid var(--color-primary);
+  border-radius: var(--radius-button);
+  color: var(--text-on-primary);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--transition-fast) var(--ease-default),
+    border-color var(--transition-fast) var(--ease-default);
+}
+
+.log-table__view-btn:hover {
+  background: rgba(90, 143, 245, 0.85);
+  border-color: rgba(90, 143, 245, 0.85);
+}
+
+.log-table__view-btn:active {
+  background: rgba(90, 143, 245, 0.70);
+}
+
+/* ── JSON viewer modal ── */
+.log-table__json-viewer {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  background: var(--bg-surface-2);
+  border-radius: var(--radius-control);
+  padding: var(--space-4);
+
+  /* WebKit scrollbar */
+  &::-webkit-scrollbar {
+    width: var(--scrollbar-width);
+  }
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  &::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb);
+    border-radius: var(--scrollbar-radius);
+  }
+  &::-webkit-scrollbar-thumb:hover {
+    background: var(--scrollbar-thumb-hover);
+  }
+
+  /* Firefox */
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+.log-table__json-viewer pre {
+  margin: 0;
+  font-family: monospace;
+  font-size: var(--font-size-base);
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* ── Log detail modal ── */
+.log-detail {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+/* ── Empty State ── */
+.log-table__empty {
+  text-align: center;
+  color: var(--text-muted);
+  padding: var(--space-6) 0 !important;
+  font-size: var(--font-size-base);
+}

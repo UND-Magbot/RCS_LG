@@ -1,0 +1,120 @@
+.trp {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.trp__separator {
+  font-size: var(--font-size-md);
+  color: var(--text-muted);
+}
+
+/* ── Dropdown wrapper ── */
+.trp__dropdown {
+  position: relative;
+}
+
+/* ── Trigger button ── */
+.trp__trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  height: 36px;
+  width: 90px;
+  padding: 0 var(--space-3);
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  color: var(--text-primary);
+  font-size: var(--font-size-md);
+  cursor: pointer;
+  outline: none;
+  transition: border-color var(--transition-base) var(--ease-default);
+}
+
+.trp__trigger:focus {
+  border-color: var(--color-primary);
+}
+
+.trp__trigger--error {
+  border-color: var(--color-error);
+}
+
+/* ── Dropdown arrow ── */
+.trp__arrow {
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid var(--text-muted);
+  flex-shrink: 0;
+}
+
+/* ── Popup list ── */
+.trp__popup {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 100;
+  width: 90px;
+  max-height: 240px;
+  overflow-y: auto;
+  background: var(--bg-surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  box-shadow: var(--shadow-md);
+  display: flex;
+  flex-direction: column;
+}
+
+.trp__popup::-webkit-scrollbar {
+  width: var(--scrollbar-width);
+}
+
+.trp__popup::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.trp__popup::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: var(--scrollbar-radius);
+}
+
+.trp__popup::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
+/* ── Option items ── */
+.trp__option {
+  padding: var(--space-2) var(--space-3);
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  font-size: var(--font-size-md);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--transition-base) var(--ease-default);
+}
+
+.trp__option:hover {
+  background: var(--bg-hover);
+}
+
+.trp__option--active {
+  background: var(--bg-primary-subtle);
+  color: var(--color-primary);
+  font-weight: var(--font-weight-semibold);
+}
+
+/* ── Disabled state ── */
+.trp--disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.trp__trigger--disabled {
+  cursor: not-allowed;
+  background: var(--bg-surface-1);
+  color: var(--text-muted);
+}

@@ -1,0 +1,183 @@
+.login {
+  width: 100%;
+  max-width: 400px;
+  padding: var(--space-4);
+}
+
+.login__card {
+  background: var(--bg-surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-md);
+  padding: var(--space-10) var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.login__title {
+  font-size: var(--font-size-title);
+  font-weight: var(--font-weight-bold);
+  color: var(--text-primary);
+  text-align: center;
+}
+
+.login__field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.login__label {
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-medium);
+  color: var(--text-secondary);
+}
+
+.login__input {
+  width: 100%;
+  height: 44px;
+  padding: 0 var(--space-3);
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-button);
+  color: var(--text-primary);
+  font-size: var(--font-size-base);
+  font-family: inherit;
+  outline: none;
+  transition: border-color var(--transition-base) var(--ease-default);
+}
+
+.login__input::placeholder {
+  color: var(--text-muted);
+}
+
+.login__input:focus {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px var(--focus-ring);
+}
+
+.login__input--error {
+  border-color: var(--color-error);
+}
+
+.login__input--error:focus {
+  box-shadow: 0 0 0 2px var(--focus-ring-error);
+}
+
+.login__error {
+  font-size: var(--font-size-xs);
+  color: var(--color-error);
+  min-height: 18px;
+}
+
+.login__btn {
+  width: 100%;
+  height: 44px;
+  background: var(--color-primary);
+  color: var(--text-on-primary);
+  border: none;
+  border-radius: var(--radius-button);
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-semibold);
+  font-family: inherit;
+  cursor: pointer;
+  transition: opacity var(--transition-base) var(--ease-default);
+}
+
+.login__btn:hover {
+  opacity: 0.9;
+}
+
+.login__btn:active {
+  opacity: 0.8;
+}
+
+.login__forgot {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+  font-family: inherit;
+  cursor: pointer;
+  text-align: center;
+  padding: 0;
+  transition: color var(--transition-base) var(--ease-default);
+}
+
+.login__forgot:hover {
+  color: var(--text-secondary);
+}
+
+/* Forgot Password Modal */
+.forgot-pw__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.forgot-pw__text {
+  font-size: var(--font-size-md);
+  color: var(--text-secondary);
+  line-height: var(--line-height-base);
+}
+
+.forgot-pw__input {
+  width: 100%;
+  height: 44px;
+  padding: 0 var(--space-3);
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-button);
+  color: var(--text-primary);
+  font-size: var(--font-size-base);
+  font-family: inherit;
+  outline: none;
+  transition: border-color var(--transition-base) var(--ease-default);
+}
+
+.forgot-pw__input::placeholder {
+  color: var(--text-muted);
+}
+
+.forgot-pw__input:focus {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px var(--focus-ring);
+}
+
+.forgot-pw__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.forgot-pw__btn {
+  height: 36px;
+  padding: 0 var(--space-4);
+  border-radius: var(--radius-button);
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-medium);
+  font-family: inherit;
+  cursor: pointer;
+  transition: opacity var(--transition-base) var(--ease-default);
+}
+
+.forgot-pw__btn--cancel {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+}
+
+.forgot-pw__btn--cancel:hover {
+  background: var(--bg-hover);
+}
+
+.forgot-pw__btn--confirm {
+  background: var(--color-primary);
+  border: none;
+  color: var(--text-on-primary);
+}
+
+.forgot-pw__btn--confirm:hover {
+  opacity: 0.9;
+}

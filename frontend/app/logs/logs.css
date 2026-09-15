@@ -1,0 +1,57 @@
+.logs-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-5);
+  height: 100%;
+  overflow-y: auto;
+}
+
+.logs-page__header {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.logs-page__export-btn {
+  height: 36px;
+  padding: 0 var(--space-4);
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  color: var(--text-primary);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+  transition: background var(--transition-base) var(--ease-default);
+}
+
+.logs-page__export-btn:hover {
+  background: var(--bg-hover);
+}
+
+.logs-page__title {
+  margin: 0;
+  font-size: var(--font-size-xl);
+  font-weight: var(--font-weight-bold);
+  color: var(--text-primary);
+}
+
+.logs-page__card-header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.logs-page__card-title {
+  margin: 0;
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+}
+
+.logs-page__card-subtitle {
+  margin: 0;
+  font-size: var(--font-size-md);
+  color: var(--text-muted);
+}

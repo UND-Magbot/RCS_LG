@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+BackEnd/venv/
+
+# Node
+frontend/node_modules/
+frontend/.next/
+
+# Env
+frontend/.env.local
+.env
+
+
+# prompts
+frontend/spec/
+frontend/CLAUDE.md
+frontend/.codex/
+
+# 업무보고
+업무보고_*.md
+
+# Android / TabletApp 빌드 산출물
+TabletApp/.gradle/
+TabletApp/app/build/
+TabletApp/build/
+TabletApp/local.properties
+
+nul
