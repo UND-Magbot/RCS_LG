@@ -87,6 +87,31 @@ SELF_CLEARANCE_M = 0.25
 #   → 버리는 대신 **속도로 외삽**해서 쓰고, 한계만 1 Hz 주기를 덮게 넉넉히 둔다.
 POSE_MAX_AGE_SEC = 1.2
 
+# ══════════════════════════════════════════════════════════════════
+#  ★ 밀린 스캔은 버린다 (2026-09-15 실측으로 추가)
+#
+#  WS 는 받은 순서대로 쌓인다. 한 스캔을 처리하는 데 드는 시간(밴드 계산·벽 대조·
+#  설정 파일 읽기·REST 호출)이 스캔 주기(0.53초)를 넘으면 큐가 계속 불어나고,
+#  그때부터 **과거 상황으로 현재를 판단**하게 된다.
+#
+#  10회 반복 시험에서 실제로 사고가 났다:
+#    · 지연이 1.5초 → 11.5초로 누적 증가
+#    · 7회차 — 로봇이 물체에서 3.2 m 떨어진 출발점에 있는데 직전 회차 상황에 대한
+#      `RED 앞 0.91 m` 가 뒤늦게 확정돼 속도 0 이 걸렸고, 로봇이 0.27 m 만에 섰다.
+#      **아무것도 없는 곳에서 멈추는 '멈칫'의 정체가 이것이다.**
+#    · 같은 WS 를 구독하되 계산이 가벼운 프로브는 밀리지 않았다 → 처리 부하 문제
+#
+#  낡은 스캔은 **무거운 계산에 들어가기 전에** 버린다. 버리는 비용이 거의 0 이라
+#  큐가 빠르게 소진되고, 결과적으로 **항상 최신 스캔으로 판정**하게 된다.
+#  (스캔을 건너뛴다고 감시가 느슨해지지 않는다 — 어차피 그 스캔은 이미 낡아서
+#   지금 위치와 맞지 않는다. 최신 것으로 보는 편이 정확하고 안전하다.)
+SCAN_MAX_LAG_SEC = 0.5
+
+# 로봇 시계가 서버와 어긋나 있어 `stamp` 를 그대로 빼면 안 된다
+# (실측: 로봇이 1.1초 빠름 → 차이가 음수로 나온다).
+# 관측된 차이의 **최솟값**이 곧 시계 오프셋이므로, 그걸 기준으로 상대 지연만 본다.
+SCAN_OFFSET_RELAX_SEC = 60.0      # 이 주기로 오프셋을 다시 잡는다(시계 드리프트 대비)
+
 # 외삽에 쓸 전진 속도의 상한 — 추정이 튀어도 이 이상은 밀지 않는다
 MAX_EXTRAPOLATE_SPEED = 1.2
 
@@ -822,6 +847,10 @@ def _worker(ip: str) -> None:
             half = 0.23          # 자기 반폭. 랙을 들면 커진다
             last_size_log = 0.0
             last_skip_log = 0.0
+            scan_offset = None       # 로봇↔서버 시계 차 (관측 최솟값)
+            scan_offset_t = 0.0      # 오프셋을 잡은 시각 — 주기적으로 다시 잡는다
+            stale_drop = 0           # 버린 스캔 수
+            last_stale_log = 0.0
 
             while not _stop_event.is_set():
                 raw = ws.recv()
@@ -862,6 +891,33 @@ def _worker(ip: str) -> None:
                     continue
                 if topic != "/scan_matched_points2":
                     continue
+
+                # ── ★ 밀린 스캔은 여기서 버린다 (무거운 계산 전) ──
+                #   설정 파일 읽기·밴드 계산·벽 대조보다 **앞**에 둬야 큐가 빨리 빈다.
+                #   자세한 배경은 위 SCAN_MAX_LAG_SEC 주석 참조.
+                _stamp = msg.get("stamp")
+                if _stamp:
+                    _d = time.time() - float(_stamp)
+                    # 시계 오프셋 = 관측된 차이의 **최솟값**(= 지연이 0 이던 순간).
+                    # 주기가 지나면 기준을 새로 잡아 시계 드리프트를 따라간다.
+                    # ※ 계속 밀리는 상황이면 오프셋도 같이 내려가 상대 지연이 0 이 된다
+                    #    → 전부 버려서 판정이 멈추는 일은 생기지 않는다(자기 보정).
+                    if (scan_offset is None
+                            or time.time() - scan_offset_t > SCAN_OFFSET_RELAX_SEC):
+                        scan_offset = _d
+                        scan_offset_t = time.time()
+                    elif _d < scan_offset:
+                        scan_offset = _d
+                    if _d - scan_offset > SCAN_MAX_LAG_SEC:
+                        stale_drop += 1
+                        if time.time() - last_stale_log > 10:
+                            logger.info(
+                                f"[safety] {ip} 밀린 스캔 {stale_drop}건 버림 "
+                                f"(지연 {_d - scan_offset:.2f}초 > {SCAN_MAX_LAG_SEC}) "
+                                f"— 최신 스캔으로 판정한다")
+                            last_stale_log = time.time()
+                            stale_drop = 0
+                        continue
 
                 cfg = get_safety_settings()
                 if not cfg.get("enabled", False):
