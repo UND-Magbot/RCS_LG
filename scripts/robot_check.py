@@ -111,6 +111,28 @@ def load_r1() -> dict | None:
         return None
 
 
+def load_robot_ip() -> str | None:
+    """DB에 등록된 활성 로봇의 IP.
+
+    현장(사무실/LG)마다 IP가 달라서 스크립트에 박아두면 옮길 때마다 고쳐야 한다.
+    관제 화면에서 로봇 IP를 고치면 스크립트도 따라오도록 DB를 기준으로 삼는다.
+    """
+    try:
+        from app.database import SessionLocal
+        from app.models.robot import Robot
+        db = SessionLocal()
+        try:
+            r = (db.query(Robot)
+                 .filter(Robot.is_active == True,                      # noqa: E712
+                         Robot.ip_address.isnot(None))
+                 .order_by(Robot.id).first())
+            return r.ip_address if r else None
+        finally:
+            db.close()
+    except Exception:
+        return None
+
+
 def norm_deg(rad_a: float, rad_b: float) -> float:
     d = math.degrees(rad_a - rad_b)
     while d > 180:
@@ -232,10 +254,20 @@ def report(ip: str, r1: dict | None, with_rack: bool) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="로봇 상태 한 번에 확인")
-    ap.add_argument("--ip", default="192.168.30.100")
+    ap.add_argument("--ip", default=None,
+                    help="로봇 IP (기본: DB에 등록된 로봇)")
     ap.add_argument("--watch", action="store_true", help="3초마다 반복")
     ap.add_argument("--rack", action="store_true", help="랙 검출도 확인 (감지 서비스 on/off)")
     cfg = ap.parse_args()
+
+    ip = cfg.ip or load_robot_ip()
+    if not ip:
+        print("로봇 IP를 알 수 없습니다.")
+        print("  DB(robots.ip_address)에 등록된 활성 로봇이 없거나 DB가 꺼져 있습니다.")
+        print("  --ip 로 직접 지정하세요.  예)  robot_check.py --ip 192.168.0.100")
+        return 1
+    if not cfg.ip:
+        print(f"(로봇 IP를 DB에서 읽었습니다: {ip})")
 
     r1 = load_r1()
     if r1 is None:
@@ -243,7 +275,7 @@ def main() -> int:
 
     try:
         while True:
-            report(cfg.ip, r1, cfg.rack)
+            report(ip, r1, cfg.rack)
             if not cfg.watch:
                 break
             time.sleep(3)

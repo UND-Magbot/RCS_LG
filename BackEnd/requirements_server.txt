@@ -1,0 +1,14 @@
+# RCS_LG 서버 실행에 필요한 패키지 (2026-09-16 확정)
+# 작업 PC 의 실제 설치 버전으로 고정했다.
+#   설치:  pip install -r requirements_server.txt
+fastapi==0.121.3
+uvicorn==0.38.0
+SQLAlchemy==2.0.45
+PyMySQL==1.1.2
+pydantic==2.13.4
+APScheduler==3.11.3
+requests==2.32.4
+websocket-client==1.9.0
+python-jose==3.5.0
+passlib==1.7.4
+bcrypt==4.0.1

@@ -43,7 +43,7 @@
         "console",
         "file"
       ],
-      "level": "INFO",
+      "level": "WARNING",
       "propagate": false
     },
     "uvicorn.access": {
@@ -51,7 +51,7 @@
         "console",
         "file"
       ],
-      "level": "WARNING",
+      "level": "INFO",
       "propagate": false
     },
     "watchfiles": {

@@ -1087,9 +1087,31 @@ def load_poi(poi_id: int | None, name: str) -> dict:
         db.close()
 
 
+def load_robot_ip() -> str | None:
+    """DB에 등록된 활성 로봇의 IP.
+
+    현장(사무실/LG)마다 IP가 달라서 스크립트에 박아두면 옮길 때마다 고쳐야 한다.
+    관제 화면에서 로봇 IP를 고치면 스크립트도 따라오도록 DB를 기준으로 삼는다.
+    """
+    try:
+        from app.database import SessionLocal
+        from app.models.robot import Robot
+        db = SessionLocal()
+        try:
+            r = (db.query(Robot)
+                 .filter(Robot.is_active == True,                      # noqa: E712
+                         Robot.ip_address.isnot(None))
+                 .order_by(Robot.id).first())
+            return r.ip_address if r else None
+        finally:
+            db.close()
+    except Exception:
+        return None
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description="LG2 랙 인식 벤치")
-    p.add_argument("--ip", default="192.168.30.100", help="로봇 IP")
+    p.add_argument("--ip", default=None, help="로봇 IP (기본: DB에 등록된 로봇)")
     p.add_argument("--poi-id", type=int, default=None, help="랙 위치 POI id (기본: 이름으로 조회)")
     p.add_argument("--poi-name", default="R1", help="랙 위치 POI 이름 (기본 R1)")
     p.add_argument("--backoff", type=float, default=2, help="반납 후 후진 거리(m)")
@@ -1109,8 +1131,17 @@ def main() -> int:
         print("이 스크립트는 Windows 전용입니다 (msvcrt 필요).")
         return 2
 
+    robot_ip = cfg.ip or load_robot_ip()
+    if not robot_ip:
+        print("로봇 IP를 알 수 없습니다.")
+        print("  DB(robots.ip_address)에 등록된 활성 로봇이 없거나 DB가 꺼져 있습니다.")
+        print("  --ip 로 직접 지정하세요.  예)  rack_bench.py --ip 192.168.0.100")
+        return 1
+    if not cfg.ip:
+        print(f"(로봇 IP를 DB에서 읽었습니다: {robot_ip})")
+
     log = Log(LOG_DIR / f"rack_bench_{RUN_TS}.jsonl")
-    rb = Robot(cfg.ip, secret=cfg.secret, dry=cfg.dry_run)
+    rb = Robot(robot_ip, secret=cfg.secret, dry=cfg.dry_run)
 
     print("=" * 74)
     print("LG2 랙 인식 벤치 — 접지 체인 검증")
@@ -1135,7 +1166,7 @@ def main() -> int:
     try:
         specs = rb.get_rack_specs()
     except Exception as e:
-        say(f"로봇({cfg.ip}) 응답 없음: {e}", "✗")
+        say(f"로봇({robot_ip}) 응답 없음: {e}", "✗")
         return 2
     say(f"로봇 연결 OK — rack.specs {len(specs)}개 등록됨", "✔")
     for s in specs:

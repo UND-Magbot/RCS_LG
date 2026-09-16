@@ -1,0 +1,1 @@
+.confirm-modal{gap:var(--space-5);padding:var(--space-4)0;flex-direction:column;display:flex}.confirm-modal__message{font-size:var(--font-size-base);color:var(--text-secondary);white-space:pre-line;margin:0;line-height:1.5}.confirm-modal__actions{justify-content:flex-end;gap:var(--space-3);display:flex}

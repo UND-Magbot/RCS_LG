@@ -1,6 +1,6 @@
 {
   "voice": {
-    "enabled": true,
+    "enabled": false,
     "volume": 100,
     "interval_sec": 15.0,
     "stop_delay_sec": 3.0,
@@ -12,11 +12,11 @@
   },
   "safety": {
     "enabled": true,
-    "yellow_m": 3.0,
+    "yellow_m": 2.3,
     "red_m": 1.0,
     "slow_speed": 0.15,
-    "band_half_w": 0.2,
+    "band_half_w": 0.5,
     "near_min": 0.45,
-    "clear_hold_sec": 1.0
+    "clear_hold_sec": 2.0
   }
 }
