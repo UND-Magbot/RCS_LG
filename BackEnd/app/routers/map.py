@@ -2321,6 +2321,9 @@ def api_get_active_pois(area_id: int | None = None, db: Session = Depends(get_db
             "world_y": p.world_y,
             "angle": p.angle,
             "rack_size": p.rack_size,
+            # 같은 이름 POI 가 여러 맵에 있다. 어느 맵 것인지 밝혀야
+            # 받는 쪽에서 거를 수 있다(2026-09-16 - map 33 POI 로 로봇이 갔다).
+            "map_id": p.map_id,
         }
         for p in pois
     ]

@@ -64,7 +64,7 @@
 
     /* 종료 확인 모달 */
     .overlay {
-      position: fixed; inset: 0; background: rgba(0,0,0,0.65);
+      position: fixed; top: 0; right: 0; bottom: 0; left: 0; background: rgba(0,0,0,0.65);
       display: none; align-items: center; justify-content: center; padding: 24px; z-index: 50;
     }
     .overlay.show { display: flex; }
@@ -85,21 +85,35 @@
 
     /* 비상정지 전체화면 배너 (LGIT 요청 6번).
        버튼이 눌려 있는 동안 화면 전체를 덮는다 — 다른 버튼을 눌러봐야 로봇이
-       움직이지 않으므로, 원인을 먼저 보여주는 쪽이 맞다. 해제되면 사라진다. */
+       움직이지 않으므로, 원인을 먼저 보여주는 쪽이 맞다. 해제되면 사라진다.
+
+       ★ 2026-09-17 — 현장에서 문구가 화면 좌측 상단에 몰려 보였다.
+       원인으로 보는 것: `inset: 0` 축약형은 Chrome 87(2020-11) 이상에서만 먹는다.
+       태블릿의 Android System WebView 가 그보다 낮으면 offset 이 전부 auto 가 되어
+       고정요소가 제 자리(좌측 상단)에 내용 크기만큼만 그려진다.
+       → top/right/bottom/left 를 풀어 쓴다. 모든 버전에서 동작한다.
+       비상정지는 안전 표시라 여기만은 clamp()·gap 도 폴백을 깔아 둔다. */
     #estop-overlay {
-      position: fixed; inset: 0; z-index: 200;
+      position: fixed; top: 0; right: 0; bottom: 0; left: 0; z-index: 200;
       display: none; flex-direction: column;
       align-items: center; justify-content: center; text-align: center;
       background: #8e1b14; color: #fff;
-      padding: clamp(20px, 5vw, 60px); gap: clamp(16px, 3vh, 34px);
+      width: 100%; height: 100%;            /* offset 을 못 읽는 WebView 대비 */
+      padding: 28px;                        /* clamp 미지원 폴백 */
+      padding: clamp(20px, 5vw, 60px);
       animation: es-blink 1.2s ease-in-out infinite;
     }
     #estop-overlay.show { display: flex; }
     #estop-overlay .es-title {
-      font-size: clamp(30px, 7vw, 74px); font-weight: 900; line-height: 1.2;
+      font-size: 44px;                      /* clamp 미지원 폴백 */
+      font-size: clamp(30px, 7vw, 74px);
+      font-weight: 900; line-height: 1.2;
+      margin: 0 0 20px;                     /* flex gap 미지원 폴백 */
     }
     #estop-overlay .es-sub {
-      font-size: clamp(17px, 3vw, 32px); font-weight: 700; line-height: 1.6; opacity: .95;
+      font-size: 20px;                      /* clamp 미지원 폴백 */
+      font-size: clamp(17px, 3vw, 32px);
+      font-weight: 700; line-height: 1.6; opacity: .95; margin: 0;
     }
     @keyframes es-blink { 0%,100% { filter: brightness(1); } 50% { filter: brightness(1.35); } }
   </style>

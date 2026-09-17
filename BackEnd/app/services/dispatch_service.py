@@ -737,6 +737,47 @@ def _pickup_at_standby(worker: _Worker) -> bool:
     return True
 
 
+# 진입점이 작업지점의 '후진 진입축' 위에 있다고 볼 허용 오차.
+# LG 현장 실측(2026-09-17) — R1 179.4° · R2 -178.6° · J1 -176.6° · J2 179.7°
+# 로 네 곳 모두 180°에서 3.4° 안쪽이다. 12° 면 충분히 여유롭다.
+ENTRY_AXIS_TOL_DEG = 12.0
+
+
+def _entry_arrival_face(entry: dict, target: dict,
+                        drive_face: float) -> tuple[float, str]:
+    """진입점에 **어떤 자세로 도착시킬지** 정한다.
+
+    ## 왜 이 판정이 필요한가 (2026-09-17 LG 로그 실측)
+    진입점은 작업지점의 정후방 1.1 m 에 찍혀 있다. 즉 로봇이 작업지점 각도를
+    보고 서 있기만 하면 **그대로 후진**하면 들어간다. 그런데 종전 코드는 항상
+    '오던 진행 방향' 으로 도착시켰고, 그 결과 도착 자세가 필요값과 매번
+    **80~108° 어긋났다.** 뒤이은 정밀 동작(align_with_rack / to_unload_point)이
+    그걸 되돌리느라 1.1 m 를 가는 데 **누적 회전 247~424°, 19~26초**를 썼다.
+    10회 전수 조사에서 예외가 없었다(R·J 모두).
+
+    ## 판정
+    `진입점 → 작업지점` 방위가 `작업지점 각도 + 180°` 와 같으면(오차
+    `ENTRY_AXIS_TOL_DEG` 안) **축 위**로 본다 → 작업지점 각도로 도착시킨다.
+
+    ## 축 밖이면 종전 그대로인 이유
+    통로 경유지처럼 축에서 벗어난 자리에 작업지점 각도를 주면, 거기서 크게 돌고
+    정밀 동작이 또 되돌려 **제자리 회전이 두 번** 생긴다(2026-09-08 실측 W2,
+    180° 2회). 그때 얻은 교훈은 '축 밖' 에만 해당한다.
+    """
+    ori = target.get("ori")
+    if ori is None:
+        return drive_face, "작업지점 각도 없음 → 진행 방향 유지"
+    axis = math.atan2(target["y"] - entry["y"], target["x"] - entry["x"])
+    # 로봇이 target["ori"] 를 향하면 작업지점은 등 뒤에 있어야 한다.
+    back = math.atan2(math.sin(axis - (float(ori) + math.pi)),
+                      math.cos(axis - (float(ori) + math.pi)))
+    off = abs(math.degrees(back))
+    if off <= ENTRY_AXIS_TOL_DEG:
+        return float(ori), (f"진입축 위(오차 {off:.1f}°) → 작업지점 각도 "
+                            f"{math.degrees(float(ori)):.1f}° 로 도착, 그대로 후진")
+    return drive_face, f"진입축 밖(오차 {off:.1f}°) → 진행 방향 유지(종전 동작)"
+
+
 def _move_to_entry_poi(worker: _Worker, entry: dict, target: dict) -> bool:
     """진입점("<작업지점>-1") 까지 이동한다. **마지막 구간은 로봇 자율 + 회피.**
 
@@ -801,13 +842,14 @@ def _move_to_entry_poi(worker: _Worker, entry: dict, target: dict) -> bool:
     # ── 2단계: 진입점까지 로봇 자율(회피) ──
     if math.hypot(entry["x"] - prev[0], entry["y"] - prev[1]) < waypoint_route.ARRIVED_EPS:
         return True                          # 이미 진입점 위
-    face = math.atan2(entry["y"] - prev[1], entry["x"] - prev[0])
+    drive_face = math.atan2(entry["y"] - prev[1], entry["x"] - prev[0])
+    face, why = _entry_arrival_face(entry, target, drive_face)
     jack_service.update_job_status(
         ip, message=f"{target['name']} 진입점({entry['name']}) 이동")
     logger.info(
         f"[route] {target['name']} 진입({entry['name']}) 2단계 — "
         f"standard 자율 주행 {math.hypot(entry['x'] - prev[0], entry['y'] - prev[1]):.2f} m "
-        f"(회피 허용), 도착 방향 {math.degrees(face):.1f}°")
+        f"(회피 허용), 도착 방향 {math.degrees(face):.1f}° — {why}")
     try:
         r = jack_service.safe_move(ip, "standard", entry["x"], entry["y"], face,
                                    max_attempts=12, timeout=90, poll=jack_service.POLL_INTERVAL_SHORT)
@@ -1384,12 +1426,21 @@ def send_end(robot_id: int) -> tuple[bool, str]:
     return True, "ok"
 
 
-def force_clear(robot_id: int) -> tuple[bool, str]:
+def force_clear(robot_id: int, after: str = "hold") -> tuple[bool, str]:
     """실행 중인 배차 작업을 로봇 이동 없이 강제 정리.
 
     - 메모리 워커에 abort 신호 → 복귀(충전소) 시퀀스 없이 세션을 종료하고 워커 슬롯 해제.
-      (로봇은 물리적으로 그대로 — 잭/위치 유지. 충전소로 보내려면 '충전소 복귀'를 별도로.)
+      (로봇은 물리적으로 그대로 — 잭/위치 유지.)
     - 워커가 없으면(서버 재시작 후 유실 등) DB 활성 세션만 정리한다.
+
+    `after` — 정리가 끝난 뒤 로봇에게 시킬 일 (LGIT 요청, 2026-09-17)
+      "hold"    : 아무것도 안 함. 그 자리 그대로 (종전 동작 = 로봇별 원격제어 패널)
+      "reserve" : **멈춘 자리에서 랙 내려놓고** → 대기 예약이 있으면 그 R 지점으로,
+                  없으면 충전소로. (콘솔 [현재 JOB 강제 종료])
+      "charge"  : **멈춘 자리에서 랙 내려놓고** → 충전소로. (콘솔 [전체 강제 종료])
+
+    ※ 랙은 **멈춘 그 자리**에 내려놓는다. 통로를 막을 수 있지만 현장 합의 사항이다
+      — 놓인 랙은 작업자가 직접 치운다. 랙을 들고 있지 않으면 잭 조작을 건너뛴다.
     """
     worker = _get_worker(robot_id)
     if worker:
@@ -1421,18 +1472,135 @@ def force_clear(robot_id: int) -> tuple[bool, str]:
             logger.warning(f"[dispatch] force_clear — 중지 신호 전달 실패(무시): robot={robot_id}")
         worker.next_event.set()
         worker.confirm_event.set()
+        _start_force_followup(robot_id, worker.robot_ip, after)
         return True, "ok"
     # 워커 없음 — DB 활성 세션만 정리
+    ip = None
     db = SessionLocal()
     try:
+        robot = db.query(Robot).filter(Robot.id == robot_id).first()
+        ip = robot.ip_address if robot else None
         sess = dispatch_crud.get_active_session(db, robot_id)
         if not sess:
+            _start_force_followup(robot_id, ip, after)
             return True, "정리할 작업 없음"
         dispatch_crud.clear_route_waypoints(db, sess.id)
         dispatch_crud.update_status(db, sess.id, "failed", error="작업 강제 정리")
     finally:
         db.close()
+    _start_force_followup(robot_id, ip, after)
     return True, "ok"
+
+
+# 강제 종료 후속 동작 — 워커가 빠져나가기를 기다리는 최대 시간
+FOLLOWUP_WORKER_WAIT_SEC = 10.0
+
+
+def _start_force_followup(robot_id: int, robot_ip: Optional[str], after: str) -> None:
+    """강제 종료 뒤 '랙 놓기 → 이동' 을 **별도 스레드**에서 수행한다.
+
+    왜 스레드인가
+      `force_clear` 는 워커를 죽이는 함수다. 그 안에서 바로 이동을 시키면
+      자기가 방금 죽인 스레드가 정리되기를 기다리게 되고, 중지 플래그도 아직
+      살아 있어 새 이동이 곧바로 취소된다. 그래서 밖으로 뺀다.
+
+    실패해도 조용히 끝낸다 — 강제 종료 자체(세션 정리)는 이미 끝난 상태다.
+    """
+    if after == "hold" or not robot_ip:
+        return
+    try:
+        safe_thread(target=_force_followup, args=(robot_id, robot_ip, after),
+                    name=f"force-followup-{robot_ip}").start()
+    except Exception:
+        logger.exception(f"[dispatch] 강제 종료 후속 스레드 시작 실패 robot={robot_id}")
+
+
+def _followup_destination(after: str) -> Optional[dict]:
+    """후속 이동 목적지. None 이면 충전소로 간다.
+
+    "reserve" 일 때만 대기 예약을 본다. 예약은 **J POI** 로 걸리므로
+    job_points 매핑으로 **R 지점**을 찾는다 — 현장에서 호출은 R 에서 하고,
+    강제 종료 후에도 로봇은 R 에서 다시 시작해야 한다(2026-09-17 합의).
+    """
+    if after != "reserve":
+        return None
+    db = SessionLocal()
+    try:
+        rows = dispatch_crud.list_waiting_reservations(db)
+    except Exception:
+        logger.warning("[dispatch] 후속 이동 — 대기 예약 조회 실패, 충전소로 간다")
+        return None
+    finally:
+        db.close()
+    for res in rows or []:
+        mapping = job_mapping_for_poi(res.poi_id)
+        if not mapping:
+            continue
+        r_poi = _load_poi_by_name(mapping["area_id"], mapping["r_name"])
+        if r_poi:
+            logger.info(f"[dispatch] 후속 이동 목적지 — 대기 예약 {mapping['j_name']} "
+                        f"의 R 지점 {mapping['r_name']}")
+            return r_poi
+    return None
+
+
+def _force_followup(robot_id: int, robot_ip: str, after: str) -> None:
+    label = {"reserve": "현재 JOB 강제 종료", "charge": "전체 강제 종료"}.get(after, after)
+    logger.warning(f"[dispatch] ★ {label} 후속 동작 시작 — robot={robot_id} {robot_ip}")
+
+    # 1) 워커가 완전히 빠질 때까지 대기 (안 빠져도 계속 진행한다)
+    deadline = time.time() + FOLLOWUP_WORKER_WAIT_SEC
+    while time.time() < deadline and _get_worker(robot_id) is not None:
+        time.sleep(0.3)
+
+    # 2) 중지 플래그를 걷어낸다 — 안 걷으면 아래 이동이 즉시 취소된다
+    try:
+        jack_service.resume_robot_job(robot_ip)
+        jack_service.clear_stop_flag(robot_ip)
+    except Exception:
+        logger.warning(f"[dispatch] 후속 동작 — 중지 플래그 해제 실패(무시) {robot_ip}")
+
+    # 3) 랙을 들고 있으면 **그 자리에서** 내려놓는다
+    try:
+        loaded = jack_service.is_rack_loaded(robot_ip)
+    except Exception:
+        loaded = None
+    # 랙이 '없다고 확인된' 경우에만 건너뛴다. 통신 실패로 모르면 내려놓는다 —
+    # 안 들고 있는데 잭다운을 해도 잭만 내려갈 뿐 해가 없지만, 들고 있는데
+    # 건너뛰면 랙을 든 채 충전소로 가버린다. (jack_service.force_return_and_dock
+    # 이 쓰는 '모르면 들고 있다고 본다' 와 같은 기준)
+    if loaded is False:
+        logger.info(f"[dispatch] {robot_ip} 후속 동작 — 랙 없음 확인, 잭 조작 생략")
+    else:
+        how = "적재 확인" if loaded else "적재 여부 불명 — 안전하게"
+        jack_service.update_job_status(robot_ip, status="unloading",
+                                       message=f"{label} — 이 자리에 랙을 내려놓습니다")
+        logger.warning(f"[dispatch] {robot_ip} 후속 동작 — 제자리 잭다운({how})")
+        try:
+            jack_service.jack_down(robot_ip)
+            time.sleep(jack_service.JACK_WAIT_SEC)
+        except Exception as e:
+            logger.warning(f"[dispatch] 후속 동작 — 잭다운 실패(계속 진행): {e}")
+
+    # 4) 목적지로 이동
+    dest = _followup_destination(after)
+    try:
+        if dest:
+            jack_service.update_job_status(
+                robot_ip, status="moving",
+                message=f"{label} — 대기 호출이 있어 {dest['name']} 로 이동합니다")
+            jack_service.safe_move(robot_ip, "standard", dest["x"], dest["y"],
+                                   dest.get("ori") or 0, max_attempts=8, timeout=180)
+            jack_service.update_job_status(robot_ip, status="idle",
+                                           message=f"{dest['name']} 대기 중")
+        else:
+            jack_service.update_job_status(robot_ip, status="returning",
+                                           message=f"{label} — 충전소로 복귀합니다")
+            from app.services.scheduler import _return_to_charger
+            _return_to_charger(robot_ip, [])
+    except Exception as e:
+        logger.warning(f"[dispatch] {robot_ip} 후속 이동 실패(무시): {e}")
+    logger.warning(f"[dispatch] ★ {label} 후속 동작 종료 — robot={robot_id}")
 
 
 # ── 전역 강제 종료 (LGIT 요청 3번) ────────────────────────────
@@ -1476,7 +1644,8 @@ def force_clear_current() -> int:
     ids = _active_robot_ids()
     for rid in ids:
         try:
-            force_clear(rid)
+            # 랙을 그 자리에 내려놓고 → 대기 예약의 R 지점(없으면 충전소)으로
+            force_clear(rid, after="reserve")
         except Exception:
             logger.exception(f"[dispatch] 강제 종료 실패(계속 진행) robot={rid}")
     logger.warning(f"[dispatch] ★ 현재 JOB 강제 종료 — 로봇 {len(ids)}대 정리 "
@@ -1502,7 +1671,8 @@ def force_clear_all() -> dict:
     ids = _active_robot_ids()
     for rid in ids:
         try:
-            force_clear(rid)
+            # 랙을 그 자리에 내려놓고 → 충전소로
+            force_clear(rid, after="charge")
         except Exception:
             logger.exception(f"[dispatch] 강제 종료 실패(계속 진행) robot={rid}")
 
@@ -2502,8 +2672,20 @@ def _worker_loop_delivery(worker: _Worker, *, first_j_poi_id: int) -> None:
 
                 nxt = _take_next_reservation_if_continuable(worker)
                 if nxt is not None:
+                    # 화면에는 "4회 실패 — 이 작업을 중단합니다" 가 떠 있다.
+                    # 충전소로 가지 않고 다음 작업으로 넘어가므로 그렇게 고쳐 쓴다.
+                    # (예전에는 항상 "충전소로 복귀합니다" 라 화면이 거짓말을 했다)
+                    jack_service.set_dock_outcome_notice(
+                        worker.robot_ip, r_poi.get("id"),
+                        _poi_label(mapping["r_name"]),
+                        "⚠ Docking 실패 — 대기 중인 다음 호출로 넘어갑니다. "
+                        "대차를 정위치해 주세요.")
                     j_poi_id, res_id = nxt
                     continue
+                jack_service.set_dock_outcome_notice(
+                    worker.robot_ip, r_poi.get("id"),
+                    _poi_label(mapping["r_name"]),
+                    "⚠ Docking 실패로 충전소로 복귀합니다. 대차를 정위치해 주세요.")
 
                 # 대기 작업 없음 → 충전소 복귀.
                 # 예전에는 여기서 그냥 break 했다. 주석은 '충전소 복귀' 였지만

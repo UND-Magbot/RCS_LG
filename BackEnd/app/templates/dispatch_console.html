@@ -217,7 +217,7 @@
 
     /* 모달 */
     .modal-overlay {
-      position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+      position: fixed; top: 0; right: 0; bottom: 0; left: 0; background: rgba(0,0,0,0.6);
       display: none; align-items: center; justify-content: center; padding: 20px; z-index: 50;
     }
     .modal-overlay.show { display: flex; }
@@ -882,8 +882,14 @@
 
     function tileHtml(p) {
       // 배송 모드(job_points 매핑 있음) — R 타일/J 타일로 갈라 그린다.
+      //
+      // ★ 역할은 서버가 job_points 매핑으로 정해 내려준다(role).
+      //   POI 종류값 하나에만 의존하면, 운영자가 R 지점을 jack 으로 찍는 순간
+      //   R 이 J 타일로 그려져 [확인] 버튼이 엉뚱한 곳에 뜬다.
+      //   role 이 없는 옛 서버와 섞여도 되도록 poi_type 폴백을 남긴다.
       if (p.paired_poi_name) {
-        return (p.poi_type === "standby") ? rackTileHtml(p) : jobTileHtml(p);
+        const role = p.role || (p.poi_type === "standby" ? "rack" : "job");
+        return (role === "rack") ? rackTileHtml(p) : jobTileHtml(p);
       }
       return legacyTileHtml(p);   // 매핑 없는 POI = 기존 인터랙티브 모드 그대로
     }

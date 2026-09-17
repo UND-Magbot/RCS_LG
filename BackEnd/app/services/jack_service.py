@@ -374,6 +374,17 @@ def resume_robot_job(robot_ip: str):
     logger.info(f"[resume] {robot_ip} 재개")
 
 
+def clear_stop_flag(robot_ip: str) -> None:
+    """중지 플래그를 **소비 없이** 걷어낸다.
+
+    `_check_stop()` 은 플래그를 pop 하면서 RuntimeError 를 던진다. 그래서 강제
+    종료 뒤에 새 이동을 걸려면 그 전에 플래그를 비워야 한다 — 안 그러면
+    새로 건 이동이 첫 체크에서 바로 취소된다 (2026-09-17 강제 종료 후속 동작).
+    """
+    _stop_flags.pop(robot_ip, None)
+    _paused_flags.pop(robot_ip, None)
+
+
 def _interruptible_sleep(robot_ip: str, seconds: float):
     """중지/일시정지 가능한 대기 — 1초 간격으로 plain check.
     paused 중에는 elapsed 가 진행되지 않음 (재개 시점부터 다시 카운트)."""
@@ -868,6 +879,26 @@ def clear_dock_notice(ip: str) -> None:
         pass
 
 
+def set_dock_outcome_notice(ip: str, poi_id, where: str, text: str) -> None:
+    """4회 실패 뒤 **실제로 무엇을 하는지**를 같은 자리에 덮어쓴다.
+
+    `_push_dock_notice(final=True)` 는 "이 작업을 중단합니다" 까지만 말한다.
+    그다음 행선지(다음 작업 / 충전소)는 배차 쪽만 알기 때문에 거기서 부른다.
+    같은 key 를 쓰므로 줄이 늘지 않고 갈아끼워진다.
+    """
+    try:
+        from app.services import notice_service
+        targets = [notice_service.TARGET_CONSOLE]
+        if poi_id:
+            targets.append(notice_service.poi_target(poi_id))
+        head = f"[{where}] " if where else ""
+        notice_service.push(notice_service.KIND_DOCK_FAIL_FINAL,
+                            f"{head}{text}", targets=targets,
+                            key=_dock_notice_key(ip), ttl_sec=DOCK_NOTICE_TTL_SEC)
+    except Exception:
+        logger.warning(f"[align_retry] {ip}: 도킹 결과 알림 전송 실패(무시)")
+
+
 def _push_dock_notice(ip: str, ctx: dict, attempt: int, max_retries: int,
                       final: bool = False) -> None:
     """도킹 실패 안내를 콘솔 + 그 위치 태블릿에 띄운다. 실패해도 주행에 영향 없음."""
@@ -880,7 +911,12 @@ def _push_dock_notice(ip: str, ctx: dict, attempt: int, max_retries: int,
         where = ctx.get("poi_label") or ctx.get("poi_name") or ""
         head = f"[{where}] " if where else ""
         if final:
-            msg = f"{head}⚠ Docking 실패로 충전소로 복귀합니다."
+            # 여기서 목적지를 단정하지 않는다. 재시도를 다 쓴 뒤 로봇이 어디로
+            # 갈지는 **대기 예약 유무**에 따라 갈리는데(dispatch_service 가 판단),
+            # 이 함수는 그걸 모른다. 예전 문구는 항상 "충전소로 복귀합니다" 라
+            # 대기 호출이 있어 다음 작업으로 넘어간 경우 화면이 거짓말을 했다.
+            # 실제 목적지는 dispatch_service 가 곧바로 덮어쓴다(같은 key).
+            msg = f"{head}⚠ Docking 4회 실패 — 이 작업을 중단합니다."
             kind = notice_service.KIND_DOCK_FAIL_FINAL
         else:
             msg = (f"{head}⚠ Docking에 실패했습니다. 대차를 정위치해 주세요. "
