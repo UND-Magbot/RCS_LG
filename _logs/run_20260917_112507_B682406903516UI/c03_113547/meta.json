@@ -1,0 +1,213 @@
+{
+  "cycle": 3,
+  "started_at": 1789612547.838734,
+  "started_str": "2026-09-17 11:35:47",
+  "robot_ip": "10.14.182.126",
+  "home": {
+    "x": 0.127478,
+    "y": -27.487
+  },
+  "leave_r": 1.5,
+  "arrive_r": 1.2,
+  "server_safety_settings": {
+    "enabled": true,
+    "yellow_m": 2.3,
+    "red_m": 1.0,
+    "slow_speed": 0.15,
+    "band_half_w": 0.5,
+    "near_min": 0.45,
+    "clear_hold_sec": 2.0
+  },
+  "band_half_w_used": 0.5,
+  "front_extent_used": 0.379,
+  "footprint_half_w": 0.23,
+  "footprint": [
+    [
+      0.0,
+      -0.369
+    ],
+    [
+      0.14,
+      -0.366
+    ],
+    [
+      0.2,
+      -0.346
+    ],
+    [
+      0.22,
+      -0.296
+    ],
+    [
+      0.23,
+      -0.196
+    ],
+    [
+      0.23,
+      0.226
+    ],
+    [
+      0.22,
+      0.296
+    ],
+    [
+      0.18,
+      0.356
+    ],
+    [
+      0.15,
+      0.361
+    ],
+    [
+      0.14,
+      0.379
+    ],
+    [
+      -0.14,
+      0.379
+    ],
+    [
+      -0.15,
+      0.361
+    ],
+    [
+      -0.18,
+      0.356
+    ],
+    [
+      -0.22,
+      0.296
+    ],
+    [
+      -0.23,
+      0.226
+    ],
+    [
+      -0.23,
+      -0.196
+    ],
+    [
+      -0.22,
+      -0.296
+    ],
+    [
+      -0.2,
+      -0.346
+    ],
+    [
+      -0.14,
+      -0.366
+    ]
+  ],
+  "self_clearance": 0.25,
+  "scan_far_m": 6.0,
+  "robot_params": {
+    "/wheel_control/max_forward_velocity": 0.8,
+    "/wheel_control/max_backward_velocity": -0.5,
+    "/wheel_control/max_forward_acc": 0.3,
+    "/wheel_control/max_forward_decel": -2.0,
+    "/wheel_control/max_angular_velocity": 1.2,
+    "/wheel_control/acc_smoother/smooth_level": "lower",
+    "/control/bump_tolerance": 0,
+    "/planning/auto_hold": true,
+    "/control/bump_based_speed_limit/enable": false,
+    "/robot/footprint": [
+      [
+        0,
+        -0.369
+      ],
+      [
+        0.14,
+        -0.366
+      ],
+      [
+        0.2,
+        -0.346
+      ],
+      [
+        0.22,
+        -0.296
+      ],
+      [
+        0.23,
+        -0.196
+      ],
+      [
+        0.23,
+        0.226
+      ],
+      [
+        0.22,
+        0.296
+      ],
+      [
+        0.18,
+        0.356
+      ],
+      [
+        0.15,
+        0.361
+      ],
+      [
+        0.14,
+        0.379
+      ],
+      [
+        -0.14,
+        0.379
+      ],
+      [
+        -0.15,
+        0.361
+      ],
+      [
+        -0.18,
+        0.356
+      ],
+      [
+        -0.22,
+        0.296
+      ],
+      [
+        -0.23,
+        0.226
+      ],
+      [
+        -0.23,
+        -0.196
+      ],
+      [
+        -0.22,
+        -0.296
+      ],
+      [
+        -0.2,
+        -0.346
+      ],
+      [
+        -0.14,
+        -0.366
+      ]
+    ]
+  },
+  "poi_count": 34,
+  "topics": [
+    "/motion_metrics",
+    "/tracked_pose",
+    "/planning_state",
+    "/slam/state",
+    "/scan_matched_points2",
+    "/fused_sensor_state",
+    "/bumper_state",
+    "/chassis_state",
+    "/wheel_state",
+    "/alerts",
+    "/nearby_robots",
+    "/battery_state",
+    "/robot_model",
+    "/jack_state",
+    "/maps/1cm/1hz"
+  ],
+  "map_context": "../map_context (맵 원점·해상도·overlays·POI)",
+  "script_version": "v3 (2026-09-16)"
+}

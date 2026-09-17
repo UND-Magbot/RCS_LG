@@ -1,0 +1,342 @@
+[
+  {
+    "id": 1884,
+    "name": "C1",
+    "poi_type": "charging",
+    "world_x": 0.133385,
+    "world_y": -27.479,
+    "angle": 2.0,
+    "rack_size": null,
+    "map_id": 27
+  },
+  {
+    "id": 1885,
+    "name": "J2",
+    "poi_type": "jack",
+    "world_x": -2.8625,
+    "world_y": -36.26,
+    "angle": 0.41,
+    "rack_size": null,
+    "map_id": 27
+  },
+  {
+    "id": 1886,
+    "name": "C1-1",
+    "poi_type": "waypoint",
+    "world_x": -0.105,
+    "world_y": -26.9375,
+    "angle": 1.98,
+    "rack_size": null,
+    "map_id": 27
+  },
+  {
+    "id": 1887,
+    "name": "J2-1",
+    "poi_type": "waypoint",
+    "world_x": -1.92713,
+    "world_y": -35.8253,
+    "angle": null,
+    "rack_size": null,
+    "map_id": 27
+  },
+  {
+    "id": 1888,
+    "name": "R2",
+    "poi_type": "standby",
+    "world_x": -18.9575,
+    "world_y": 17.9925,
+    "angle": 0.4,
+    "rack_size": "LG",
+    "map_id": 27
+  },
+  {
+    "id": 1889,
+    "name": "R2-1",
+    "poi_type": "waypoint",
+    "world_x": -18.0425,
+    "world_y": 18.3123,
+    "angle": null,
+    "rack_size": null,
+    "map_id": 27
+  },
+  {
+    "id": 1890,
+    "name": "J1",
+    "poi_type": "jack",
+    "world_x": -19.8575,
+    "world_y": 20.0025,
+    "angle": 0.41,
+    "rack_size": null,
+    "map_id": 27
+  },
+  {
+    "id": 1891,
+    "name": "J1-1",
+    "poi_type": "waypoint",
+    "world_x": -18.821,
+    "world_y": 20.4463,
+    "angle": null,
+    "rack_size": null,
+    "map_id": 27
+  },
+  {
+    "id": 1892,
+    "name": "R1",
+    "poi_type": "standby",
+    "world_x": -3.76,
+    "world_y": -34.415,
+    "angle": 0.4,
+    "rack_size": "LG",
+    "map_id": 27
+  },
+  {
+    "id": 1893,
+    "name": "R1-1",
+    "poi_type": "waypoint",
+    "world_x": -2.66622,
+    "world_y": -33.9484,
+    "angle": null,
+    "rack_size": null,
+    "map_id": 27
+  },
+  {
+    "id": 1894,
+    "name": "W6",
+    "poi_type": "waypoint",
+    "world_x": 0.3175,
+    "world_y": -23.1325,
+    "angle": 1.94,
+    "rack_size": null,
+    "map_id": 27
+  },
+  {
+    "id": 1895,
+    "name": "W7",
+    "poi_type": "waypoint",
+    "world_x": -5.63,
+    "world_y": -9.44,
+    "angle": 1.97,
+    "rack_size": null,
+    "map_id": 27
+  },
+  {
+    "id": 1896,
+    "name": "W8",
+    "poi_type": "waypoint",
+    "world_x": -13.7775,
+    "world_y": 9.285,
+    "angle": 1.97,
+    "rack_size": null,
+    "map_id": 27
+  },
+  {
+    "id": 1897,
+    "name": "W9",
+    "poi_type": "waypoint",
+    "world_x": -17.165,
+    "world_y": 16.9525,
+    "angle": 1.97,
+    "rack_size": null,
+    "map_id": 27
+  },
+  {
+    "id": 1898,
+    "name": "W5",
+    "poi_type": "waypoint",
+    "world_x": 0.8025,
+    "world_y": -24.77,
+    "angle": 1.47,
+    "rack_size": null,
+    "map_id": 27
+  },
+  {
+    "id": 1899,
+    "name": "W3",
+    "poi_type": "waypoint",
+    "world_x": -3.9575,
+    "world_y": -27.85,
+    "angle": 3.55,
+    "rack_size": null,
+    "map_id": 27
+  },
+  {
+    "id": 1900,
+    "name": "W2",
+    "poi_type": "waypoint",
+    "world_x": -5.1025,
+    "world_y": -30.0675,
+    "angle": -1.18,
+    "rack_size": null,
+    "map_id": 27
+  },
+  {
+    "id": 1901,
+    "name": "W1",
+    "poi_type": "waypoint",
+    "world_x": -3.79499,
+    "world_y": -31.6374,
+    "angle": null,
+    "rack_size": null,
+    "map_id": 27
+  },
+  {
+    "id": 1905,
+    "name": "C1",
+    "poi_type": "charging",
+    "world_x": 0.127478,
+    "world_y": -27.487,
+    "angle": 2.01,
+    "rack_size": null,
+    "map_id": 30
+  },
+  {
+    "id": 1906,
+    "name": "C1-2",
+    "poi_type": "waypoint",
+    "world_x": -0.26,
+    "world_y": -26.6025,
+    "angle": 2.0,
+    "rack_size": null,
+    "map_id": 30
+  },
+  {
+    "id": 1907,
+    "name": "W1",
+    "poi_type": "waypoint",
+    "world_x": -4.025,
+    "world_y": -31.4725,
+    "angle": -1.2,
+    "rack_size": null,
+    "map_id": 30
+  },
+  {
+    "id": 1908,
+    "name": "W2",
+    "poi_type": "waypoint",
+    "world_x": -4.7225,
+    "world_y": -28.3975,
+    "angle": 4.0,
+    "rack_size": null,
+    "map_id": 30
+  },
+  {
+    "id": 1909,
+    "name": "W3",
+    "poi_type": "waypoint",
+    "world_x": 0.4075,
+    "world_y": -23.1525,
+    "angle": 1.92,
+    "rack_size": null,
+    "map_id": 30
+  },
+  {
+    "id": 1910,
+    "name": "W4",
+    "poi_type": "waypoint",
+    "world_x": -5.0475,
+    "world_y": -10.4525,
+    "angle": 1.98,
+    "rack_size": null,
+    "map_id": 30
+  },
+  {
+    "id": 1911,
+    "name": "W5",
+    "poi_type": "waypoint",
+    "world_x": -11.615,
+    "world_y": 4.975,
+    "angle": 1.96,
+    "rack_size": null,
+    "map_id": 30
+  },
+  {
+    "id": 1912,
+    "name": "W6",
+    "poi_type": "waypoint",
+    "world_x": -16.3475,
+    "world_y": 16.015,
+    "angle": 2.02,
+    "rack_size": null,
+    "map_id": 30
+  },
+  {
+    "id": 1913,
+    "name": "R2",
+    "poi_type": "standby",
+    "world_x": -18.6775,
+    "world_y": 18.1175,
+    "angle": 0.39,
+    "rack_size": "LG",
+    "map_id": 30
+  },
+  {
+    "id": 1914,
+    "name": "R2-1",
+    "poi_type": "waypoint",
+    "world_x": -17.6425,
+    "world_y": 18.5725,
+    "angle": 0.42,
+    "rack_size": null,
+    "map_id": 30
+  },
+  {
+    "id": 1915,
+    "name": "J1",
+    "poi_type": "jack",
+    "world_x": -19.555,
+    "world_y": 20.1625,
+    "angle": 0.39,
+    "rack_size": null,
+    "map_id": 30
+  },
+  {
+    "id": 1916,
+    "name": "J1-1",
+    "poi_type": "waypoint",
+    "world_x": -18.5575,
+    "world_y": 20.6425,
+    "angle": 0.41,
+    "rack_size": null,
+    "map_id": 30
+  },
+  {
+    "id": 1917,
+    "name": "R1",
+    "poi_type": "standby",
+    "world_x": -3.77,
+    "world_y": -34.3275,
+    "angle": 0.41,
+    "rack_size": "LG",
+    "map_id": 30
+  },
+  {
+    "id": 1918,
+    "name": "R1-1",
+    "poi_type": "waypoint",
+    "world_x": -2.715,
+    "world_y": -33.8825,
+    "angle": 0.4,
+    "rack_size": null,
+    "map_id": 30
+  },
+  {
+    "id": 1919,
+    "name": "J2",
+    "poi_type": "jack",
+    "world_x": -2.8675,
+    "world_y": -36.24,
+    "angle": 0.4,
+    "rack_size": null,
+    "map_id": 30
+  },
+  {
+    "id": 1920,
+    "name": "J2-1",
+    "poi_type": "waypoint",
+    "world_x": -1.8975,
+    "world_y": -35.835,
+    "angle": 0.38,
+    "rack_size": null,
+    "map_id": 30
+  }
+]
