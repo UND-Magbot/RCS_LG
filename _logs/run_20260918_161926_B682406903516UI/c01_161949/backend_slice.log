@@ -1,0 +1,10 @@
+# 이 사이클 시간대에 해당하는 backend.log 줄이 0개입니다.
+# 원본      : C:\Users\Administrator\Desktop\RCS_LGIT\BackEnd\_logs\backend.log
+# 원본 크기 : 10485757 bytes / 94785줄 (시각 해독 성공 94714줄)
+# 원본 시각 : 09-10 00:57:14 ~ 09-10 22:47:56
+# 사이클    : 09-18 16:19:49 ~ 09-18 16:25:30
+#
+# 해독 0줄이면 로그 형식이 '%m-%d %H:%M:%S' 가 아닙니다.
+# 시각대가 안 겹치면 백엔드가 다른 폴더에서 돌고 있습니다.
+#   log_config.json 의 filename 이 상대경로라 '백엔드를 띄운'
+#   작업 디렉터리에 _logs/backend.log 가 생깁니다.

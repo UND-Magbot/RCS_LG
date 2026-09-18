@@ -1,0 +1,26 @@
+{
+  "current_map": {
+    "id": 115,
+    "uid": "6a6880c8cab4f82b7b219cd6",
+    "map_name": "1FF",
+    "create_time": 1785232551,
+    "map_version": 0,
+    "overlays_version": 11
+  },
+  "map": {
+    "id": 115,
+    "map_name": "1FF",
+    "uid": "6a6880c8cab4f82b7b219cd6",
+    "map_version": 1,
+    "create_time": 1785232551,
+    "last_modified_time": 1789612504,
+    "grid_origin_x": -30.600000381469727,
+    "grid_origin_y": -59.95000076293945,
+    "grid_resolution": 0.05,
+    "overlays_version": 11,
+    "thumbnail_url": "http://10.14.182.126:8090/maps/115/thumbnail",
+    "image_url": "http://10.14.182.126:8090/maps/115.png",
+    "download_url": "http://10.14.182.126:8090/maps/115/download",
+    "pbstream_url": "http://10.14.182.126:8090/maps/115.pbstream"
+  }
+}
