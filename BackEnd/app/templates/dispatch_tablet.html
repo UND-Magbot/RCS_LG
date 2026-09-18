@@ -194,6 +194,33 @@
     .sf-alert .sf-sub { display: block; margin-top: 6px; font-size: 18px; font-weight: 600; opacity: .92; }
     @keyframes sf-blink { 0%,100% { filter: brightness(1); } 50% { filter: brightness(1.35); } }
 
+    /* ── 서버 연결 끊김 배너 (2026-09-18) ────────────────────────────
+       종전에는 폴링이 실패해도 화면에 아무 표시가 없었다. 마지막 상태가 그대로
+       남아 화면이 멀쩡해 보이므로, 작업자는 "버튼이 안 먹는다" 로만 인식하고
+       계속 눌렀다(현장 보고). 끊긴 사실 자체를 크게 보여준다. */
+    .net-alert {
+      display: none;
+      background: #3a1512; color: #ffd7d3;
+      padding: 16px 20px; margin: 0 0 14px;
+      border-radius: 12px; border: 3px solid #ff6b6b;
+      font-size: 24px; font-weight: 800; line-height: 1.45;
+      text-align: center;
+    }
+    .net-alert.show { display: block; }
+    .net-alert .net-sub {
+      display: block; margin-top: 8px;
+      font-size: 17px; font-weight: 600; color: #ffc9c4; line-height: 1.6;
+    }
+    .net-alert .net-tip {
+      display: block; margin-top: 12px; padding: 10px 14px;
+      border-radius: 9px; background: #3a2a12; border: 1px solid #6b5320;
+      color: #ffd36d; font-size: 17px; font-weight: 700; line-height: 1.6;
+    }
+    /* 끊긴 동안에는 조작 버튼을 막는다 — 눌러도 실패할 걸 누르게 두지 않는다.
+       ⚠ 설정(⚙) 버튼은 살려둔다. 서버 주소를 고쳐야 할 수도 있다. */
+    body.net-down main button,
+    body.net-down .force-btn-fixed { opacity: 0.35; pointer-events: none; }
+
     .toast {
       position: fixed;
       bottom: 24px; left: 50%; transform: translateX(-50%);
@@ -402,6 +429,9 @@
     </div>
   </header>
 
+  <!-- 서버 연결 끊김 (2026-09-18) — 폴링이 연속 실패하면 뜬다 -->
+  <div class="net-alert" id="net-alert"></div>
+
   <div class="sf-alert" id="sf-alert"></div>
 
   <!-- 하단 왼쪽 강제 제어 (운영 모드에서만 표시) -->
@@ -567,6 +597,33 @@
       el.classList.add("show");
     }
 
+    // ── 서버 연결 상태 (2026-09-18) ───────────────────────────
+    //   폴링 실패를 조용히 삼키던 것을 화면에 드러낸다. 한 번 실패는 흔하므로
+    //   연속 2회(≈4초)부터 배너를 띄운다 — 잠깐 튀는 것까지 경보하면 무시하게 된다.
+    const NET_FAIL_THRESHOLD = 2;
+    let netFails = 0;
+    let netDownSince = null;
+
+    function renderNetAlert() {
+      const el = document.getElementById("net-alert");
+      if (!el) return;
+      if (netFails < NET_FAIL_THRESHOLD) {
+        el.classList.remove("show");
+        el.innerHTML = "";
+        document.body.classList.remove("net-down");
+        return;
+      }
+      const sec = netDownSince ? Math.round((Date.now() - netDownSince) / 1000) : 0;
+      el.innerHTML =
+        `⚠ 서버 연결이 끊겼습니다 — ${sec}초째`
+        + `<span class="net-sub">이 화면의 내용은 <b>끊기기 직전 상태</b>입니다. 지금 누르는 버튼은 동작하지 않습니다.<br>`
+        + `연결되면 <b>자동으로 복구됩니다</b> — 전원을 끄지 않아도 됩니다.</span>`
+        + `<span class="net-tip">급하면 <b>관제 콘솔</b>에서 같은 조작을 할 수 있습니다.<br>`
+        + `작업지점의 <b>[확인 — 랙을 치웠습니다]</b> 도 콘솔에서 누를 수 있습니다.</span>`;
+      el.classList.add("show");
+      document.body.classList.add("net-down");
+    }
+
     async function refresh() {
       if (NEEDS_CONFIG) return;  // 설정 모드에선 폴링 불필요
       const seq = ++refreshSeq;
@@ -575,8 +632,14 @@
         d = await api(`/api/dispatch/poi/${POI_ID}/status`);
       } catch (e) {
         console.error(e);
+        // 끊김 표시. 화면 내용은 그대로 두되 "낡은 값" 이라는 걸 알린다.
+        if (netFails === 0) netDownSince = Date.now();
+        netFails++;
+        renderNetAlert();
         return;
       }
+      // 응답이 왔다 = 복구
+      if (netFails) { netFails = 0; netDownSince = null; renderNetAlert(); }
       if (seq !== refreshSeq) return;   // 더 최신 요청이 있다 → 이 응답은 버린다
       state = d;
       renderSafetyAlert(d.safety_alerts || [], d.notices || []);

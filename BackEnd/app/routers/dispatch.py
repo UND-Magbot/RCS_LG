@@ -1371,6 +1371,52 @@ def force_clear_current():
     return {"ok": True, "cleared": n}
 
 
+@router.post("/robot/{robot_id}/force-clear/{scope}")
+def force_clear_one_robot(robot_id: int, scope: str, db: Session = Depends(get_db)):
+    """**로봇 한 대만** 강제 종료 (2026-09-17 콘솔 UI 개편).
+
+    콘솔 상단의 전역 버튼 2개를 없애고 로봇별 원격제어 패널로 옮기면서 만든 것이다.
+    전역 버튼은 작업 중인 로봇을 전부 돌아서, 여러 대가 섞여 돌면 어느 로봇이
+    멈추는지 알 수 없었다.
+
+    scope
+      current — 이 로봇의 작업만 중지. 랙은 멈춘 자리에, 호출(예약)은 유지.
+      all     — 위와 같되 충전소로 가고 **이 로봇이 잡았던 호출까지** 취소.
+    """
+    if scope not in ("current", "all"):
+        raise HTTPException(status_code=400, detail="scope 는 current 또는 all 이어야 합니다")
+    robot = db.query(Robot).filter(Robot.id == robot_id).first()
+    if not robot:
+        raise HTTPException(status_code=404, detail="등록되지 않은 로봇입니다")
+
+    result = dispatch_service.force_clear_robot(robot_id, scope)
+    name = robot.robot_name or f"robot {robot_id}"
+
+    # 알림은 **그 로봇 이름을 박아서** 띄운다 — 어느 로봇을 세웠는지가 핵심이다.
+    if scope == "current":
+        msg = (f"⚠ [{name}] 의 현재 작업이 중지되었습니다.\n"
+               "멈춘 자리에 랙을 내려놓고, 대기 호출이 있으면 그 R 지점으로 "
+               "없으면 충전소로 이동합니다.\n"
+               "놓인 랙은 작업자가 정리해 주세요. (다른 로봇은 그대로 진행합니다)")
+        kind = notice_service.KIND_JOB_FORCE_CLEAR
+    else:
+        msg = (f"⚠ [{name}] 의 작업이 전부 중지되었습니다.\n"
+               f"이 로봇이 잡고 있던 호출 {result.get('cancelled', 0)}건도 취소되었습니다.\n"
+               "멈춘 자리에 랙을 내려놓고 충전소로 복귀합니다.\n"
+               "놓인 랙은 작업자가 정리해 주세요. (다른 로봇은 그대로 진행합니다)")
+        kind = notice_service.KIND_JOB_FORCE_CLEAR_ALL
+
+    notice_service.push(
+        kind, msg,
+        targets=[notice_service.TARGET_CONSOLE],
+        ack_required=True,
+        # ★ key 를 로봇별로 나눈다. 전역 "force_clear" 로 두면 로봇 A 를 세운 알림이
+        #   로봇 B 를 세울 때 덮어써져, 먼저 세운 걸 못 보고 지나간다.
+        key=f"force_clear_r{robot_id}",
+    )
+    return {"ok": True, "robot_id": robot_id, "robot_name": name, **result}
+
+
 @router.post("/force-clear/all")
 def force_clear_all():
     """진행 중 작업 + 대기 중인 호출(예약)까지 전부 취소."""

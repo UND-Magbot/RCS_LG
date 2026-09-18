@@ -1707,6 +1707,114 @@ def force_clear_all() -> dict:
     return {"cleared": len(ids), "cancelled": len(poi_ids)}
 
 
+# ══════════════════════════════════════════════════════════
+# 로봇 한 대만 강제 종료 (2026-09-17 콘솔 UI 개편)
+#
+#   종전에는 콘솔 상단에 전역 버튼 두 개가 있었고, 둘 다 _active_robot_ids() 로
+#   **작업 중인 로봇 전부**를 돌았다. 로봇이 한 대일 때만 안전했던 구조다.
+#   현장에서 여러 대가 섞여 돌면 "지금 누르면 어느 로봇이 멈추는지" 를 알 수 없어
+#   버튼을 로봇별 원격제어 패널로 옮겼다. 아래가 그 진입점이다.
+# ══════════════════════════════════════════════════════════
+
+
+def _session_poi_ids(robot_id: int) -> set[int]:
+    """이 로봇의 활성 세션이 물고 있는 POI id 들.
+
+    강제 종료 시 '이 로봇이 잡았던 호출' 을 찾는 데 쓴다. 배송 워커는 abort 를
+    감지하면 자기 예약을 `waiting` 으로 **되돌리므로**(_worker_loop_delivery 참조),
+    그 예약이 어느 POI 것인지 미리 알아둬야 뒤에서 지울 수 있다.
+    """
+    ids: set[int] = set()
+    db = SessionLocal()
+    try:
+        sess = dispatch_crud.get_active_session(db, robot_id)
+        if sess:
+            for v in (sess.first_poi_id, sess.current_poi_id, sess.target_poi_id):
+                if v:
+                    ids.add(int(v))
+    except Exception:
+        logger.exception(f"[dispatch] 세션 POI 조회 실패 robot={robot_id}")
+    finally:
+        db.close()
+    return ids
+
+
+def force_clear_robot(robot_id: int, scope: str = "current") -> dict:
+    """**이 로봇 한 대만** 강제 종료한다. 다른 로봇은 건드리지 않는다.
+
+    scope
+      "current" : 진행 중인 작업만 중지. 멈춘 자리에 랙을 내려놓고 대기 호출이
+                  있으면 그 R 지점, 없으면 충전소로. **호출(예약)은 유지** —
+                  다른 로봇이 이어받을 수 있다.
+      "all"     : 위와 같되 충전소로 가고, **이 로봇이 잡고 있던 호출까지** 취소.
+                  다른 로봇의 작업과 그 로봇이 잡은 호출은 그대로 둔다.
+
+    반환: {"cleared": 0|1, "cancelled": 취소한 예약 수}
+    """
+    if scope not in ("current", "all"):
+        raise ValueError(f"scope 는 current|all 이어야 한다: {scope!r}")
+
+    # ★ 순서 주의 — 예약을 지우기 전에 **먼저 어느 POI 인지 기억**해 둔다.
+    #   force_clear 가 세션을 failed 로 바꾸면 poi 를 더 못 읽는다.
+    poi_ids = _session_poi_ids(robot_id) if scope == "all" else set()
+
+    ok, msg = force_clear(robot_id, after=("charge" if scope == "all" else "reserve"))
+    cleared = 1 if ok else 0
+
+    if scope != "all" or not poi_ids:
+        logger.warning(f"[dispatch] ★ 로봇 강제 종료(scope={scope}) robot={robot_id} — {msg}")
+        return {"cleared": cleared, "cancelled": 0}
+
+    # 워커가 빠져나가기를 기다린다. 먼저 지우면 워커의 롤백이 뒤에 실행돼
+    # 취소한 호출이 되살아난다 (force_clear_all 의 같은 주석 참조).
+    deadline = time.time() + FORCE_CLEAR_DRAIN_SEC
+    while time.time() < deadline:
+        if _get_worker(robot_id) is None:
+            break
+        time.sleep(0.2)
+    alive = _get_worker(robot_id) is not None
+
+    cancelled = _cancel_reservations_for(poi_ids, "로봇 강제 종료(전체)")
+    if alive:
+        # 워커가 제때 안 죽었다 — 뒤늦게 예약을 되살릴 수 있으므로 한 번 더 지운다.
+        logger.warning(f"[dispatch] 로봇 강제 종료 — 워커 robot={robot_id} 가 아직 살아 있음. "
+                       f"5초 뒤 예약을 한 번 더 정리한다")
+        safe_thread(target=_recancel_robot_reservations_later, args=(5.0, poi_ids),
+                    name=f"force-clear-recancel-{robot_id}").start()
+
+    logger.warning(f"[dispatch] ★ 로봇 강제 종료(전체) robot={robot_id} — "
+                   f"대기 호출 {cancelled}건 취소 (다른 로봇은 그대로)")
+    return {"cleared": cleared, "cancelled": cancelled}
+
+
+def _cancel_reservations_for(poi_ids: set[int], reason: str) -> int:
+    """지정한 POI 들의 대기 예약만 취소한다. 없으면 조용히 0."""
+    if not poi_ids:
+        return 0
+    n = 0
+    db = SessionLocal()
+    try:
+        for pid in sorted(poi_ids):
+            try:
+                if dispatch_crud.cancel_reservation(db, pid):
+                    n += 1
+                    _reserve_log("cancelled", None, pid, reason=reason)
+            except Exception:
+                logger.exception(f"[dispatch] 예약 취소 실패(계속) poi={pid}")
+    finally:
+        db.close()
+    return n
+
+
+def _recancel_robot_reservations_later(delay: float, poi_ids: set[int]) -> None:
+    """로봇별 전체 종료 뒤 되살아난 예약을 한 번 더 지운다 (위 주석 참조)."""
+    time.sleep(delay)
+    try:
+        _cancel_reservations_for(poi_ids, "로봇 강제 종료(전체) — 지연 정리")
+    except Exception:
+        logger.exception("[dispatch] 로봇별 지연 예약 정리 실패")
+
+
 def _recancel_reservations_later(delay: float) -> None:
     """전체 강제 종료 뒤 되살아난 예약을 한 번 더 지운다 (위 주석 참조)."""
     time.sleep(delay)
