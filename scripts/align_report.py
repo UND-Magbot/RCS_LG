@@ -42,6 +42,18 @@ PRECISE = {"align_with_rack", "to_unload_point", "charge"}
 # 10Hz 샘플 하나 사이에 0.02 m 면 0.2 m/s 다. 정밀 동작은 이보다 느리게 긴다.
 SPOT_MOVE_EPS = 0.02
 
+# ── 정지 구간 판정 ────────────────────────────────────────────
+# 선속·각속이 둘 다 이보다 작으면 '서 있다' 로 본다.
+# 정밀 동작은 아주 느리게 기므로 0 으로 두면 아무것도 안 잡힌다.
+STALL_V = 0.03          # m/s
+STALL_ANG = 0.05        # rad/s
+STALL_MIN_SEC = 3.0     # 이보다 오래 서 있어야 보고한다
+
+# 서 있는 이유를 가르는 값들
+CAP_STOP = 0.01         # 서버가 상한을 0 으로 내렸다 = 안전존 RED
+PQ_BAD = 5              # position_quality 가 이하면 위치추정이 나쁘다
+LMS_BAD = 0.3           # lidar_matching_score
+
 
 def _ang_norm(a: float) -> float:
     """-pi ~ pi 로 정규화."""
@@ -179,22 +191,119 @@ def verdict(a: dict) -> str:
     return " / ".join(reasons)
 
 
-def run_cycle(cdir: str) -> list[dict]:
+def stalls(rows: list[dict]) -> list[dict]:
+    """서 있던 구간을 찾아 **그때 신호들이 뭐라고 했는지** 같이 담는다.
+
+    `align_report` 가 회전만 보면 "진입점까지는 갔는데 거기서 안 움직였다" 를
+    놓친다. 정밀 동작이 시작되기 전(action_type=standard)에 멈춘 경우가 그렇다.
+    """
+    out, cur = [], None
+    for r in rows:
+        v = abs(float(r.get("v") or 0.0))
+        a = abs(float(r.get("ang") or 0.0))
+        still = v < STALL_V and a < STALL_ANG
+        if still:
+            if cur is None:
+                cur = {"rows": [r]}
+            else:
+                cur["rows"].append(r)
+        else:
+            if cur:
+                out.append(cur)
+                cur = None
+    if cur:
+        out.append(cur)
+
+    res = []
+    for s in out:
+        rr = s["rows"]
+        t0, t1 = rr[0].get("t"), rr[-1].get("t")
+        if t0 is None or t1 is None or (t1 - t0) < STALL_MIN_SEC:
+            continue
+        mid = rr[len(rr) // 2]
+
+        def pick(key):
+            """구간 안에서 None 아닌 값 중 마지막 것."""
+            for x in reversed(rr):
+                if x.get(key) is not None:
+                    return x[key]
+            return None
+
+        res.append({
+            "t0": t0, "sec": round(t1 - t0, 1),
+            "x": mid.get("x"), "y": mid.get("y"),
+            "ori": None if mid.get("ori") is None else round(_deg(mid["ori"]), 1),
+            "action": pick("action"),
+            "move": pick("move"),
+            "stuck": ",".join(sorted({x.get("stuck") for x in rr
+                                      if x.get("stuck") not in (None, "none")})),
+            "cap": pick("cap"),
+            "sug": pick("sug"),
+            "rem": pick("rem"),
+            "front_m": pick("front_m"),
+            "n_band": pick("n_band"),
+            "collide": pick("collide_dir"),
+            "pushed": any(x.get("pushed") for x in rr),
+            "slipping": any(x.get("slipping") or x.get("wslip") for x in rr),
+            "pq": pick("pq"),
+            "lms": pick("lms"),
+        })
+    return res
+
+
+def stall_reason(s: dict) -> str:
+    """서 있던 이유 — 기록된 신호로 설명되는 것만 적는다."""
+    why = []
+    cap, sug = s.get("cap"), s.get("sug")
+    if cap is not None and cap <= CAP_STOP:
+        why.append(f"서버 상한 0 (안전존 RED 정지)")
+    elif sug is not None and sug <= CAP_STOP:
+        why.append(f"로봇이 스스로 속도 0 제안 — 자체 장애물 판단")
+    if s.get("stuck"):
+        why.append(f"stuck_state={s['stuck']}")
+    if s.get("front_m") is not None and s["front_m"] < 1.0:
+        why.append(f"전방 {s['front_m']:.2f} m 에 물체 (밴드 내 {s.get('n_band')}점)")
+    if s.get("collide"):
+        why.append(f"collide_dir={s['collide']}")
+    if s.get("pushed"):
+        why.append("pushed — 밀리는 중")
+    if s.get("slipping"):
+        why.append("바퀴 슬립")
+    pq, lms = s.get("pq"), s.get("lms")
+    if pq is not None and pq <= PQ_BAD:
+        why.append(f"위치추정 나쁨 pq={pq}")
+    if lms is not None and lms <= LMS_BAD:
+        why.append(f"라이다 매칭 낮음 lms={lms}")
+    if s.get("move") in ("failed", "idle", "cancelled"):
+        why.append(f"move_state={s['move']}")
+    if not why:
+        act = s.get("action") or "-"
+        if act in PRECISE:
+            why.append(f"{act} 진행 중 — 정밀 동작이 자세를 맞추는 중일 수 있음")
+        else:
+            why.append("기록된 신호로는 설명 안 됨 ★ — 서버 로그와 대조 필요")
+    return " / ".join(why)
+
+
+def run_cycle(cdir: str) -> tuple[list[dict], list[dict]]:
     mpath = os.path.join(cdir, "motion.jsonl")
     if not os.path.exists(mpath):
-        return []
+        return [], []
     rows = read_motion(mpath)
     if not rows:
-        return []
-    segs = segments(rows)
+        return [], []
+    cyc = os.path.basename(cdir)
     out = []
-    for s in segs:
+    for s in segments(rows):
         t0 = s["rows"][0].get("t")
         before = [r for r in rows if r.get("t") and t0 and r["t"] < t0]
         a = analyse(s, before)
-        a["cycle"] = os.path.basename(cdir)
+        a["cycle"] = cyc
         out.append(a)
-    return out
+    st = stalls(rows)
+    for s in st:
+        s["cycle"] = cyc
+    return out, st
 
 
 def main() -> int:
@@ -218,15 +327,44 @@ def main() -> int:
         return 1
 
     rows: list[dict] = []
+    stall_rows: list[dict] = []
     for c in cycles:
-        rows.extend(run_cycle(c))
+        a, s = run_cycle(c)
+        rows.extend(a)
+        stall_rows.extend(s)
 
     print(f"\n대상: {root}")
-    print(f"사이클 {len(cycles)}개 / 정밀 진입 구간 {len(rows)}개\n")
+    print(f"사이클 {len(cycles)}개 / 정밀 진입 구간 {len(rows)}개 "
+          f"/ {STALL_MIN_SEC:.0f}초 이상 정지 {len(stall_rows)}건\n")
+
+    if stall_rows:
+        print("=" * 78)
+        print(f"[1] 서 있던 구간 ({STALL_MIN_SEC:.0f}초 이상)")
+        print("=" * 78)
+        h2 = (f"{'사이클':<12} {'초':>6} {'위치(x,y)':>16} {'자세°':>7} "
+              f"{'동작':<16} {'상한':>5} {'제안':>5}")
+        print(h2)
+        print("-" * len(h2))
+        for s in stall_rows:
+            pos = f"({s['x']:.2f},{s['y']:.2f})" if s.get("x") is not None else "-"
+            cap = "-" if s.get("cap") is None else f"{s['cap']:.2f}"
+            sug = "-" if s.get("sug") is None else f"{s['sug']:.2f}"
+            print(f"{s['cycle']:<12} {s['sec']:>6.1f} {pos:>16} "
+                  f"{(s['ori'] if s['ori'] is not None else 0):>7.1f} "
+                  f"{str(s.get('action') or '-'):<16} {cap:>5} {sug:>5}")
+        print("\n  왜 서 있었나")
+        for s in stall_rows:
+            pos = f"({s['x']:.2f},{s['y']:.2f})" if s.get("x") is not None else "-"
+            print(f"   · {s['cycle']} {pos} {s['sec']:.1f}초 — {stall_reason(s)}")
+        print()
+
     if not rows:
         print("정밀 동작(align_with_rack / to_unload_point) 구간이 없습니다.")
         print("→ 이 로그는 진입 동작을 포함하지 않았거나, action_type 이 안 찍혔습니다.")
         return 0
+    print("=" * 78)
+    print("[2] 정밀 진입 구간 회전")
+    print("=" * 78)
 
     hdr = (f"{'사이클':<12} {'동작':<17} {'초':>5} {'누적°':>7} {'순°':>6} "
            f"{'헛°':>6} {'제자리°':>7} {'도착틀어짐°':>10} {'이동m':>6}")
