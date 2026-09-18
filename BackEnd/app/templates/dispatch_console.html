@@ -365,12 +365,12 @@
        같은 값이면 DOM 뒤쪽인 remote-modal 이 위로 올라와 가려진다. -->
   <div class="modal-overlay" id="gc-modal" style="z-index:60">
     <div class="modal">
-      <h2 id="gc-title">작업 강제 종료</h2>
-      <div class="sub" id="gc-hint" style="margin-bottom:18px; line-height:1.7"></div>
-      <div style="display:flex; flex-direction:column; gap:10px">
+      <!-- 2026-09-18 설명문 삭제 (현장 요청) — 제목 + 버튼 2개만 -->
+      <h2 id="gc-title" style="margin-bottom:20px">작업 강제 종료</h2>
+      <div class="btn-row">
         <button class="btn btn-end" id="gc-ok">강제 종료</button>
+        <button class="btn btn-ghost" id="gc-cancel">취소</button>
       </div>
-      <button class="btn btn-ghost" id="gc-cancel" style="margin-top:16px; background:transparent; color:#8a93a6">취소</button>
     </div>
   </div>
 
@@ -425,8 +425,8 @@
        z-index 60 : 원격제어 모달(50) 안에서 열리므로 그 위에 떠야 한다. -->
   <div class="modal-overlay" id="ask-modal" style="z-index:60">
     <div class="modal">
-      <h2 id="ask-title">확인</h2>
-      <div class="sub" id="ask-msg" style="margin-bottom:18px; line-height:1.7"></div>
+      <!-- 2026-09-18 설명문 삭제 (현장 요청) — 제목 + 버튼 2개만 -->
+      <h2 id="ask-title" style="margin-bottom:20px">확인</h2>
       <div class="btn-row">
         <button class="btn btn-end" id="ask-ok">확인</button>
         <button class="btn btn-ghost" id="ask-cancel">취소</button>
@@ -774,23 +774,11 @@
     function openGcModal(mode) {
       if (!rcRobotId) { toast("로봇을 먼저 선택하세요"); return; }
       gcMode = mode;
-      const title = document.getElementById("gc-title");
-      const hint = document.getElementById("gc-hint");
-      const who = `<b>${rcName || "이 로봇"}</b>`;
-      if (mode === "current") {
-        title.textContent = "현재 JOB 강제 종료";
-        hint.innerHTML = `${who} 의 진행 중인 작업을 즉시 중지합니다.<br/>`
-          + "멈춘 자리에 <b>랙을 내려놓고</b>, 대기 호출이 있으면 그 R 지점으로 "
-          + "없으면 충전소로 이동합니다.<br/>"
-          + "<b>대기 중인 호출은 그대로 남습니다</b> — 다른 로봇이 이어받을 수 있습니다.<br/>"
-          + "<span style='opacity:.75'>다른 로봇은 하던 일을 계속합니다.</span>";
-      } else {
-        title.textContent = "전체 강제 종료";
-        hint.innerHTML = `${who} 의 작업과 <b>이 로봇이 잡고 있던 호출까지</b> 취소합니다.<br/>`
-          + "멈춘 자리에 <b>랙을 내려놓고</b> 충전소로 복귀합니다.<br/>"
-          + "이 호출을 다시 처리하려면 <b>처음부터 다시 호출</b>해야 합니다.<br/>"
-          + "<span style='opacity:.75'>다른 로봇과 그 로봇이 잡은 호출은 그대로 둡니다.</span>";
-      }
+      // 2026-09-18 설명문 삭제 (현장 요청). 어느 로봇인지는 제목에 남긴다 —
+      // 로봇별 종료라 대상이 안 보이면 버튼의 의미가 없다.
+      const who = rcName ? ` — ${rcName}` : "";
+      document.getElementById("gc-title").textContent =
+        (mode === "current" ? "현재 JOB 강제 종료" : "전체 강제 종료") + who;
       document.getElementById("gc-modal").classList.add("show");
     }
     function closeGcModal() {
@@ -1475,9 +1463,8 @@
     //   브라우저 confirm() 은 태블릿 WebView 에서 창이 안 뜨고 곧바로 false 를
     //   돌려주므로(WebChromeClient 미설정) 자체 모달을 쓴다.
     let askResolve = null;
-    function ask(title, msgHtml, okText) {
+    function ask(title, okText) {
       document.getElementById("ask-title").textContent = title;
-      document.getElementById("ask-msg").innerHTML = msgHtml;
       document.getElementById("ask-ok").textContent = okText || "확인";
       document.getElementById("ask-modal").classList.add("show");
       return new Promise((resolve) => { askResolve = resolve; });
@@ -1873,12 +1860,7 @@
         else rcStatus("재개 실패");
       } else if (act === "dock") {
         // 2026-09-18 — 누르면 로봇이 바로 출발하므로 한 번 더 묻는다
-        const who = rcName || "이 로봇";
-        if (!(await ask("충전소 복귀",
-              `<b>${who}</b> 를 충전소로 보냅니다.<br/>`
-              + "지금 하던 작업이 있으면 중단됩니다.<br/>"
-              + "<span style='opacity:.75'>랙을 들고 있으면 든 채로 이동합니다.</span>",
-              "충전소로 보내기"))) return;
+        if (!(await ask("충전소 복귀" + (rcName ? ` — ${rcName}` : ""), "충전소 복귀"))) return;
         rcStatus(await rcPost(`dock/${rcIp}`) ? "충전소 복귀 명령 전송" : "실패");
       }
       // 2026-09-17 [대기장소 복귀] 버튼은 화면에서 뺐다 — 강제 종료가 멈춘 자리에 랙을
@@ -1886,12 +1868,7 @@
       // 서버 API(return-to-standby)와 이 분기는 남겨 둔다(다른 화면·롤백 경로).
       else if (act === "standby") { rcStatus(await rcPost(`return-to-standby/${rcIp}`) ? "대기장소 복귀 시작" : "실패"); }
       else if (act === "restart") {
-        const who = rcName || "이 로봇";
-        if (!(await ask("시스템 재시작",
-              `<b>${who}</b> 의 시스템을 다시 시작합니다.<br/>`
-              + "<b>약 90초</b> 동안 로봇을 쓸 수 없습니다.<br/>"
-              + "<span style='opacity:.75'>진행 중인 작업이 있으면 중단됩니다.</span>",
-              "재시작"))) return;
+        if (!(await ask("시스템 재시작" + (rcName ? ` — ${rcName}` : ""), "재시작"))) return;
         rcStatus(await rcPost(`relocalize/${rcIp}`) ? "시스템 재시작 중… (약 90초)" : "실패");
       }
       else if (act === "jack_up") { rcStatus(await rcPost(`jack/${rcIp}/jack_up`) ? "리프트 업 명령 전송" : "실패"); }
