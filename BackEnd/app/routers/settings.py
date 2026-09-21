@@ -343,6 +343,66 @@ def get_poi_labels():
     return poi_label.all_labels()
 
 
+@router.get("/poi-labels/editable")
+def get_poi_labels_editable():
+    """콘솔 '작업지점 이름' 편집창이 쓰는 목록.
+
+    `GET /poi-labels` 는 **저장된 매핑만** 준다. 아직 이름을 안 붙인 지점은
+    빠져서 화면에 뜨지 않는다. 여기서는 활성 맵의 **실제 작업지점(R·J)** 을
+    전부 훑어 저장값과 합쳐 준다 — 현장에서 "R1 이 안 보인다" 가 없게.
+
+    진입점(`R1-1` 처럼 이름에 `-` 가 든 것)과 충전소는 제외한다.
+    """
+    from app.database import SessionLocal
+    from app.models.map import MapPOI, RobotMap
+    from app.services import poi_label
+
+    saved = poi_label.all_labels()
+    rows: list[dict] = []
+    seen: set[str] = set()
+    db = SessionLocal()
+    try:
+        active = (db.query(RobotMap)
+                    .filter(RobotMap.is_active == True)   # noqa: E712
+                    .order_by(RobotMap.id.desc()).first())
+        if active:
+            pois = (db.query(MapPOI)
+                      .filter(MapPOI.map_id == active.id,
+                              MapPOI.is_active == True)   # noqa: E712
+                      .all())
+            for p in pois:
+                nm = (p.name or "").strip()
+                if not nm or "-" in nm:
+                    continue
+                if (p.poi_type or "").lower() not in ("jack", "standby"):
+                    continue
+                seen.add(nm)
+                cur = saved.get(nm) or {}
+                rows.append({"name": nm, "poi_type": p.poi_type,
+                             "label": cur.get("label") or "",
+                             "zone": cur.get("zone") or ""})
+    except Exception as e:
+        logger.warning(f"[settings] 작업지점 목록 조회 실패(저장값만 반환): {e}")
+    finally:
+        db.close()
+
+    # 맵에서 사라졌지만 매핑이 남아 있는 이름도 보여준다(지울 수 있게).
+    for nm, v in saved.items():
+        if nm not in seen:
+            rows.append({"name": nm, "poi_type": None,
+                         "label": v.get("label") or "", "zone": v.get("zone") or ""})
+    # 2026-09-21 — **저장된 파일 순서를 그대로 지킨다.**
+    #   종전에는 `rows.sort(key=lambda r: r["name"])` 로 이름 사전순(J1,J2,R1,R2)
+    #   으로 다시 세웠다. 이 목록 순서 그대로 화면이 PUT 을 만들고 save_all 이
+    #   그 순서로 파일을 다시 쓰는데, 콘솔 좌/우 칸 순서는 **파일의 구역 등장
+    #   순서**(poi_label.zone_order)라서, 현장에서 [작업지점 이름] 을 한 번
+    #   저장하는 것만으로 좌우 칸이 뒤집혔다.
+    #   저장에 없는(새로 찍은) 지점만 뒤에 이름순으로 붙인다.
+    order = {nm: i for i, nm in enumerate(saved.keys())}
+    rows.sort(key=lambda r: (order.get(r["name"], len(order)), r["name"]))
+    return rows
+
+
 @router.put("/poi-labels")
 def put_poi_labels(payload: dict[str, PoiLabelItem]):
     """전체 덮어쓰기. **빈 객체를 보내면 매핑이 비워져 원래 이름으로 돌아간다**(롤백)."""

@@ -26,14 +26,14 @@ TabletApp/build/
 TabletApp/local.properties
 
 # DB 덤프 (로컬 보관용 — 운영 데이터라 커밋 금지)
-# [unblocked] _db/
-# [unblocked] *.sql
+_db/
+*.sql
 
 # 맵핑 산출물 (로봇에서 받은 로컬 파일. DB엔 경로만 저장됨)
-# [unblocked] BackEnd/static/maps/
+BackEnd/static/maps/
 
 # 자동 사이클 실행 로그 / 정지 시 스냅샷 (실행할 때마다 쌓임)
-# [unblocked] _logs/
+_logs/
 
 nul
 # 서버별 설정 (DB 비밀번호 포함) — config.env.example 만 커밋
@@ -42,5 +42,3 @@ BackEnd/config.env
 # 프론트 정적 빌드 결과 (배포 시 생성)
 BackEnd/web/
 frontend/out/
-BackEnd.zip
-BackEnd.zip

@@ -846,8 +846,13 @@ def _console_status(db: Session) -> ConsoleStatusOut:
         # 짝 POI / 랙 점유 (매핑이 없으면 전부 기본값 — 기존 인터랙티브 모드와 동일)
         jp = jp_by_j.get(p.name) or jp_by_r.get(p.name)
         paired_name = None
+        role = None
         if jp:
-            paired_name = jp.r_poi_name if jp.j_poi_name == p.name else jp.j_poi_name
+            # 이 POI 가 매핑의 J 쪽인지 R 쪽인지 — 이름으로 확정된다.
+            # POI 종류값(poi_type)이 잘못 저장돼 있어도 여기는 흔들리지 않는다.
+            is_job = (jp.j_poi_name == p.name)
+            role = "job" if is_job else "rack"
+            paired_name = jp.r_poi_name if is_job else jp.j_poi_name
 
         # paired_name 으로 id 를 찾는 것까지는 **원래 이름** 으로 해야 한다.
         # 화면에 실어 보내는 문자열만 아래에서 한글로 바꾼다.
@@ -856,6 +861,7 @@ def _console_status(db: Session) -> ConsoleStatusOut:
         items.append(POIConsoleItem(
             poi_id=p.id, poi_name=_label(p.name), state=state,
             poi_type=p.poi_type or "jack",
+            role=role,
             zone=_zone(p.name),
             paired_poi_id=paired_id,
             paired_poi_name=_label(paired_name),
@@ -940,6 +946,25 @@ def _console_robot_items(db: Session, sessions: list, poi_name_by_id: dict) -> l
     return out
 
 
+# ══════════════════════════════════════════════════════════
+#  화면(HTML)은 캐시하지 않는다 (2026-09-16)
+#
+#  왜 — 응답에 Cache-Control · ETag · Last-Modified 가 **하나도 없었다.**
+#    그러면 Android WebView(태블릿 APK)가 휴리스틱 캐싱으로 옛 화면을 계속
+#    띄울 수 있다. 화면을 고쳐도 태블릿에 언제 반영될지 알 수 없었다.
+#
+#    2026-09-14 에 R 타일과 J 타일을 나누기 전 화면은 **R 타일에도 [확인]
+#    버튼이 그려졌다.** 그 화면이 캐시에 남아 있으면 "R 에 확인 버튼이 뜬다"
+#    는 현장 보고가 그대로 재현된다.
+#
+#  ※ 헤더만 붙인다. 화면 내용과 동작은 바뀌지 않는다.
+_NO_CACHE = {
+    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+    "Pragma": "no-cache",
+    "Expires": "0",
+}
+
+
 @router.get("/console/status", response_model=ConsoleStatusOut)
 def console_status(db: Session = Depends(get_db)):
     """콘솔 폴링 — 모든 POI 상태 + 점유 목록 + 가용 로봇 수."""
@@ -951,7 +976,8 @@ def console_page():
     """범용 콘솔 페이지 (모든 POI를 한 화면에서 호출/예약/다음/종료)."""
     if not _CONSOLE_TEMPLATE.exists():
         return HTMLResponse(content="<h1>console template not found</h1>", status_code=500)
-    return HTMLResponse(content=_CONSOLE_TEMPLATE.read_text(encoding="utf-8"))
+    return HTMLResponse(content=_CONSOLE_TEMPLATE.read_text(encoding="utf-8"),
+                        headers=_NO_CACHE)
 
 
 # ══════════════════════════════════════════════════════════
@@ -1092,7 +1118,7 @@ def robot_tablet_page(robot_id: int, db: Session = Depends(get_db)):
     html = _ROBOT_TABLET_TEMPLATE.read_text(encoding="utf-8")
     html = html.replace("{{ROBOT_ID}}", str(robot_id))
     html = html.replace("{{ROBOT_NAME}}", (robot.name if robot else f"로봇 #{robot_id}"))
-    return HTMLResponse(content=html)
+    return HTMLResponse(content=html, headers=_NO_CACHE)
 
 
 @router.post("/poi/{poi_id}/next")
@@ -1160,7 +1186,7 @@ def _render_tablet_html(slot_number: int, poi_id: int, poi_name: str,
     html = html.replace("{{ROBOT_ID}}", "0")
     html = html.replace("{{ROBOT_NAME}}", "")
     html = html.replace("{{MODE}}", "poi" if slot_number == 0 else "slot")
-    return HTMLResponse(content=html)
+    return HTMLResponse(content=html, headers=_NO_CACHE)
 
 
 @router.get("/tablet/{slot_number}", response_class=HTMLResponse)
@@ -1320,7 +1346,11 @@ def ack_notice(notice_id: int):
 # ══════════════════════════════════════════════════════════
 # 전역 강제 종료 (LGIT 요청 3번)
 #   로봇별 원격제어 패널의 [작업 강제 종료] 와 달리 **콘솔 상단에서 한 번에** 끊는다.
-#   로봇은 그 자리에 정지한다 — 이동 명령만 취소하고 물리적으로 움직이지 않는다.
+#   2026-09-17 LGIT 요청 — 로봇은 **그 자리에 랙을 내려놓은 뒤** 다음 자리로 간다.
+#     · 현재 JOB 강제 종료 : 랙 놓기 → 대기 호출이 있으면 그 R 지점, 없으면 충전소
+#     · 전체 강제 종료     : 랙 놓기 → 충전소
+#   놓인 랙은 작업자가 직접 치운다(현장 합의). 로봇별 패널의 [작업 강제 종료]는
+#   종전대로 '그 자리 정지' 이다 — force_clear(after="hold").
 # ══════════════════════════════════════════════════════════
 
 
@@ -1331,13 +1361,67 @@ def force_clear_current():
     notice_service.push(
         notice_service.KIND_JOB_FORCE_CLEAR,
         "⚠ 현재 작업이 중지되었습니다.\n"
-        "로봇이 그 자리에 정지해 있습니다.\n"
-        "관리자 확인 후 다시 호출해 주세요.",
+        "로봇은 멈춘 자리에 랙을 내려놓고, 대기 호출이 있으면 그 R 지점으로 "
+        "없으면 충전소로 이동합니다.\n"
+        "놓인 랙은 작업자가 정리해 주세요.",
         targets=[notice_service.TARGET_CONSOLE],
         ack_required=True,
         key="force_clear",
     )
     return {"ok": True, "cleared": n}
+
+
+@router.post("/robot/{robot_id}/force-clear/{scope}")
+def force_clear_one_robot(robot_id: int, scope: str, db: Session = Depends(get_db)):
+    """**로봇 한 대만** 강제 종료 (2026-09-17 콘솔 UI 개편).
+
+    콘솔 상단의 전역 버튼 2개를 없애고 로봇별 원격제어 패널로 옮기면서 만든 것이다.
+    전역 버튼은 작업 중인 로봇을 전부 돌아서, 여러 대가 섞여 돌면 어느 로봇이
+    멈추는지 알 수 없었다.
+
+    scope
+      current — 이 로봇의 작업만 중지. 랙은 멈춘 자리에, 호출(예약)은 유지.
+      all     — 위와 같되 충전소로 가고 **이 로봇이 잡았던 호출까지** 취소.
+    """
+    if scope not in ("current", "all"):
+        raise HTTPException(status_code=400, detail="scope 는 current 또는 all 이어야 합니다")
+    robot = db.query(Robot).filter(Robot.id == robot_id).first()
+    if not robot:
+        raise HTTPException(status_code=404, detail="등록되지 않은 로봇입니다")
+
+    result = dispatch_service.force_clear_robot(robot_id, scope)
+    # 2026-09-19 — Robot 모델의 컬럼 이름은 `name` 이다. `robot_name` 은 없다.
+    #   이 줄이 AttributeError 를 내서 현장에서 "강제 종료 실패 / Internal Server
+    #   Error" 가 떴다. 로봇을 세우는 건 바로 위 force_clear_robot() 이 이미 끝낸
+    #   뒤라 **동작은 정상이고 응답만 500** 이었다(랙 내리고 충전소 복귀는 됨).
+    name = robot.name or f"robot {robot_id}"
+
+    # 알림은 **그 로봇 이름을 박아서** 띄운다 — 어느 로봇을 세웠는지가 핵심이다.
+    if scope == "current":
+        # 2026-09-19 — 문구 정리(현장 요청). "(다른 로봇은 그대로 진행합니다)" 삭제,
+        #   용어를 '랙' → '대차' 로 통일. 이 알림은 목적지가 정해지면
+        #   dispatch_service._push_followup_notice 가 같은 key 로 덮어쓴다.
+        msg = (f"⚠ [{name}] 현재 작업을 중지했습니다.\n"
+               "대차를 내리고 이동합니다.\n"
+               "내려놓은 대차를 치워 주세요.")
+        kind = notice_service.KIND_JOB_FORCE_CLEAR
+    else:
+        msg = (f"⚠ [{name}] 작업을 전부 중지했습니다.\n"
+               f"이 로봇이 잡고 있던 호출 {result.get('cancelled', 0)}건도 취소되었습니다.\n"
+               "대차를 내리고 충전소로 이동합니다.\n"
+               "내려놓은 대차를 치워 주세요.")
+        kind = notice_service.KIND_JOB_FORCE_CLEAR_ALL
+
+    notice_service.push(
+        kind, msg,
+        # 2026-09-19 — 콘솔뿐 아니라 **모든 작업지점 태블릿**에도 띄운다(LGIT 16번).
+        targets=dispatch_service.force_clear_notice_targets(),
+        ack_required=True,
+        # ★ key 를 로봇별로 나눈다. 전역 "force_clear" 로 두면 로봇 A 를 세운 알림이
+        #   로봇 B 를 세울 때 덮어써져, 먼저 세운 걸 못 보고 지나간다.
+        key=f"force_clear_r{robot_id}",
+    )
+    return {"ok": True, "robot_id": robot_id, "robot_name": name, **result}
 
 
 @router.post("/force-clear/all")
@@ -1348,7 +1432,8 @@ def force_clear_all():
         notice_service.KIND_JOB_FORCE_CLEAR_ALL,
         "⚠ 전체 작업이 중지되었습니다.\n"
         "대기 중이던 호출도 모두 취소되었습니다.\n"
-        "관리자 확인 후 처음부터 다시 호출해 주세요.",
+        "로봇은 멈춘 자리에 랙을 내려놓고 충전소로 복귀합니다.\n"
+        "놓인 랙은 작업자가 정리해 주세요.",
         targets=[notice_service.TARGET_CONSOLE],
         ack_required=True,
         key="force_clear",

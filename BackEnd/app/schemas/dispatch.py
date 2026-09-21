@@ -137,6 +137,11 @@ class POIConsoleItem(BaseModel):
     # 다른 구역에 짝지어 배치된다. 그래서 호출 버튼은 랙이 눈앞에 있는 R 에,
     # 랙을 치웠다는 [확인] 버튼은 J 에 둔다.
     poi_type: str = "jack"                      # jack(작업지점) / standby(랙 보관)
+    # ★ 화면이 어느 타일로 그릴지 — **job_points 매핑**이 정한다.
+    #   poi_type 하나에만 의존하면 운영자가 R 지점을 jack 으로 찍는 순간
+    #   R 이 J 타일로 그려져 [확인] 버튼이 엉뚱한 곳에 뜬다(2026-09-16 LGIT 보고).
+    #   매핑이 없으면 None — 화면은 종전대로 poi_type 으로 판단한다.
+    role: Optional[str] = None                  # "rack"(R) / "job"(J) / None
     paired_poi_id: Optional[int] = None         # 짝 POI (R↔J)
     paired_poi_name: Optional[str] = None
     # 짝 작업지점(J)에 랙이 아직 놓여 있나. R 타일은 이 값이 True 면 호출을 막고,

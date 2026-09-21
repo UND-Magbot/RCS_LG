@@ -120,6 +120,75 @@ def route_timeout(coords, sx: float, sy: float,
 
 _NAME_RE = re.compile(r"^W(\d+)$", re.IGNORECASE)
 
+# ══════════════════════════════════════════════════════════════════
+#  충전소 전용 경유지  `C<n>-2`  (2026-09-16)
+#
+#  왜 — 경유지 그래프는 **번호순 일렬 체인**이다(아래 `_shortest` ① 참조).
+#    그래서 충전소 앞 지점을 `W4` 로 찍으면 좌↔우 작업지점 이동에도 그게 끼어
+#    아래로 내려갔다 올라오는 V 자가 된다. 현장에서 `W5 → W4 → W3` 로 가며
+#    어설프게 도는 것이 관찰됐다(2026-09-16).
+#
+#  `C1-2` 는 `^W\d+$` 에 안 걸리므로 **체인에 처음부터 안 들어간다.**
+#  충전소에서 출발할 때만 좌표열 맨 앞에, 복귀할 때만 맨 뒤에 끼운다.
+#  이동 명령 개수는 그대로라 이음매 정지가 늘지 않는다.
+#
+#  ★ 위치만 의미가 있다. POI 의 각도(angle)는 쓰지 않는다 —
+#    출발 직전 제자리 회전(`_face_route_start`)은 **로봇에서 첫 좌표를 바라보는
+#    방향**으로 돌기 때문이다. 충전소에서 나가는 쪽에 찍으면 회전이 없어진다.
+CHARGER_EXIT_RE = re.compile(r"^(C\d+)-2$", re.IGNORECASE)
+
+# 이 거리 안이면 '그 충전소에서 출발한다/그 충전소로 간다' 로 본다(m).
+# C1-1(접근점)이 충전소에서 1.2 m 쯤이라 그보다 넉넉해야 복귀에서도 잡힌다.
+CHARGER_NEAR_M = 2.5
+
+
+def charger_exit_for(area_id: Optional[int], x: float, y: float) -> Optional[dict]:
+    """(x, y) 가 어느 충전소 근처면 그 충전소의 전용 경유지(`C<n>-2`)를 돌려준다.
+
+    없으면 None — 호출부는 **종전과 똑같이** 동작한다(하위 호환).
+    """
+    db = SessionLocal()
+    try:
+        q = db.query(RobotMap).filter(RobotMap.is_active == True)   # noqa: E712
+        if area_id is not None:
+            q = q.filter(RobotMap.area_id == area_id)
+        active_map = q.order_by(RobotMap.id.desc()).first()
+        if not active_map:
+            return None
+        rows = (
+            db.query(MapPOI)
+            .filter(MapPOI.map_id == active_map.id, MapPOI.is_active == True)  # noqa: E712
+            .all()
+        )
+        exits, chargers = {}, {}
+        for r in rows:
+            nm = (r.name or "").strip()
+            if r.world_x is None or r.world_y is None:
+                continue
+            m = CHARGER_EXIT_RE.match(nm)
+            if m:
+                exits[m.group(1).upper()] = {
+                    "name": nm, "x": float(r.world_x), "y": float(r.world_y)}
+            elif (r.poi_type or "").lower() == "charging":
+                chargers[nm.upper()] = (float(r.world_x), float(r.world_y))
+        if not exits:
+            return None
+        best, bestd = None, CHARGER_NEAR_M
+        for cname, (cx, cy) in chargers.items():
+            e = exits.get(cname)
+            if not e:
+                continue
+            d = math.hypot(cx - x, cy - y)
+            if d <= bestd:
+                best, bestd = e, d
+        return best
+    except Exception as e:
+        logger.warning("[route] 충전소 전용 경유지 조회 실패(무시): %s", e)
+        return None
+    finally:
+        db.close()
+
+
 
 def waypoints(area_id: Optional[int]) -> list[dict]:
     """해당 area 활성 맵의 경유지. 이름이 `W<숫자>` 인 활성 POI.
@@ -270,8 +339,14 @@ def _plan_by_number(wps: list[dict], sx: float, sy: float,
 
 
 def _finish(seg: list[dict], sx: float, sy: float,
-            tx: float, ty: float) -> tuple[str, dict]:
-    """경유지 목록을 실제 이동 인자로 만든다. 두 방식이 공유한다."""
+            tx: float, ty: float,
+            lead: Optional[dict] = None,
+            tail: Optional[dict] = None) -> tuple[str, dict]:
+    """경유지 목록을 실제 이동 인자로 만든다. 두 방식이 공유한다.
+
+    `lead` 는 출발 직후, `tail` 은 목표 직전에 끼우는 **충전소 전용 경유지**다.
+    둘 다 없으면 종전과 완전히 같다.
+    """
     # 이미 그 자리에 서 있는 첫 경유지는 버린다 (제자리 이동 방지)
     while seg and math.hypot(seg[0]["x"] - sx, seg[0]["y"] - sy) < ARRIVED_EPS:
         seg.pop(0)
@@ -281,13 +356,21 @@ def _finish(seg: list[dict], sx: float, sy: float,
     if not seg:
         return "standard", {}
 
+    # 충전소 전용 경유지를 앞/뒤에 끼운다. 이미 그 자리면 넣지 않는다.
+    names = [w["name"] for w in seg]
     coords: list[str] = []
+    if lead and math.hypot(lead["x"] - sx, lead["y"] - sy) >= ARRIVED_EPS:
+        coords += [f"{lead['x']:.4f}", f"{lead['y']:.4f}"]
+        names.insert(0, lead["name"])
     for w in seg:
         coords += [f"{w['x']:.4f}", f"{w['y']:.4f}"]
+    if tail and math.hypot(tail["x"] - tx, tail["y"] - ty) >= ARRIVED_EPS:
+        coords += [f"{tail['x']:.4f}", f"{tail['y']:.4f}"]
+        names.append(tail["name"])
     coords += [f"{tx:.4f}", f"{ty:.4f}"]
 
     logger.info("[route] 경유지 경로 %s → 목표(%.2f, %.2f)",
-                "→".join(w["name"] for w in seg), tx, ty)
+                "→".join(names), tx, ty)
     return "along_given_route", {
         "route_coordinates": ",".join(coords),
         "detour_tolerance": DETOUR_TOLERANCE,
@@ -328,9 +411,19 @@ def plan(area_id: Optional[int], sx: float, sy: float,
                        f"(출발 {sx:.2f},{sy:.2f} → 목표 {tx:.2f},{ty:.2f})")
         return "standard", {}
 
-    logger.info("[route] 경유지 %d개 중 %d개 사용 (출발 %.2f,%.2f → 목표 %.2f,%.2f)",
-                len(wps), len(seq), sx, sy, tx, ty)
-    return _finish([wps[i] for i in seq], sx, sy, tx, ty)
+    # 충전소에서 출발하면 그 충전소의 전용 경유지를 **맨 앞**에,
+    # 충전소(또는 그 접근점)로 가면 **맨 뒤**에 끼운다.
+    # 둘 다 `C<n>-2` POI 가 있을 때만 동작한다 — 없으면 종전과 동일.
+    lead = charger_exit_for(area_id, sx, sy)
+    tail = charger_exit_for(area_id, tx, ty)
+    if lead and tail and lead["name"] == tail["name"]:
+        tail = None                 # 충전소 안에서만 움직이는 경우 — 한 번만
+
+    logger.info("[route] 경유지 %d개 중 %d개 사용 (출발 %.2f,%.2f → 목표 %.2f,%.2f)%s",
+                len(wps), len(seq), sx, sy, tx, ty,
+                ("  충전소 경유지 " + "/".join(
+                    x["name"] for x in (lead, tail) if x)) if (lead or tail) else "")
+    return _finish([wps[i] for i in seq], sx, sy, tx, ty, lead=lead, tail=tail)
 
 
 def approach_point(area_id: Optional[int], tx: float, ty: float) -> Optional[dict]:
