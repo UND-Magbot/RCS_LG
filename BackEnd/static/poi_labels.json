@@ -1,6 +1,6 @@
 {
-  "R1": { "label": "자재실 출발", "zone": "자재실" },
-  "J2": { "label": "자재실 도착", "zone": "자재실" },
-  "R2": { "label": "EOL 출발", "zone": "EOL" },
-  "J1": { "label": "EOL 도착", "zone": "EOL" }
+  "R2": { "label": "EOL 출발", "zone": "EOL → 자재실" },
+  "J2": { "label": "자재실 도착", "zone": "EOL → 자재실" },
+  "R1": { "label": "자재실 출발", "zone": "자재실 → EOL" },
+  "J1": { "label": "EOL 도착", "zone": "자재실 → EOL" }
 }

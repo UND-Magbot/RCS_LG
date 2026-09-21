@@ -59,6 +59,17 @@ v1 과 무엇이 달라졌나
   주행 중 멈칫하면 이 창에서 **스페이스바** - 그 시각이 기록된다.
   (사람은 느끼고 나서 누른다. 실측 지연 0.9~4.2초 - 요약은 t_onset 으로 맞춘다)
 
+v5 (2026-09-19) 에서 고친 것 - 2026-09-18 LG 현장 로그가 통째로 빈 사건
+  1) sampler 가 첫 샘플 직후 TypeError 로 죽어 motion.jsonl 이 비었다
+     (c01 1줄, c02~c05 0줄). dist_poi 가 None 인데 첨자 접근을 했다.
+  2) 그 스레드가 죽자 **스냅샷(원본 점군)도 같이** 날아갔다 - 트리거가
+     sampler 안에 있었다. snap_writer 로 분리했다.
+  3) 기록 스레드를 _spawn 으로 감쌌다. 죽으면 예외를 찍고 되살아난다.
+  4) /fused_sensor_state 를 8개 필드만 남기고 버렸다 - 원문을 남긴다.
+     처음 보는 필드는 events.jsonl 에 fused_new_keys 로 찍는다.
+  5) 로봇이 **감속을 결정한 순간**(제안속도 하락)에도 스냅샷을 찍는다.
+     종전에는 실속도가 떨어진 뒤에만 찍혀서 원인 시점을 놓쳤다.
+
 v4 (2026-09-17) 에서 고친 것 - 전부 LG 현장 로그에서 드러난 실제 결함
   1) moves.jsonl 이 4사이클 전부 0바이트였다. _get_json 의 예외가 while 을
      뚫고 나가 move_writer 스레드가 첫 실패에 죽었다.
@@ -90,6 +101,7 @@ import struct
 import sys
 import threading
 import time
+import traceback
 import urllib.parse
 import urllib.request
 import queue
@@ -140,11 +152,16 @@ TOPICS = [
 # ==================================================================
 #  최소 WebSocket 클라이언트 (v1 에서 검증된 것 그대로)
 # ==================================================================
+# WS 가 끊긴 뒤 다시 붙기까지 기다리는 시간(초). 2026-09-21 신설.
+RECONNECT_WAIT_SEC = 2.0
+
+
 class _WS(object):
     def __init__(self, url, on_message=None, on_open=None, on_error=None):
         self.url, self.on_message = url, on_message
         self.on_open, self.on_error = on_open, on_error
         self.sock, self._alive, self._buf = None, True, b""
+        self._msg_err, self._reconn = 0, 0
 
     def connect(self, timeout=10):
         u = urllib.parse.urlparse(self.url)
@@ -213,43 +230,69 @@ class _WS(object):
             payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
         return fin, opcode, payload
 
-    def run_forever(self):
-        try:
-            if self.sock is None:
-                self.connect()
-            if self.on_open:
-                self.on_open(self)
-            frag, fragop = b"", None
-            while self._alive:
-                fin, op, payload = self._frame()
-                if op == 0x8:
-                    break
-                if op == 0x9:
-                    self.send(payload, opcode=0xA)
-                    continue
-                if op == 0xA:
-                    continue
-                if op == 0x0:
-                    frag += payload
-                else:
-                    frag, fragop = payload, op
-                if not fin:
-                    continue
-                data, frag = frag, b""
-                if fragop == 0x1 and self.on_message:
-                    try:
-                        self.on_message(self, data.decode("utf-8"))
-                    except UnicodeDecodeError:
-                        pass
-        except Exception as e:
-            if self.on_error:
-                self.on_error(self, e)
-        finally:
-            self._alive = False
+    def run_forever(self, reconnect=True):
+        """수신 루프. **끊기면 다시 붙는다.**
+
+        2026-09-21 — 이름이 `run_forever` 인데 실제로는 한 번 끊기면 끝이었다.
+          그리고 `on_message` 안에서 난 예외가 바깥 `except` 로 새어나가
+          **메시지 하나가 WS 스레드를 통째로 죽였다.** 그러면
+            · `/tracked_pose` 가 안 들어와 `S["pose"]` 가 그 자리에 멈추고
+            · `cycle_watch` 는 충전소 출발을 영영 못 봐서 **사이클 폴더가 0개**
+            · `/motion_metrics` 도 끊겨 화면 속도가 **0.00 에 고정**
+          된다. 2026-09-21 현장에서 "움직이는데 로그가 안 남는다" 가 이것이다.
+
+          이제 ① 메시지 예외는 그 메시지만 버리고 ② 연결이 끊기면 다시 붙는다.
+        """
+        while self._alive:
+            try:
+                if self.sock is None:
+                    self.connect()
+                if self.on_open:
+                    self.on_open(self)
+                frag, fragop = b"", None
+                while self._alive:
+                    fin, op, payload = self._frame()
+                    if op == 0x8:
+                        break
+                    if op == 0x9:
+                        self.send(payload, opcode=0xA)
+                        continue
+                    if op == 0xA:
+                        continue
+                    if op == 0x0:
+                        frag += payload
+                    else:
+                        frag, fragop = payload, op
+                    if not fin:
+                        continue
+                    data, frag = frag, b""
+                    if fragop == 0x1 and self.on_message:
+                        try:
+                            self.on_message(self, data.decode("utf-8"))
+                        except UnicodeDecodeError:
+                            pass
+                        except Exception as me:
+                            # ★ 이 메시지만 버린다. 수신은 계속한다.
+                            self._msg_err += 1
+                            if self._msg_err <= 3:
+                                import traceback
+                                print("  ★ 메시지 처리 오류(%d번째, 수신은 계속): %s"
+                                      % (self._msg_err, me), flush=True)
+                                traceback.print_exc()
+            except Exception as e:
+                if self.on_error:
+                    self.on_error(self, e)
             try:
                 self.sock.close()
             except Exception:
                 pass
+            self.sock, self._buf = None, b""
+            if not reconnect or not self._alive:
+                break
+            self._reconn += 1
+            print("  WS 재연결 시도 %d회째 …" % self._reconn, flush=True)
+            time.sleep(RECONNECT_WAIT_SEC)
+        self._alive = False
 
     def close(self):
         self._alive = False
@@ -272,7 +315,7 @@ S = {
     "pose": None, "pose_t": 0.0,            # (x, y, ori)
     "v": None, "acc": None, "ang": None, "motion_t": 0.0,
     "cap": None,                            # 서버가 건 속도 상한
-    "plan": {}, "slam": {}, "fused": {},
+    "plan": {}, "slam": {}, "fused": {}, "fused_raw": None,
     "chassis": {}, "wheel": {}, "jack": {},
     "battery": {},
     "costmap1": None, "costmap5": None,   # 최신 코스트맵 1장씩 (감속 분류용)
@@ -293,6 +336,7 @@ marks = []                      # 사용자가 스페이스바로 찍은 시각
 scan_off = {"v": None, "t": 0.0}   # 로봇-PC 시계 오프셋
 
 OUT = {}
+ARGS = [None]          # 파싱된 인자. WS 스레드에서도 봐야 해서 전역으로 둔다.
 
 
 def w(name, obj):
@@ -618,14 +662,24 @@ def on_msg(_w, raw_msg):
 
     elif tp == "/fused_sensor_state":
         d = {k: m.get(k) for k in FUSED_KEYS}
+        # 2026-09-19: 원문을 통째로 남긴다.
+        #   종전에는 FUSED_KEYS 8개만 뽑고 나머지를 버렸다. 그래서 로봇이
+        #   "왜 느리게 가라고 하는지"를 같은 메시지에 담아 보내고 있어도
+        #   우리가 볼 수 없었다. 2026-09-18 LG 로그에서 로봇 자체 감속
+        #   18회의 원인을 하나도 못 짚은 이유 중 하나다. 판정은 종전대로
+        #   FUSED_KEYS 로 하되, 기록은 원문으로 한다.
+        raw = {k: v for k, v in m.items() if k != "topic"}
+        _note_new_fused_keys(raw, now)
         with lock:
             old = S["fused"]
+            old_raw = S.get("fused_raw")
             S["fused"] = d
+            S["fused_raw"] = raw
             S["fused_t"] = now
-            ch = _changed(old, d, FUSED_KEYS)
+            ch = _changed(old, d, FUSED_KEYS) or (old_raw != raw)
             counters["fused"] += 1
         if ch or not old:
-            d2 = dict(d)
+            d2 = dict(raw)
             d2["t"] = now
             w("sensor", d2)
             # 로봇이 스스로 속도를 낮춘 순간 - 이게 자체 감속의 직접 근거다
@@ -644,6 +698,12 @@ def on_msg(_w, raw_msg):
                              "y": round(pose[1], 3) if pose else None,
                              "front_m": (obs or {}).get("front_m"),
                              "n_band": (obs or {}).get("n_band")})
+                # ★ 2026-09-19 - 로봇이 감속을 **결정한 순간**의 원본 점군.
+                #   종전 스냅샷은 "실속도가 떨어진 뒤"에만 찍혔다. 로봇 자체
+                #   감속은 제안속도가 먼저 떨어지므로 그때는 이미 늦다.
+                #   2026-09-18 LG: 로봇이 제안속도를 0.10 까지 떨궜는데
+                #   정면은 비어 있어 원인을 못 짚었다. 그 순간을 남긴다.
+                _maybe_snap_on_suggest(d["suggested_speed"], now)
 
     elif tp == "/slam/state":
         d = {k: m.get(k) for k in SLAM_KEYS}
@@ -982,6 +1042,50 @@ def key_watcher():
 # ==================================================================
 pending_snaps = []
 
+# 로봇 응답에서 우리가 몰랐던 필드를 처음 본 순간 한 번만 기록한다.
+_seen_fused_keys = set(FUSED_KEYS)
+_sug_snap = {"n": 0, "last": 0.0}
+
+
+def _note_new_fused_keys(raw, now):
+    """`/fused_sensor_state` 에 FUSED_KEYS 말고 뭐가 더 오는지 남긴다.
+
+    2026-09-19: "로봇이 더 보내주는 게 있나?" 를 매번 로봇에 붙어서
+    확인할 수 없으니, 로그 자체가 답하게 한다. 새 필드가 보이면
+    events.jsonl 에 한 번 찍고 화면에도 띄운다. 없으면 없다고 확정된다.
+    """
+    new = [k for k in raw if k not in _seen_fused_keys]
+    if not new:
+        return
+    print("  ★ /fused_sensor_state 에 몰랐던 필드: %s" % ", ".join(sorted(new)),
+          flush=True)
+    # 사이클이 아직 안 열렸으면 events 파일이 없다. 그때는 '봤다' 표시를
+    # 하지 않고 다음 사이클에서 다시 기록되게 둔다.
+    if OUT.get("events") is None:
+        return
+    _seen_fused_keys.update(new)
+    w("events", {"t": now, "kind": "fused_new_keys", "keys": sorted(new),
+                 "sample": {k: raw.get(k) for k in sorted(new)}})
+
+
+def _maybe_snap_on_suggest(sug, now, a=None):
+    """로봇이 제안속도를 확 떨군 순간의 원본 점군을 예약한다.
+
+    같은 감속 구간에서 수십 번 발행되므로 쿨다운을 둔다.
+    """
+    a = a or ARGS[0]
+    if a is None or not CY["active"] or sug is None:
+        return
+    if sug >= a.sug_snap:
+        return
+    if now - _sug_snap["last"] < a.sug_snap_gap:
+        return
+    if _sug_snap["n"] >= a.max_snaps:
+        return
+    _sug_snap["last"] = now
+    _sug_snap["n"] += 1
+    pending_snaps.append((_sug_snap["n"], now, now + a.snap_window, "_sug"))
+
 
 def dump_snapshot(idx, t_center, window, outdir, tag=""):
     with lock:
@@ -1052,6 +1156,8 @@ def open_cycle(a, base, idx, home):
         OUT[key] = io.open(os.path.join(outdir, fn), "w", encoding="utf-8")
     events_n[0] = 0
     snaps_n[0] = 0
+    _sug_snap["n"] = 0
+    _sug_snap["last"] = 0.0
     del pending_snaps[:]
     del marks[:]
     CY.update({"active": True, "idx": idx, "dir": outdir, "t0": time.time(),
@@ -1080,7 +1186,7 @@ def open_cycle(a, base, idx, home):
             # "정면이 비었다"가 어디까지 유효한 말인지 알 수 없다.
             "costmap_cover": _costmap_cover(),
             "backend_log": find_backend_log(),
-            "script_version": "v4 (2026-09-17)",
+            "script_version": "v5 (2026-09-19)",
         }, f, ensure_ascii=False, indent=2)
     print("")
     print(">> 사이클 %02d 시작 - %s" % (idx, os.path.basename(outdir)), flush=True)
@@ -1245,6 +1351,27 @@ def nearest_poi(pois, x, y):
     return "%s(%.1fm)" % (best.get("name") or "?", bd), best.get("poi_type"), round(bd, 2)
 
 
+def _spawn(fn, *args):
+    """죽으면 다시 살아나는 스레드.
+
+    2026-09-18 LG 현장: sampler 가 첫 샘플 직후 TypeError 로 조용히 죽어
+    5사이클 전부 motion.jsonl 이 비었다. 예외는 stderr 로만 흘러가 아무도
+    못 봤고, 측정 자체가 통째로 날아갔다. 기록 도구가 한 줄 버그로 전멸하면
+    안 된다. 예외를 눈에 보이게 찍고 스레드를 되살린다.
+    """
+    def run():
+        while not stop_flag.is_set():
+            try:
+                fn(*args)
+                return                      # 정상 종료
+            except Exception as e:
+                print("  ★ %s 스레드 예외 - 되살립니다: %s: %s"
+                      % (fn.__name__, type(e).__name__, e), flush=True)
+                traceback.print_exc()
+                time.sleep(0.5)
+    threading.Thread(target=run, daemon=True).start()
+
+
 def sampler(a):
     cur = None
     pois = META.get("pois") or []
@@ -1277,6 +1404,13 @@ def sampler(a):
                     # 무조건 많아 보인다. 거리로 나눠야 비교가 된다.
                     _n, _t, pdist = nearest_poi(pois, pose[0], pose[1])
                     if pdist is not None:
+                        # 2026-09-19: open_cycle 이 dist_poi 를 None 으로 두는데
+                        # 여기서 바로 첨자 접근을 해 TypeError 로 sampler 가
+                        # 죽었다. 2026-09-18 LG 현장 5사이클의 motion.jsonl 이
+                        # 통째로 비었던 원인(c01 1줄, c02~c05 0줄). 여기서 만든다.
+                        if CY["dist_poi"] is None:
+                            CY["dist_poi"] = collections.OrderedDict(
+                                (b[2], 0.0) for b in POI_BANDS)
                         CY["dist_poi"][_poi_band(pdist)] += step
             if pose:
                 CY["last_pose"] = pose
@@ -1423,24 +1557,43 @@ def sampler(a):
         elif not CY["active"]:
             cur = None
 
-        if CY["active"]:
+        time.sleep(0.1)
+
+
+_mark_done = set()
+
+
+def snap_writer(a):
+    """스냅샷(원본 점군) 전담 스레드.
+
+    2026-09-19 분리. 종전에는 이 블록이 sampler 안에 있었다.
+    2026-09-18 LG 현장에서 sampler 가 죽자 10Hz 기록과 **스냅샷이 같이**
+    날아갔다(5사이클 전부 0개). 원인 규명에 제일 필요한 원본 점군이
+    없어져서 "로봇 자체 감속 18회"를 하나도 못 짚었다.
+    기록 경로를 서로 독립시켜 한쪽이 죽어도 다른 쪽은 남게 한다.
+    """
+    while not stop_flag.is_set():
+        now = time.time()
+        if CY["active"] and CY["dir"]:
             snapdir = os.path.join(CY["dir"], "snapshots")
             for it in list(pending_snaps):
                 if now >= it[2]:
-                    pending_snaps.remove(it)
+                    try:
+                        pending_snaps.remove(it)
+                    except ValueError:
+                        continue
                     dump_snapshot(it[0], it[1], a.snap_window, snapdir, it[3])
             # 사용자가 찍은 표시도 스냅샷을 남긴다
             for mt in list(marks):
                 if now - mt > a.snap_window and mt not in _mark_done:
                     _mark_done.add(mt)
                     if snaps_n[0] < a.max_snaps + 20:
-                        dump_snapshot(marks.index(mt) + 1, mt, a.snap_window,
-                                      snapdir, "_mark")
-
+                        try:
+                            idx = marks.index(mt) + 1
+                        except ValueError:
+                            idx = 0
+                        dump_snapshot(idx, mt, a.snap_window, snapdir, "_mark")
         time.sleep(0.1)
-
-
-_mark_done = set()
 
 
 # ==================================================================
@@ -2085,6 +2238,13 @@ def main():
     ap.add_argument("--snap-window", type=float, default=2.0)
     ap.add_argument("--snap-min-drop", type=float, default=0.15)
     ap.add_argument("--max-snaps", type=int, default=40)
+    # 2026-09-19 - 로봇 자체 감속용 스냅샷.
+    #   0.25 는 2026-09-18 LG 로그에서 "로봇이 스스로 떨군" 구간의 기준값.
+    #   그 18회는 최저가 전부 0.10 이었다.
+    ap.add_argument("--sug-snap", type=float, default=0.25,
+                    help="로봇 제안속도가 이 값 밑으로 떨어지면 원본 점군 스냅샷")
+    ap.add_argument("--sug-snap-gap", type=float, default=5.0,
+                    help="제안속도 스냅샷 최소 간격(초)")
     ap.add_argument("--tag", default="")
     ap.add_argument("--probe", action="store_true",
                     help="30초 사전 점검 - 토픽별 수신 여부를 보고 끝낸다")
@@ -2092,6 +2252,7 @@ def main():
                     help="최소 구독(속도·위치·경보만). 로봇 CPU 부하가 원인인지"
                          " 가릴 때 쓴다 - 우리 측정이 부하를 거의 안 보탠다")
     a = ap.parse_args()
+    ARGS[0] = a
     ARGS = a
 
     ip = resolve_ip(a)
@@ -2152,10 +2313,10 @@ def main():
 
     ws = _WS("ws://%s:8090/ws/v2/topics" % a.ip, on_msg, on_open, on_err)
     threading.Thread(target=ws.run_forever, daemon=True).start()
-    threading.Thread(target=poll_params, args=(a.ip,), daemon=True).start()
-    threading.Thread(target=comm_writer, daemon=True).start()
-    threading.Thread(target=key_watcher, daemon=True).start()
-    threading.Thread(target=move_writer, args=(a.ip,), daemon=True).start()
+    _spawn(poll_params, a.ip)
+    _spawn(comm_writer)
+    _spawn(key_watcher)
+    _spawn(move_writer, a.ip)
 
     print("로봇 위치 수신 대기...", flush=True)
     for _ in range(100):
@@ -2184,8 +2345,9 @@ def main():
     print("출발 판정 %.1fm 밖 / 복귀 판정 %.1fm 안" % (a.leave_r, a.arrive_r))
     print("밴드 반폭 %.2f m (서버 설정 기준)" % band_half_now())
 
-    threading.Thread(target=sampler, args=(a,), daemon=True).start()
-    threading.Thread(target=cycle_watch, args=(a, base, home), daemon=True).start()
+    _spawn(sampler, a)
+    _spawn(snap_writer, a)
+    _spawn(cycle_watch, a, base, home)
 
     try:
         while not stop_flag.is_set():

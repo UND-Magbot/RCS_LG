@@ -332,6 +332,10 @@
          현장에 여러 대가 섞여 돌면 "지금 누르면 어느 로봇이 멈추는지" 를 알 수 없다.
          → 사이드바에서 로봇을 고른 뒤 그 로봇만 세운다. -->
     <span class="robots-badge" id="robots-badge">가용 로봇 -</span>
+    <!-- 2026-09-19 — 작업지점 표시 이름 편집 (현장 요청).
+         저장소는 static/poi_labels.json. DB 의 POI 이름(R1/J1…)은 안 바꾼다. -->
+    <button class="btn btn-ghost" id="pl-open"
+            style="width:auto;padding:8px 14px;font-size:14px">작업지점 이름</button>
   </header>
 
   <!-- 서버 연결 끊김 (2026-09-18) — 폴링이 연속 실패하면 뜬다 -->
@@ -370,6 +374,24 @@
       <div class="btn-row">
         <button class="btn btn-end" id="gc-ok">강제 종료</button>
         <button class="btn btn-ghost" id="gc-cancel">취소</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 작업지점 표시 이름 (2026-09-19 현장 요청) -->
+  <div class="modal-overlay" id="pl-modal" style="z-index:60">
+    <div class="modal" style="max-width:520px">
+      <h2>작업지점 이름</h2>
+      <div class="sub" style="margin-bottom:14px">
+        화면에 보일 이름만 바꿉니다. 시스템 안의 이름(R1·J1…)은 그대로입니다.
+      </div>
+      <div id="pl-rows"></div>
+      <div class="cfg-bar">
+        <div class="cfg-state" id="pl-state">바꾼 내용 없음</div>
+        <div class="cfg-btns">
+          <button class="btn btn-call" id="pl-ok">확인 — 적용</button>
+          <button class="btn btn-ghost" id="pl-cancel">취소</button>
+        </div>
       </div>
     </div>
   </div>
@@ -524,8 +546,10 @@
         </div>
 
         <!-- 안전거리 실시간 표시 — 주행 중 봐야 하는 값이라 [제어] 탭에 둔다.
-             (조절 슬라이더는 [설정] 탭) -->
-        <div class="zone-live">
+             (조절 슬라이더는 [설정] 탭)
+             2026-09-21 — **수동 조작으로 바꾸면 통째로 숨긴다**(현장 요청).
+             그때는 감속·정지 판정 자체가 돌지 않아 늘 같은 값만 떠 있었다. -->
+        <div class="zone-live" id="zone-live">
           <span class="zone-live-k">전방 장애물</span>
           <span class="zone-live-v" id="sz-zone">-</span>
         </div>
@@ -807,6 +831,87 @@
       } finally {
         pendingActions--;
         refresh(true);
+      }
+    };
+
+    // ── 작업지점 표시 이름 (2026-09-19 현장 요청) ───────────────
+    //   저장소는 서버의 static/poi_labels.json 이고, DB 의 POI 이름은 안 바꾼다.
+    //   (R1/J1 문자열에 매달린 곳이 많다 — services/poi_label.py 독스트링 참조)
+    //   빈칸으로 두면 그 지점은 매핑에서 빠져 원래 이름으로 돌아간다.
+    let plRows = [];            // [{name, label, zone, _label0, _zone0}]
+
+    function plDirty() {
+      return plRows.filter(r => r.label !== r._label0 || r.zone !== r._zone0).length;
+    }
+    function plRefreshState() {
+      const n = plDirty();
+      const el = document.getElementById("pl-state");
+      el.textContent = n ? `바꾼 항목 ${n}개 — [확인 — 적용] 을 눌러야 저장됩니다`
+                         : "바꾼 내용 없음";
+      el.classList.toggle("dirty", n > 0);
+    }
+    function plRender() {
+      const box = document.getElementById("pl-rows");
+      if (!plRows.length) {
+        box.innerHTML = '<div class="sub">작업지점을 찾지 못했습니다.</div>';
+        return;
+      }
+      box.innerHTML = plRows.map((r, i) => `
+        <div class="vc-row">
+          <span class="vc-label" style="width:52px;font-weight:700;color:#cfe0ff">${r.name}</span>
+          <input type="text" class="vc-select" style="flex:1" maxlength="100"
+                 data-pl="label" data-i="${i}" value="${(r.label || "").replace(/"/g, "&quot;")}"
+                 placeholder="화면에 보일 이름">
+          <input type="text" class="vc-select" style="width:110px" maxlength="50"
+                 data-pl="zone" data-i="${i}" value="${(r.zone || "").replace(/"/g, "&quot;")}"
+                 placeholder="구역">
+        </div>`).join("");
+      box.oninput = (e) => {
+        const f = e.target.getAttribute("data-pl");
+        if (!f) return;
+        plRows[+e.target.getAttribute("data-i")][f] = e.target.value;
+        plRefreshState();
+      };
+      plRefreshState();
+    }
+    async function plOpen() {
+      document.getElementById("pl-rows").innerHTML = '<div class="sub">불러오는 중…</div>';
+      document.getElementById("pl-modal").classList.add("show");
+      try {
+        const rows = await api("/api/settings/poi-labels/editable");
+        plRows = (rows || []).map(r => ({
+          name: r.name, label: r.label || "", zone: r.zone || "",
+          _label0: r.label || "", _zone0: r.zone || "",
+        }));
+        plRender();
+      } catch (e) {
+        document.getElementById("pl-rows").innerHTML =
+          '<div class="sub">목록을 불러오지 못했습니다: ' + e.message + "</div>";
+      }
+    }
+    function plClose() { document.getElementById("pl-modal").classList.remove("show"); }
+    document.getElementById("pl-open").onclick = plOpen;
+    document.getElementById("pl-cancel").onclick = plClose;
+    document.getElementById("pl-modal").onclick = (e) => {
+      if (e.target.id === "pl-modal") plClose();
+    };
+    document.getElementById("pl-ok").onclick = async () => {
+      const payload = {};
+      plRows.forEach(r => {
+        const label = (r.label || "").trim();
+        if (!label) return;               // 빈칸 = 매핑에서 제외 = 원래 이름
+        payload[r.name] = { label: label, zone: (r.zone || "").trim() || null };
+      });
+      try {
+        await api("/api/settings/poi-labels",
+                  { method: "PUT", body: JSON.stringify(payload) });
+        plRows.forEach(r => { r._label0 = r.label; r._zone0 = r.zone; });
+        plRefreshState();
+        plClose();
+        toast("작업지점 이름을 적용했습니다");
+        refresh(true);
+      } catch (e) {
+        toast("이름 적용 실패: " + e.message);
       }
     };
 
@@ -1449,6 +1554,13 @@
       document.getElementById("rc-remote").classList.toggle("active", remote);
       document.getElementById("rc-panel-auto").style.display = remote ? "none" : "";
       document.getElementById("rc-panel-remote").style.display = remote ? "" : "none";
+      // 2026-09-21 — 수동 조작 중에는 **전방 장애물 표시를 숨기고 폴링도 멈춘다**(현장 요청).
+      //   수동 조작에서는 감속·정지 판정이 아예 돌지 않아 표시가 늘 같은 값이었고,
+      //   300ms 폴링만 LTE 회선을 계속 먹고 있었다.
+      const zl = document.getElementById("zone-live");
+      if (zl) zl.style.display = remote ? "none" : "";
+      if (remote) szStopPoll();
+      else if (rcIp) szStartPoll();
     }
     // ※ 서버로 보내는 mode 값은 종전대로 "auto" | "remote" — API 는 안 바뀌었다.
     //   화면 명칭만 자동 운전 / 수동 조작으로 바꿨다 (2026-09-17).

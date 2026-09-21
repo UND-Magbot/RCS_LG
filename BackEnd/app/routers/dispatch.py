@@ -1389,26 +1389,50 @@ def force_clear_one_robot(robot_id: int, scope: str, db: Session = Depends(get_d
     if not robot:
         raise HTTPException(status_code=404, detail="등록되지 않은 로봇입니다")
 
+    # 2026-09-21 — 대차를 **안 들고 있으면** "대차를 내리고" 를 뺀다(현장 요청).
+    #   ★ `force_clear_robot()` **앞에서** 읽는다. 그 뒤에는 후속 동작 스레드가
+    #     이미 제자리 잭다운을 시작해 "없음" 으로 보일 수 있다.
+    #   ★ 모르면(통신 실패) **들고 있다고 본다** — 후속 동작이 쓰는 기준과 같다
+    #     ("안 들고 있는데 잭다운은 해가 없지만, 들고 있는데 건너뛰면 랙을 든 채
+    #       충전소로 가버린다").
+    from app.services import jack_service as _js
+    try:
+        had_rack = _js.is_rack_loaded(robot.ip_address) is not False
+    except Exception:
+        had_rack = True
+
     result = dispatch_service.force_clear_robot(robot_id, scope)
-    name = robot.robot_name or f"robot {robot_id}"
+    # 2026-09-19 — Robot 모델의 컬럼 이름은 `name` 이다. `robot_name` 은 없다.
+    #   이 줄이 AttributeError 를 내서 현장에서 "강제 종료 실패 / Internal Server
+    #   Error" 가 떴다. 로봇을 세우는 건 바로 위 force_clear_robot() 이 이미 끝낸
+    #   뒤라 **동작은 정상이고 응답만 500** 이었다(랙 내리고 충전소 복귀는 됨).
+    name = robot.name or f"robot {robot_id}"
 
     # 알림은 **그 로봇 이름을 박아서** 띄운다 — 어느 로봇을 세웠는지가 핵심이다.
     if scope == "current":
-        msg = (f"⚠ [{name}] 의 현재 작업이 중지되었습니다.\n"
-               "멈춘 자리에 랙을 내려놓고, 대기 호출이 있으면 그 R 지점으로 "
-               "없으면 충전소로 이동합니다.\n"
-               "놓인 랙은 작업자가 정리해 주세요. (다른 로봇은 그대로 진행합니다)")
+        # 2026-09-19 — 문구 정리(현장 요청). "(다른 로봇은 그대로 진행합니다)" 삭제,
+        #   용어를 '랙' → '대차' 로 통일. 이 알림은 목적지가 정해지면
+        #   dispatch_service._push_followup_notice 가 같은 key 로 덮어쓴다.
+        msg = "\n".join([f"⚠ [{name}] 현재 작업을 중지했습니다."]
+                        + (["대차를 내리고 이동합니다.", "내려놓은 대차를 치워 주세요."]
+                           if had_rack else ["곧 이동합니다."]))
         kind = notice_service.KIND_JOB_FORCE_CLEAR
     else:
-        msg = (f"⚠ [{name}] 의 작업이 전부 중지되었습니다.\n"
-               f"이 로봇이 잡고 있던 호출 {result.get('cancelled', 0)}건도 취소되었습니다.\n"
-               "멈춘 자리에 랙을 내려놓고 충전소로 복귀합니다.\n"
-               "놓인 랙은 작업자가 정리해 주세요. (다른 로봇은 그대로 진행합니다)")
+        # 2026-09-21 — 취소된 호출이 **0건이면 그 줄을 뺀다**(현장 요청).
+        #   종전에는 "호출 0건도 취소되었습니다" 가 그대로 떴다.
+        cancelled = int(result.get("cancelled", 0) or 0)
+        msg = "\n".join(
+            [f"⚠ [{name}] 작업을 전부 중지했습니다."]
+            + ([f"이 로봇이 잡고 있던 호출 {cancelled}건도 취소되었습니다."]
+               if cancelled else [])
+            + (["대차를 내리고 충전소로 이동합니다.", "내려놓은 대차를 치워 주세요."]
+               if had_rack else ["충전소로 이동합니다."]))
         kind = notice_service.KIND_JOB_FORCE_CLEAR_ALL
 
     notice_service.push(
         kind, msg,
-        targets=[notice_service.TARGET_CONSOLE],
+        # 2026-09-19 — 콘솔뿐 아니라 **모든 작업지점 태블릿**에도 띄운다(LGIT 16번).
+        targets=dispatch_service.force_clear_notice_targets(),
         ack_required=True,
         # ★ key 를 로봇별로 나눈다. 전역 "force_clear" 로 두면 로봇 A 를 세운 알림이
         #   로봇 B 를 세울 때 덮어써져, 먼저 세운 걸 못 보고 지나간다.

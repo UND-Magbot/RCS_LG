@@ -156,16 +156,16 @@ def lidar_svg() -> str:
           f'<text x="{lx2-6}" y="{ly2}" font-size="16" font-weight="700" '
           f'fill="{C_RED}" text-anchor="end">안전존</text>\n'
           f'<text x="{lx2-6}" y="{ly2+20}" font-size="13" fill="{C_RED}" '
-          f'text-anchor="end">전방 3.0 m × 좌우 ±0.23 m</text>\n'
-          f'<text x="{lx2-6}" y="{ly2+38}" font-size="12" fill="#999" '
-          f'text-anchor="end">실제 축척 — 40 m 와 견주면 이만큼이다</text>\n')
+          f'text-anchor="end">전방 3.0 m × 좌우 ±0.23 m</text>\n')
+    # 2026-09-19 — "실제 축척 — 40 m 와 견주면 이만큼이다" 줄 삭제(대외 제출 요청)
 
     # 중심 = 로봇 = 라이다. 40 m 축척에서 로봇(0.75 m)은 점 크기다.
     o += (f'<circle cx="{cx}" cy="{cy}" r="3.5" fill="{C_BLUE}"/>\n'
           f'<line x1="{cx+5:.1f}" y1="{cy+4:.1f}" x2="{cx+92:.1f}" y2="{cy+64:.1f}" '
           f'stroke="{C_BLUE}" stroke-width="1.2"/>\n'
           f'<text x="{cx+98:.1f}" y="{cy+68:.1f}" font-size="13" '
-          f'font-weight="600" fill="{C_BLUE}">로봇 = 라이다 (0.75 × 0.46 m)</text>\n')
+          # 2026-09-19 — "로봇 = 라이다" 표기를 "로봇" 으로(대외 제출 요청)
+          f'font-weight="600" fill="{C_BLUE}">로봇 (0.75 × 0.46 m)</text>\n')
 
     o += (f'<text x="{cx}" y="{cy+LIDAR_CAT_90*s-20:.1f}" font-size="21" '
           f'font-weight="700" fill="#b8890e" text-anchor="middle">360°</text>\n')
@@ -279,10 +279,9 @@ def safety_svg() -> str:
     # 앞끝 기준선 — 공차·적재 공통이라는 게 이 도면의 핵심이다
     o += (f'<line x1="{X(0):.1f}" y1="{cy-band_l-18:.1f}" x2="{X(0):.1f}" '
           f'y2="{cy+band_l+150:.1f}" stroke="#0d3d4f" stroke-width="1.6" '
-          f'stroke-dasharray="5 4"/>\n'
-          f'<text x="{X(0):.1f}" y="{cy-band_l-46:.1f}" font-size="12.5" '
-          f'font-weight="700" fill="#0d3d4f" text-anchor="middle">'
-          f'기준 = 로봇 앞끝 ({front:.3f} m) — 적재해도 같다</text>\n')
+          f'stroke-dasharray="5 4"/>\n')
+    # 2026-09-19 — "기준 = 로봇 앞끝 (…) — 적재해도 같다" 라벨 삭제(대외 제출 요청).
+    #   기준선(점선)은 남긴다 — 치수선이 전부 이 선에서 시작하므로 없으면 읽기 어렵다.
     o += (f'<line x1="{cx}" y1="{cy}" x2="{X(YELLOW_M)+30:.1f}" y2="{cy}" '
           f'stroke="#555" stroke-width="0.9" stroke-dasharray="6 5"/>\n')
 

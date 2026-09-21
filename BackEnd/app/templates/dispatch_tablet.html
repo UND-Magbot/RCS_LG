@@ -192,6 +192,15 @@
     }
     .sf-alert.show { display: block; }
     .sf-alert .sf-sub { display: block; margin-top: 6px; font-size: 18px; font-weight: 600; opacity: .92; }
+    /* 관제 알림의 [확인] (2026-09-19) — 강제 종료 안내는 눌러야 내려간다.
+       배너가 깜빡이므로 버튼만 깜빡임을 멈춰 누르기 쉽게 한다. */
+    .sf-alert .nt-ack {
+      display: block; margin: 14px auto 0; border: none; border-radius: 12px;
+      background: #fff; color: #b3261e; font-weight: 800;
+      padding: 14px 40px; font-size: 22px; cursor: pointer;
+      animation: none;
+    }
+    .sf-alert .nt-ack:disabled { opacity: .5; }
     @keyframes sf-blink { 0%,100% { filter: brightness(1); } 50% { filter: brightness(1.35); } }
 
     /* ── 서버 연결 끊김 배너 (2026-09-18) ────────────────────────────
@@ -589,13 +598,29 @@
                 + `<span class="sf-sub">앞을 막고 있는 물건을 치워 주세요${d}</span>`);
       }
       for (const n of (notices || [])) {
-        rows.push(`<span style="white-space:pre-line">${n.message}</span>`);
+        // 2026-09-19 — ack_required 알림(강제 종료 안내)은 [확인] 을 눌러야 내려간다.
+        //   종전에는 태블릿에 버튼이 없어, 띄우면 영영 안 사라졌다.
+        //   누구든(콘솔/아무 태블릿) 한 번 누르면 같은 알림이라 전부에서 사라진다.
+        const ack = n.ack_required
+          ? `<button class="nt-ack" data-ack="${n.id}">확인</button>` : "";
+        rows.push(`<span style="white-space:pre-line">${n.message}</span>${ack}`);
       }
       if (!rows.length) { el.classList.remove("show"); el.textContent = ""; return; }
       el.innerHTML = rows.join(
         "<hr style='border:0;border-top:1px solid rgba(255,255,255,.35);margin:10px 0'>");
       el.classList.add("show");
     }
+
+    // 알림 [확인] — 콘솔과 같은 엔드포인트를 쓴다.
+    document.getElementById("sf-alert").addEventListener("click", async (e) => {
+      const btn = e.target.closest("[data-ack]");
+      if (!btn) return;
+      btn.disabled = true;
+      try {
+        await fetch(`/api/dispatch/notices/${btn.dataset.ack}/ack`, { method: "POST" });
+      } catch (err) { btn.disabled = false; }
+      refresh();
+    });
 
     // ── 서버 연결 상태 (2026-09-18) ───────────────────────────
     //   폴링 실패를 조용히 삼키던 것을 화면에 드러낸다. 한 번 실패는 흔하므로

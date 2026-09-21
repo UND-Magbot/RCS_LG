@@ -64,6 +64,22 @@ LOS_CLEAR_M = 0.70
 # 3개 이상으로 늘리면 다시 건너뛰기 시작한다.
 ENTRY_CANDIDATES = 2
 
+# 충전소 쪽 끝에만 쓰는 진입 후보 수 (2026-09-21)
+#
+#  왜 — 충전소는 통로 **옆**에 있다. 그런데 `C1-1`(진입점)에 제일 가까운 경유지가
+#    통로를 지나친 **W3(2.06 m)** 이라, 후보 2개면 W3·W4 만 잡히고 **W2 에는
+#    아예 연결이 안 된다.** 그래서 W2 에 와 있어도 W3 까지 갔다가 되돌아왔다.
+#
+#      현재(후보2)   W2 → W3 → C1-2 → C1-1    9.00 m
+#      후보3         W2 →      C1-2 → C1-1    5.18 m   ← 42% 단축
+#      (J2 에서 17.06→13.24 m, R1 에서 15.02→11.20 m — 전부 W3 가 빠진다)
+#
+#  ★ `ENTRY_CANDIDATES` 를 전역으로 올리면 안 된다. 위 주석의 실측대로 코너를
+#    가로질러 벽을 통과하는 경로가 나온다. **충전소 전용 경유지(`C<n>-2`)가
+#    있는 쪽 끝에만** 적용한다 — 그쪽은 사람이 일부러 찍어둔 진입선이라
+#    건너뛸 코너가 없다.
+CHARGER_ENTRY_CANDIDATES = 3
+
 # 진입·이탈 구간에 붙이는 가중치. 1보다 크면 **체인을 따라가는 쪽을 선호**한다.
 # 같은 거리일 때 통로를 타도록 하는 것 — 통로가 곧 사용자가 지정한 길이기 때문이다.
 ENTRY_PENALTY = 1.2
@@ -152,12 +168,17 @@ def charger_exit_for(area_id: Optional[int], x: float, y: float) -> Optional[dic
         q = db.query(RobotMap).filter(RobotMap.is_active == True)   # noqa: E712
         if area_id is not None:
             q = q.filter(RobotMap.area_id == area_id)
-        active_map = q.order_by(RobotMap.id.desc()).first()
-        if not active_map:
+        maps = q.order_by(RobotMap.id.desc()).all()
+        if not maps:
             return None
+        # 2026-09-21 — `waypoints()` 와 같은 이유로 **활성 맵 전체**를 본다.
+        #   충전소(`C1`)와 그 전용 경유지(`C1-2`)가 서로 다른 맵에 있으면
+        #   한 맵만 보고 None 을 돌려주게 되고, 그러면 충전소 진입선을 통째로
+        #   안 쓴다. 여기는 이름이 `C<n>` / `C<n>-2` 로 유일해서 섞어도 안전하다.
         rows = (
             db.query(MapPOI)
-            .filter(MapPOI.map_id == active_map.id, MapPOI.is_active == True)  # noqa: E712
+            .filter(MapPOI.map_id.in_([m.id for m in maps]),
+                    MapPOI.is_active == True)                       # noqa: E712
             .all()
         )
         exits, chargers = {}, {}
@@ -194,34 +215,63 @@ def waypoints(area_id: Optional[int]) -> list[dict]:
     """해당 area 활성 맵의 경유지. 이름이 `W<숫자>` 인 활성 POI.
 
     ★ 번호는 **이름일 뿐** 순서가 아니다. 정렬은 로그를 읽기 좋게 하려는 것뿐이다.
+
+    2026-09-21 — **활성 맵을 하나만 보고 포기하던 것**을 고쳤다.
+      종전에는 `id` 가 가장 큰 활성 맵 **하나**만 뒤지고, 거기 `W` POI 가 없으면
+      빈 목록을 돌려줬다. 호출부는 그걸 "경유지 없음" 으로 보고 `standard` 로
+      떨어진다 — 즉 **경유지를 통째로 안 쓰고 로봇 자체 회피주행**이 된다.
+      현장은 맵이 27·30 둘로 쪼개져 있고(진입점 `C1-1` 은 27, 경유지와 `C1-2`
+      는 30) 재동기화 때마다 POI 가 새로 발급되므로, 한 맵만 보면 조용히 깨진다.
+
+      이제 **활성 맵을 id 큰 것부터 차례로** 보고, 경유지가 나오는 첫 맵을 쓴다.
+      area 로 하나도 못 찾으면 area 조건을 풀고 한 번 더 본다.
+
+    ★ 여러 맵의 경유지를 **섞지 않는다.** 같은 이름(`W5`)이 맵마다 전혀 다른
+      좌표로 존재해서(실측: map27 W5 (0.80,-24.77) / map30 W5 (-5.33,-9.86))
+      섞으면 통로가 엉킨다. 한 맵을 통째로 고르는 것만 한다.
     """
     db = SessionLocal()
     try:
         q = db.query(RobotMap).filter(RobotMap.is_active == True)   # noqa: E712
         if area_id is not None:
             q = q.filter(RobotMap.area_id == area_id)
-        active_map = q.order_by(RobotMap.id.desc()).first()
-        if not active_map:
-            return []
+        maps = q.order_by(RobotMap.id.desc()).all()
+        if not maps and area_id is not None:
+            maps = (db.query(RobotMap)
+                    .filter(RobotMap.is_active == True)             # noqa: E712
+                    .order_by(RobotMap.id.desc()).all())
+            if maps:
+                logger.warning("[route] area=%s 에 활성 맵이 없다 — area 조건을 풀고 "
+                               "활성 맵 %d개에서 찾는다", area_id, len(maps))
 
-        out: list[dict] = []
-        rows = (
-            db.query(MapPOI)
-            .filter(MapPOI.map_id == active_map.id, MapPOI.is_active == True)  # noqa: E712
-            .all()
-        )
-        for p in rows:
-            m = _NAME_RE.match((p.name or "").strip())
-            if not m or p.world_x is None or p.world_y is None:
-                continue
-            out.append({
-                "seq": int(m.group(1)),
-                "name": p.name,
-                "x": float(p.world_x),
-                "y": float(p.world_y),
-            })
-        out.sort(key=lambda w: w["seq"])
-        return out
+        for active_map in maps:
+            out: list[dict] = []
+            rows = (
+                db.query(MapPOI)
+                .filter(MapPOI.map_id == active_map.id,
+                        MapPOI.is_active == True)                   # noqa: E712
+                .all()
+            )
+            for p in rows:
+                m = _NAME_RE.match((p.name or "").strip())
+                if not m or p.world_x is None or p.world_y is None:
+                    continue
+                out.append({
+                    "seq": int(m.group(1)),
+                    "name": p.name,
+                    "x": float(p.world_x),
+                    "y": float(p.world_y),
+                })
+            if out:
+                if active_map is not maps[0]:
+                    logger.warning("[route] 맵 %s 에 경유지가 없어 맵 %s 를 쓴다",
+                                   maps[0].id, active_map.id)
+                out.sort(key=lambda w: w["seq"])
+                return out
+
+        logger.warning("[route] 활성 맵 %d개 어디에도 경유지(W1,W2…)가 없다 "
+                       "— POI 이름이 W+숫자 인지 확인", len(maps))
+        return []
     finally:
         db.close()
 
@@ -242,7 +292,9 @@ def nearest_index(wps: list[dict], x: float, y: float) -> int:
 
 
 def _shortest(meta, wps: list[dict], sx: float, sy: float,
-              tx: float, ty: float) -> Optional[list[int]]:
+              tx: float, ty: float,
+              ec_start: Optional[int] = None,
+              ec_goal: Optional[int] = None) -> Optional[list[int]]:
     """출발 → 목표 최단경로에서 거치는 **경유지 인덱스** 목록.
 
     ★ 경유지는 '로봇이 다닐 통로' 그 자체다. 그래서 **번호 순서로 인접한 것끼리만**
@@ -258,6 +310,10 @@ def _shortest(meta, wps: list[dict], sx: float, sy: float,
 
     '인접' 은 번호 자체가 아니라 **번호로 정렬한 목록에서의 이웃**이다.
     그래서 중간 번호(예: W3)를 지워도 체인이 끊기지 않는다.
+
+    `ec_start` · `ec_goal` — 그쪽 끝이 체인에 붙을 수 있는 **후보 수**.
+    안 주면 `ENTRY_CANDIDATES`(2). 충전소 전용 경유지(`C<n>-2`)가 있는 쪽만
+    호출부가 넓혀준다 — 아래 `CHARGER_ENTRY_CANDIDATES` 주석 참조.
     """
     n = len(wps)
     START, GOAL = n, n + 1
@@ -280,13 +336,13 @@ def _shortest(meta, wps: list[dict], sx: float, sy: float,
     #    모든 경유지에 붙이면 직선이 항상 더 짧아 체인을 통째로 건너뛴다.
     #    후보가 여럿이면 어디로 들어갈지는 최단경로가 정한다 —
     #    그래서 충전소에서는 코너 쪽으로, 복귀 중이면 방금 지난 경유지로 들어간다.
-    def attach(node: int, px: float, py: float) -> None:
+    def attach(node: int, px: float, py: float, k: int) -> None:
         cand = sorted((d(px, py, w["x"], w["y"]), i) for i, w in enumerate(wps))
-        for dd, i in cand[:ENTRY_CANDIDATES]:
+        for dd, i in cand[:k]:
             add(node, i, dd * ENTRY_PENALTY)
 
-    attach(START, sx, sy)
-    attach(GOAL, tx, ty)
+    attach(START, sx, sy, ec_start or ENTRY_CANDIDATES)
+    attach(GOAL, tx, ty, ec_goal or ENTRY_CANDIDATES)
 
     # ③ 코앞이면 경유지를 거치러 되돌아가지 않는다 (벽이 없을 때만)
     d_st = d(sx, sy, tx, ty)
@@ -353,7 +409,10 @@ def _finish(seg: list[dict], sx: float, sy: float,
     # 목표와 같은 자리인 마지막 경유지도 버린다 (좌표 중복 방지)
     while seg and math.hypot(tx - seg[-1]["x"], ty - seg[-1]["y"]) < ARRIVED_EPS:
         seg.pop()
-    if not seg:
+    # 2026-09-21 — 경유지가 다 걸러져도 **충전소 전용 경유지는 살린다.**
+    #   로봇이 마지막 경유지 바로 위에 서 있으면 `seg` 가 비는데, 종전에는
+    #   그대로 standard 로 나가서 `C1-2`(충전소 진입선)까지 같이 버렸다.
+    if not seg and not (lead or tail):
         return "standard", {}
 
     # 충전소 전용 경유지를 앞/뒤에 끼운다. 이미 그 자리면 넣지 않는다.
@@ -404,20 +463,26 @@ def plan(area_id: Optional[int], sx: float, sy: float,
     # 맵 이미지는 '코앞 직행' 판단에만 쓴다. 없어도 경로 생성에는 지장이 없다.
     meta = map_image.map_meta_for_area(area_id)
 
-    seq = _shortest(meta, wps, sx, sy, tx, ty)
+    # 충전소에서 출발하면 그 충전소의 전용 경유지를 **맨 앞**에,
+    # 충전소(또는 그 접근점)로 가면 **맨 뒤**에 끼운다.
+    # 둘 다 `C<n>-2` POI 가 있을 때만 동작한다 — 없으면 종전과 동일.
+    #
+    # 2026-09-21 — **경로를 짜기 전에** 먼저 구한다. 그쪽 끝의 진입 후보를
+    #   넓혀야 하기 때문이다(`CHARGER_ENTRY_CANDIDATES`). 종전에는 경로를 다
+    #   짜고 나서 앞뒤에 붙이기만 해서, 체인이 이미 W3 까지 가버린 뒤였다.
+    lead = charger_exit_for(area_id, sx, sy)
+    tail = charger_exit_for(area_id, tx, ty)
+    if lead and tail and lead["name"] == tail["name"]:
+        tail = None                 # 충전소 안에서만 움직이는 경우 — 한 번만
+
+    seq = _shortest(meta, wps, sx, sy, tx, ty,
+                    ec_start=CHARGER_ENTRY_CANDIDATES if lead else None,
+                    ec_goal=CHARGER_ENTRY_CANDIDATES if tail else None)
     if seq is None:
         # 그래도 없으면 로봇 자체 탐색에 맡긴다(예전 동작). 막지는 않는다.
         logger.warning("[route] 경유지 그래프에서 경로를 못 찾음 → standard 로 폴백 "
                        f"(출발 {sx:.2f},{sy:.2f} → 목표 {tx:.2f},{ty:.2f})")
         return "standard", {}
-
-    # 충전소에서 출발하면 그 충전소의 전용 경유지를 **맨 앞**에,
-    # 충전소(또는 그 접근점)로 가면 **맨 뒤**에 끼운다.
-    # 둘 다 `C<n>-2` POI 가 있을 때만 동작한다 — 없으면 종전과 동일.
-    lead = charger_exit_for(area_id, sx, sy)
-    tail = charger_exit_for(area_id, tx, ty)
-    if lead and tail and lead["name"] == tail["name"]:
-        tail = None                 # 충전소 안에서만 움직이는 경우 — 한 번만
 
     logger.info("[route] 경유지 %d개 중 %d개 사용 (출발 %.2f,%.2f → 목표 %.2f,%.2f)%s",
                 len(wps), len(seq), sx, sy, tx, ty,
