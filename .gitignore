@@ -63,3 +63,8 @@ BackEnd/_logs/
 
 # 현장 이관용 패치 묶음 (필요할 때 다시 만든다)
 RCS_LG_패치_*.zip
+
+# 로그 수집 zip (6_로그모으기.bat 산출물)
+로그수집_*.zip
+venv_old/
+.next_old_asus/
