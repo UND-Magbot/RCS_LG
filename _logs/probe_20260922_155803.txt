@@ -1,0 +1,62 @@
+로봇 10.14.182.126 · 2026-09-22 15:58:03
+============================================================================
+사전 점검 30초 - 아무것도 기록하지 않습니다.
+
+  WS 오류: [WinError 10053] 현재 연결은 사용자의 호스트 시스템의 소프트웨어의 의해 중단되었습니다
+============================================================================
+  [OK  ] /motion_metrics              294건 (9.80 Hz)
+  [OK  ] /tracked_pose                 30건 (1.00 Hz)
+  [OK  ] /fused_sensor_state            1건 (0.03 Hz)
+  [OK  ] /planning_state                1건 (0.03 Hz)
+  [OK  ] /slam/state                   29건 (0.97 Hz)
+  [OK  ] /scan_matched_points2         54건 (1.80 Hz)
+  [OK  ] /maps/1cm/1hz                 29건 (0.97 Hz)
+  [OK  ] /maps/5cm/1hz                 29건 (0.97 Hz)
+  [OK  ] /chassis_state                 1건 (0.03 Hz)
+  [OK  ] /alerts                        1건 (0.03 Hz)
+
+  그 외 수신: /battery_state, /jack_state, /robot/footprint, /robot_model, /wheel_state, /ws_connection_disconnected, /ws_connection_established, /ws_connections
+
+  스캔 점 871개, 좌표 파싱 OK (x=-4.820, y=-25.600)
+  서버 안전설정: yellow 3.0 / red 1.0 / band_half_w 0.5
+  POI 33개 / 충전소 2개
+
+----------------------------------------------------------------------------
+  판정: 전부 정상 - 본 측정을 진행하세요
+============================================================================
+
+[30초간 수신한 토픽 전부]
+  /motion_metrics                   294건 (9.80 Hz)
+  /scan_matched_points2              54건 (1.80 Hz)
+  /tracked_pose                      30건 (1.00 Hz)
+  /slam/state                        29건 (0.97 Hz)
+  /maps/5cm/1hz                      29건 (0.97 Hz)
+  /maps/1cm/1hz                      29건 (0.97 Hz)
+  /battery_state                     29건 (0.97 Hz)
+  /ws_connection_disconnected         2건 (0.07 Hz)
+  /ws_connection_established          2건 (0.07 Hz)
+  /robot/footprint                    1건 (0.03 Hz)
+  /ws_connections                     1건 (0.03 Hz)
+  /planning_state                     1건 (0.03 Hz)
+  /chassis_state                      1건 (0.03 Hz)
+  /fused_sensor_state                 1건 (0.03 Hz)
+  /wheel_state                        1건 (0.03 Hz)
+  /alerts                             1건 (0.03 Hz)
+  /robot_model                        1건 (0.03 Hz)
+  /jack_state                         1건 (0.03 Hz)
+
+[구독 요청한 토픽]
+  /motion_metrics                수신
+  /tracked_pose                  수신
+  /planning_state                수신
+  /slam/state                    수신
+  /scan_matched_points2          수신
+  /fused_sensor_state            수신
+  /chassis_state                 수신
+  /wheel_state                   수신
+  /alerts                        수신
+  /battery_state                 수신
+  /robot_model                   수신
+  /jack_state                    수신
+  /maps/1cm/1hz                  수신
+  /maps/5cm/1hz                  수신
