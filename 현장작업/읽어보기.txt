@@ -88,7 +88,7 @@
    BackEnd\config.env               DB 접속정보
    BackEnd\static\maps\             맵 이미지
 
- A2 가 skip-worktree 로 자동 처리합니다.
+ A_사용폴더_git올리기.bat 이 skip-worktree 로 자동 처리합니다.
  (2026-09-22: default_area.json 하나 때문에 로봇이 빈 자리에서
   랙을 찾다 502 를 8분간 반복했습니다)
 
