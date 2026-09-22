@@ -654,6 +654,33 @@
         </details>
       </div>
 
+      <!-- 경유지 경로 이탈 허용치 (2026-09-22)
+           현장에서 값을 바꿔가며 멈칫 원인을 좁히려고 코드 상수를 밖으로 뺐다.
+           현장 안에서는 인터넷이 없어 코드를 못 고친다. -->
+      <div class="rc-section">
+        <h4>경유지 주행 — 경로 이탈 허용치</h4>
+        <div class="vc-row">
+          <span class="vc-label">허용치<br><span style="font-size:11px">(0 = 엄격)</span></span>
+          <input type="range" id="dt-tol" min="0" max="0.5" step="0.05" class="vc-range">
+          <span class="vc-value" id="dt-tol-val">-</span>
+        </div>
+        <details class="hint">
+          <summary><span class="qmark">?</span>이 값이 무엇인가 · 주의</summary>
+        <div class="vc-hint">
+          경유지로 그린 <b>경로선에서 얼마나 벗어나도 되는지</b>입니다. 경유지 자체는 그대로 씁니다.<br>
+          <b>0</b> — 선을 정확히 따릅니다. 장애물을 만나면 우회하지 않고 앞에서 멈춥니다(LG 요구).
+          다만 로봇이 선에서 조금만 어긋나도 <b>실패 대신 속도를 버려서라도</b> 맞추려 합니다.<br>
+          <b>0.2</b> — 선에서 20 cm 는 흔들려도 됩니다. 경로는 똑같이 따라갑니다.<br><br>
+          <b>2026-09-22 현장 분석</b> — 사람이 표시한 멈칫 10건이 <b>전부 경유지 주행</b>에서 났습니다
+          (직행 80 m·랙정렬 11 m 에서는 0건). 그때 앞은 5 m 까지 비었고, 방향도 안 틀었고,
+          서버도 CPU 도 통신도 평소와 같았습니다. 심한 경우 <b>20초를 기어갔습니다</b>.<br><br>
+          ⚠️ <b>안전 요구와 닿은 값입니다.</b> 올린 뒤에는 사람이 앞을 막았을 때 여전히 서는지
+          반드시 확인하세요. 로봇 반폭이 0.5 m 라 0.3 m 로는 사람을 피해 돌아갈 수 없습니다
+          (회피가 아니라 추종 오차 허용). 다음 이동 명령부터 적용되고, 되돌리려면 0 으로 두면 됩니다.
+        </div>
+        </details>
+      </div>
+
       <!-- 설정 적용 (2026-09-18)
            종전에는 슬라이더를 놓으면 400ms 뒤 자동 저장돼서, 눌렀는지 적용됐는지
            알 방법이 없었다(현장 지적). 이제 값만 바꿔두고 [확인]을 눌러야 서버로 간다. -->
@@ -1594,19 +1621,20 @@
 
     // ── 설정 탭 보류함 (2026-09-18) ─────────────────────
     //   값을 바꿔도 바로 저장하지 않는다. [확인 — 적용] 을 눌러야 서버로 간다.
-    const cfgPending = { voice: {}, speed: {}, safety: {} };
+    const cfgPending = { voice: {}, speed: {}, safety: {}, drive: {} };
 
     function cfgCount() {
       return Object.keys(cfgPending.voice).length
            + Object.keys(cfgPending.speed).length
-           + Object.keys(cfgPending.safety).length;
+           + Object.keys(cfgPending.safety).length
+           + Object.keys(cfgPending.drive).length;
     }
     function cfgMark(group, key, value) {
       cfgPending[group][key] = value;
       cfgRefreshBar();
     }
     function cfgClear() {
-      cfgPending.voice = {}; cfgPending.speed = {}; cfgPending.safety = {};
+      cfgPending.voice = {}; cfgPending.speed = {}; cfgPending.safety = {}; cfgPending.drive = {};
       cfgRefreshBar();
     }
     function cfgRefreshBar() {
@@ -1634,6 +1662,9 @@
       }
       if (Object.keys(cfgPending.safety).length) {
         if (!(await szSave(cfgPending.safety))) failed.push("안전거리");
+      }
+      if (Object.keys(cfgPending.drive).length) {
+        if (!(await dtSave(cfgPending.drive))) failed.push("경로 이탈 허용치");
       }
       if (Object.keys(cfgPending.speed).length) {
         if (!rcIp) { failed.push("주행 속도"); }
@@ -1851,6 +1882,56 @@
       }
     }
 
+    // ── 경유지 경로 이탈 허용치 (2026-09-22) ──────────────
+    //   현장에서 0 → 0.1 → 0.2 로 올려가며 멈칫이 사라지는 지점을 찾기 위한 것.
+    //   경유지는 그대로 두고 "얼마나 엄격하게 따를 것인가"만 바꾼다.
+    function dtPaint(d) {
+      const r = document.getElementById("dt-tol");
+      const v = document.getElementById("dt-tol-val");
+      if (!r || !v || !d) return;
+      const t = Number(d.detour_tolerance ?? 0);
+      r.value = t;
+      v.textContent = t === 0 ? "0 (엄격)" : t.toFixed(2) + " m";
+    }
+
+    async function dtLoad() {
+      try {
+        const res = await fetch("/api/settings/drive");
+        if (!res.ok) return;
+        dtPaint(await res.json());
+      } catch (e) { /* 못 읽어도 모달은 열려야 한다 */ }
+    }
+
+    async function dtSave(changes) {
+      try {
+        const res = await fetch("/api/settings/drive", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(changes),
+        });
+        if (!res.ok) {
+          let msg = "설정 저장 실패";
+          try { const j = await res.json(); msg = j.detail || msg; } catch (e) {}
+          rcStatus(msg);
+          dtLoad();
+          return false;
+        }
+        dtPaint(await res.json());
+        return true;
+      } catch (e) { return false; }
+    }
+
+    (function () {
+      const r = document.getElementById("dt-tol");
+      if (!r) return;
+      r.oninput = () => {
+        const t = Number(r.value);
+        document.getElementById("dt-tol-val").textContent =
+          t === 0 ? "0 (엄격)" : t.toFixed(2) + " m";
+        cfgMark("drive", "detour_tolerance", t);
+      };
+    })();
+
     async function szLoad() {
       try {
         const res = await fetch("/api/settings/safety");
@@ -1939,6 +2020,7 @@
       vcLoad();             // 음성 설정을 서버에서 다시 읽어 화면에 반영
       spLoad();             // 이 로봇의 현재 주행 속도를 읽어 슬라이더에 반영
       szLoad();             // 안전거리 설정
+      dtLoad();             // 경로 이탈 허용치
       szStartPoll();        // 현재 존 표시 시작
     }
     async function closeRemoteModal() {

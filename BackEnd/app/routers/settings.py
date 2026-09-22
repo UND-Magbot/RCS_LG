@@ -413,3 +413,68 @@ def put_poi_labels(payload: dict[str, PoiLabelItem]):
     except Exception as e:
         logger.exception(f"[settings] poi_labels.json 저장 실패: {e}")
         raise HTTPException(500, f"표시 이름 저장 실패: {e}")
+
+
+# ── 주행 설정 (2026-09-22) ─────────────────────────────────────
+# 현장에서 값을 바꿔가며 원인을 좁히려고 코드 상수를 밖으로 뺀 것이다.
+# 현장 안에서는 인터넷이 없어 코드를 못 고친다. 한 번 들어가면 안에서 끝내야 한다.
+#
+# detour_tolerance — 경유지 경로에서 벗어나도 되는 거리(m)
+#   0   = 준 경로를 그대로 따른다. 장애물을 만나면 우회하지 않고 앞에서 멈춘다.
+#         LG 요구("사람이 접근하면 회피하지 않고 정지")와 일치한다.
+#   0.2 = 선에서 20cm 는 흔들려도 된다. 경로는 똑같이 따라간다.
+#
+#   ★ 왜 빼놨나 (2026-09-22 현장 로그 분석)
+#     사람이 표시한 멈칫 10건이 **전부 along_given_route** 에서 났다
+#     (standard 80m·align_with_rack 11m 에서는 0건).
+#     그때 앞은 5m 까지 비었고, 방향도 안 틀었고(누적 회전 정상 통과와 1.00배),
+#     서버는 상한을 안 건드렸고(8건), CPU·통신·위치추정도 평소와 같았다.
+#     남은 설명은 "선에서 벗어나지 마라"는 제약 때문에 로봇이 실패 대신
+#     속도를 버리는 것뿐이다. 심한 경우 20초를 기어갔다.
+#
+#   ⚠️ 이 값은 **안전 요구와 닿아 있다.** 올리기 전에 사람이 앞을 막았을 때
+#      여전히 서는지 실기로 확인할 것. 로봇 반폭이 0.5m 라 0.3m 로는
+#      사람을 피해 돌아갈 수 없다(= 회피가 아니라 추종 오차 허용).
+_DEFAULT_DRIVE = {
+    "detour_tolerance": 0.0,
+}
+
+
+def get_drive_settings() -> dict:
+    """저장값 + 기본값. waypoint_route 가 경로를 만들 때마다 부른다."""
+    with _lock:
+        saved = (_read_settings() or {}).get("drive") or {}
+    return {**_DEFAULT_DRIVE, **saved}
+
+
+class DriveSettings(BaseModel):
+    detour_tolerance: float = Field(..., ge=0.0, le=1.0)
+
+
+class DriveSettingsUpdate(BaseModel):
+    detour_tolerance: float | None = Field(None, ge=0.0, le=1.0)
+
+
+@router.get("/drive", response_model=DriveSettings)
+def get_drive():
+    return DriveSettings(**get_drive_settings())
+
+
+@router.patch("/drive", response_model=DriveSettings)
+def update_drive(payload: DriveSettingsUpdate):
+    """보낸 항목만 바꾼다. 다음 이동 명령부터 적용된다(재시작 불필요)."""
+    changes = payload.model_dump(exclude_none=True)
+    with _lock:
+        data = _read_settings()
+        before = {**_DEFAULT_DRIVE, **(data.get("drive") or {})}
+        merged = {**before, **changes}
+        data["drive"] = merged
+        try:
+            _write_settings(data)
+        except Exception as e:
+            logger.exception(f"[settings] drive 저장 실패: {e}")
+            raise HTTPException(500, f"설정 저장 실패: {e}")
+    # 안전과 닿은 값이라 바뀐 내용을 기존값과 같이 남긴다
+    logger.warning("[settings] 주행 설정 변경: detour_tolerance %.2f → %.2f m"
+                   % (before["detour_tolerance"], merged["detour_tolerance"]))
+    return DriveSettings(**merged)

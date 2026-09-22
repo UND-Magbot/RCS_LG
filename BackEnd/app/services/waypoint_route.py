@@ -38,7 +38,19 @@ logger = logging.getLogger(__name__)
 # 경로 이탈 허용치(m).
 # 0 = 준 경로를 그대로 따르고, 장애물을 만나면 **우회하지 않고 앞에서 멈춘다.**
 # LG 요구("사람이 접근하면 회피하지 않고 정지")와 일치한다.
+#
+# ★ 2026-09-22 — 콘솔에서 바꿀 수 있게 뺐다. 여기 값은 **설정이 없을 때의 기본값**이다.
+#   현장 안에서는 인터넷이 없어 코드를 못 고친다. 한 번 들어가면 안에서 끝내야 한다.
 DETOUR_TOLERANCE = 0
+
+
+def _detour_tolerance() -> float:
+    """콘솔 설정값. 못 읽으면 기본값으로 떨어진다(주행을 막지 않는다)."""
+    try:
+        from app.routers.settings import get_drive_settings
+        return float(get_drive_settings().get("detour_tolerance", DETOUR_TOLERANCE))
+    except Exception:
+        return float(DETOUR_TOLERANCE)
 
 # 이 거리 안이면 이미 그 경유지에 있다고 본다 (m)
 ARRIVED_EPS = 0.30
@@ -428,11 +440,12 @@ def _finish(seg: list[dict], sx: float, sy: float,
         names.append(tail["name"])
     coords += [f"{tx:.4f}", f"{ty:.4f}"]
 
-    logger.info("[route] 경유지 경로 %s → 목표(%.2f, %.2f)",
-                "→".join(names), tx, ty)
+    _tol = _detour_tolerance()
+    logger.info("[route] 경유지 경로 %s → 목표(%.2f, %.2f) · 이탈허용 %.2f m",
+                "→".join(names), tx, ty, _tol)
     return "along_given_route", {
         "route_coordinates": ",".join(coords),
-        "detour_tolerance": DETOUR_TOLERANCE,
+        "detour_tolerance": _tol,
     }
 
 
