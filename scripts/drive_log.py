@@ -152,11 +152,16 @@ TOPICS = [
 # ==================================================================
 #  최소 WebSocket 클라이언트 (v1 에서 검증된 것 그대로)
 # ==================================================================
+# WS 가 끊긴 뒤 다시 붙기까지 기다리는 시간(초). 2026-09-21 신설.
+RECONNECT_WAIT_SEC = 2.0
+
+
 class _WS(object):
     def __init__(self, url, on_message=None, on_open=None, on_error=None):
         self.url, self.on_message = url, on_message
         self.on_open, self.on_error = on_open, on_error
         self.sock, self._alive, self._buf = None, True, b""
+        self._msg_err, self._reconn = 0, 0
 
     def connect(self, timeout=10):
         u = urllib.parse.urlparse(self.url)
@@ -225,43 +230,69 @@ class _WS(object):
             payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
         return fin, opcode, payload
 
-    def run_forever(self):
-        try:
-            if self.sock is None:
-                self.connect()
-            if self.on_open:
-                self.on_open(self)
-            frag, fragop = b"", None
-            while self._alive:
-                fin, op, payload = self._frame()
-                if op == 0x8:
-                    break
-                if op == 0x9:
-                    self.send(payload, opcode=0xA)
-                    continue
-                if op == 0xA:
-                    continue
-                if op == 0x0:
-                    frag += payload
-                else:
-                    frag, fragop = payload, op
-                if not fin:
-                    continue
-                data, frag = frag, b""
-                if fragop == 0x1 and self.on_message:
-                    try:
-                        self.on_message(self, data.decode("utf-8"))
-                    except UnicodeDecodeError:
-                        pass
-        except Exception as e:
-            if self.on_error:
-                self.on_error(self, e)
-        finally:
-            self._alive = False
+    def run_forever(self, reconnect=True):
+        """수신 루프. **끊기면 다시 붙는다.**
+
+        2026-09-21 — 이름이 `run_forever` 인데 실제로는 한 번 끊기면 끝이었다.
+          그리고 `on_message` 안에서 난 예외가 바깥 `except` 로 새어나가
+          **메시지 하나가 WS 스레드를 통째로 죽였다.** 그러면
+            · `/tracked_pose` 가 안 들어와 `S["pose"]` 가 그 자리에 멈추고
+            · `cycle_watch` 는 충전소 출발을 영영 못 봐서 **사이클 폴더가 0개**
+            · `/motion_metrics` 도 끊겨 화면 속도가 **0.00 에 고정**
+          된다. 2026-09-21 현장에서 "움직이는데 로그가 안 남는다" 가 이것이다.
+
+          이제 ① 메시지 예외는 그 메시지만 버리고 ② 연결이 끊기면 다시 붙는다.
+        """
+        while self._alive:
+            try:
+                if self.sock is None:
+                    self.connect()
+                if self.on_open:
+                    self.on_open(self)
+                frag, fragop = b"", None
+                while self._alive:
+                    fin, op, payload = self._frame()
+                    if op == 0x8:
+                        break
+                    if op == 0x9:
+                        self.send(payload, opcode=0xA)
+                        continue
+                    if op == 0xA:
+                        continue
+                    if op == 0x0:
+                        frag += payload
+                    else:
+                        frag, fragop = payload, op
+                    if not fin:
+                        continue
+                    data, frag = frag, b""
+                    if fragop == 0x1 and self.on_message:
+                        try:
+                            self.on_message(self, data.decode("utf-8"))
+                        except UnicodeDecodeError:
+                            pass
+                        except Exception as me:
+                            # ★ 이 메시지만 버린다. 수신은 계속한다.
+                            self._msg_err += 1
+                            if self._msg_err <= 3:
+                                import traceback
+                                print("  ★ 메시지 처리 오류(%d번째, 수신은 계속): %s"
+                                      % (self._msg_err, me), flush=True)
+                                traceback.print_exc()
+            except Exception as e:
+                if self.on_error:
+                    self.on_error(self, e)
             try:
                 self.sock.close()
             except Exception:
                 pass
+            self.sock, self._buf = None, b""
+            if not reconnect or not self._alive:
+                break
+            self._reconn += 1
+            print("  WS 재연결 시도 %d회째 …" % self._reconn, flush=True)
+            time.sleep(RECONNECT_WAIT_SEC)
+        self._alive = False
 
     def close(self):
         self._alive = False
@@ -1986,7 +2017,11 @@ def probe(a):
             time.sleep(0.04)
 
     _plog = []
-    _real_print = print
+    # ★ builtins 에서 가져와야 한다. 그냥 `_real_print = print` 로 쓰면
+    #   아래 `def print` 때문에 print 가 이 함수의 지역변수로 잡혀서
+    #   UnboundLocalError 가 난다 — --probe 가 100% 실패했다 (2026-09-22 발견).
+    import builtins
+    _real_print = builtins.print
 
     def print(*args, **kw):       # noqa: A001 - 이 함수 안에서만 가린다
         s = " ".join(str(x) for x in args)

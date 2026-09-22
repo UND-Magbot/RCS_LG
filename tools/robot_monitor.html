@@ -1,0 +1,667 @@
+<!doctype html>
+<html lang="ko">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>로봇 부하·멈칫 모니터</title>
+<!--
+  로봇 부하 ↔ 주행 멈칫 관찰용 웹 UI.  scripts/load_test.py 의 웹 버전.
+
+  · 로봇 WebSocket 에 직접 붙는다. 백엔드(8002)를 거치지 않는다.
+  · 읽기 전용 — 이동·잭·속도 명령을 한 줄도 보내지 않는다.
+    부하는 "무거운 토픽을 더 구독한다" 로만 만든다(연결 수를 늘린다).
+  · 외부 리소스 0개. 현장(M2M 전용망, 인터넷 없음)에서도 파일만 있으면 열린다.
+
+  ⚠ 브라우저에서 ws:// 를 열어야 하므로 **로컬 파일로 열 것**(file:// 또는 http://).
+     https 페이지에 올리면 차단된다.
+-->
+<style>
+  /* 색: dataviz 기본 팔레트 — 단일 시계열은 blue, 상태는 status 4색 고정 */
+  :root{
+    --surface:#fcfcfb; --surface-2:#f2f2f0; --line:#dcdcd8; --line-soft:#eaeae6;
+    --ink:#1a1a19; --ink-2:#50504c; --muted:#84847e;
+    --series:#2a78d6;
+    --good:#0ca30c; --warn:#fab219; --serious:#ec835a; --crit:#d03b3b;
+    --shadow:0 1px 2px rgba(0,0,0,.05), 0 8px 24px rgba(0,0,0,.05);
+  }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      --surface:#1a1a19; --surface-2:#232321; --line:#393935; --line-soft:#2b2b28;
+      --ink:#f0f0ec; --ink-2:#b6b6b0; --muted:#84847e;
+      --series:#3987e5;
+      --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.35);
+    }
+  }
+  :root[data-theme="dark"]{
+    --surface:#1a1a19; --surface-2:#232321; --line:#393935; --line-soft:#2b2b28;
+    --ink:#f0f0ec; --ink-2:#b6b6b0; --muted:#84847e; --series:#3987e5;
+  }
+
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--surface); color:var(--ink);
+    font:15px/1.55 -apple-system,"Segoe UI",system-ui,"Malgun Gothic",sans-serif;
+    padding-bottom:40px;
+  }
+  .wrap{max-width:1180px; margin:0 auto; padding:0 16px}
+
+  header{
+    border-bottom:1px solid var(--line); background:var(--surface-2);
+    padding:14px 0; margin-bottom:20px;
+  }
+  .hrow{display:flex; gap:14px; align-items:center; flex-wrap:wrap}
+  h1{font-size:17px; margin:0; font-weight:700; letter-spacing:-.01em}
+  .sub{font-size:12.5px; color:var(--muted)}
+  .grow{flex:1 1 auto}
+
+  input[type=text]{
+    background:var(--surface); color:var(--ink); border:1px solid var(--line);
+    border-radius:8px; padding:7px 10px; font:inherit; font-size:14px; width:150px;
+  }
+  button{
+    background:var(--surface); color:var(--ink); border:1px solid var(--line);
+    border-radius:8px; padding:7px 13px; font:inherit; font-size:14px;
+    cursor:pointer; white-space:nowrap;
+  }
+  button:hover{background:var(--surface-2)}
+  button[aria-pressed="true"]{background:var(--ink); color:var(--surface); border-color:var(--ink)}
+  button.primary{background:var(--series); border-color:var(--series); color:#fff; font-weight:700}
+  button:disabled{opacity:.45; cursor:default}
+
+  .dot{width:9px; height:9px; border-radius:50%; background:var(--muted); display:inline-block; flex:0 0 auto}
+  .dot.on{background:var(--good)}
+  .dot.err{background:var(--crit)}
+
+  section{margin-bottom:22px}          /* 누적 여백 — 요소가 겹치지 않게 */
+  h2{font-size:13px; font-weight:700; color:var(--ink-2); margin:0 0 10px;
+     text-transform:none; letter-spacing:.01em}
+
+  /* 상태 타일 */
+  .tiles{display:grid; gap:12px; grid-template-columns:repeat(auto-fit,minmax(168px,1fr))}
+  .tile{
+    background:var(--surface); border:1px solid var(--line); border-radius:12px;
+    padding:13px 15px; box-shadow:var(--shadow); min-width:0;
+  }
+  .tile .k{font-size:12px; color:var(--muted); margin-bottom:5px}
+  .tile .v{font-size:25px; font-weight:700; line-height:1.15; letter-spacing:-.02em;
+           font-variant-numeric:tabular-nums; word-break:break-all}
+  .tile .u{font-size:13px; font-weight:400; color:var(--ink-2); margin-left:3px}
+  .tile .n{font-size:12px; color:var(--muted); margin-top:5px; min-height:1.2em}
+  .tile.is-crit{border-color:var(--crit)}
+  .tile.is-warn{border-color:var(--warn)}
+  .badge{display:inline-flex; align-items:center; gap:5px; font-size:12px; font-weight:700}
+  .badge .ic{font-size:13px}
+  .c-good{color:var(--good)} .c-warn{color:#8a6410} .c-crit{color:var(--crit)} .c-mut{color:var(--muted)}
+  @media (prefers-color-scheme:dark){ :root:not([data-theme="light"]) .c-warn{color:var(--warn)} }
+
+  /* 조작 줄 */
+  .bar{
+    display:flex; gap:9px; align-items:center; flex-wrap:wrap;
+    background:var(--surface-2); border:1px solid var(--line);
+    border-radius:12px; padding:11px 13px;
+  }
+  .bar .lab{font-size:12.5px; color:var(--muted); margin-right:2px}
+  .seg{display:flex; gap:0; border:1px solid var(--line); border-radius:8px; overflow:hidden}
+  .seg button{border:0; border-right:1px solid var(--line); border-radius:0}
+  .seg button:last-child{border-right:0}
+
+  /* 차트 */
+  .chart{
+    background:var(--surface); border:1px solid var(--line); border-radius:12px;
+    padding:14px 14px 8px; box-shadow:var(--shadow); position:relative;
+  }
+  .chart svg{display:block; width:100%; height:190px; overflow:visible}
+  .tip{
+    position:absolute; pointer-events:none; opacity:0; transition:opacity .08s;
+    background:var(--ink); color:var(--surface); font-size:12px; line-height:1.5;
+    padding:6px 9px; border-radius:7px; white-space:nowrap; z-index:5;
+    font-variant-numeric:tabular-nums;
+  }
+  .legendnote{font-size:12px; color:var(--muted); margin-top:8px; display:flex;
+              gap:16px; flex-wrap:wrap}
+  .legendnote span{display:inline-flex; align-items:center; gap:6px}
+  .sw{width:14px; height:3px; border-radius:2px; background:var(--series); display:inline-block}
+  .sw.stop{height:11px; border-radius:3px; background:rgba(208,59,59,.22);
+           border:1px solid var(--crit)}
+  .sw.mark{width:2px; height:13px; border-radius:1px; background:var(--ink-2)}
+
+  /* 표 */
+  table{width:100%; border-collapse:collapse; font-size:13.5px}
+  th,td{padding:9px 10px; text-align:right; border-bottom:1px solid var(--line-soft);
+        font-variant-numeric:tabular-nums}
+  th:first-child,td:first-child{text-align:left}
+  th{font-size:12px; color:var(--muted); font-weight:600; border-bottom:1px solid var(--line)}
+  tr.now td{background:var(--surface-2); font-weight:700}
+
+  /* 로그 */
+  .log{
+    background:var(--surface); border:1px solid var(--line); border-radius:12px;
+    max-height:230px; overflow-y:auto; font-size:12.5px;
+  }
+  .log div{padding:6px 12px; border-bottom:1px solid var(--line-soft); display:flex; gap:10px}
+  .log div:last-child{border-bottom:0}
+  .log .t{color:var(--muted); flex:0 0 62px; font-variant-numeric:tabular-nums}
+  .log .m{flex:1 1 auto; min-width:0; word-break:break-word}
+
+  .warnbox{
+    border:1px solid var(--warn); background:rgba(250,178,25,.10);
+    border-radius:10px; padding:11px 14px; font-size:13px; color:var(--ink-2);
+    margin-bottom:18px;
+  }
+</style>
+
+<header>
+  <div class="wrap hrow">
+    <div>
+      <h1>로봇 부하 · 멈칫 모니터</h1>
+      <div class="sub">읽기 전용 — 이동·잭·속도 명령을 보내지 않습니다</div>
+    </div>
+    <div class="grow"></div>
+    <input type="text" id="ip" value="192.168.30.130" aria-label="로봇 IP" spellcheck="false">
+    <button id="conn" class="primary">연결</button>
+    <span class="badge"><span class="dot" id="dot"></span><span id="connTxt" class="c-mut">끊김</span></span>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <div class="warnbox" id="httpsWarn" hidden>
+    ⚠ 이 페이지가 <b>https</b> 로 열려 있어 로봇(ws://)에 붙을 수 없습니다.
+    파일을 그대로 저장해 <b>로컬에서</b> 여세요.
+  </div>
+
+  <section>
+    <h2>지금 상태</h2>
+    <div class="tiles">
+      <div class="tile" id="t-speed">
+        <div class="k">실측 속도</div>
+        <div class="v"><span id="v-speed">–</span><span class="u">m/s</span></div>
+        <div class="n" id="n-speed">위치 변화로 계산</div>
+      </div>
+      <div class="tile">
+        <div class="k">로봇이 정한 속도</div>
+        <div class="v"><span id="v-sug">–</span><span class="u">m/s</span></div>
+        <div class="n" id="n-sug">suggested_speed</div>
+      </div>
+      <div class="tile" id="t-load">
+        <div class="k">로봇 CPU 부하</div>
+        <div class="v" id="v-load">–</div>
+        <div class="n" id="n-load">load average (1분)</div>
+      </div>
+      <div class="tile">
+        <div class="k">잭 · 적재</div>
+        <div class="v" id="v-jack">–</div>
+        <div class="n" id="n-jack">weight</div>
+      </div>
+      <div class="tile">
+        <div class="k">위치 추정 품질</div>
+        <div class="v" id="v-slam">–</div>
+        <div class="n" id="n-slam">matching score</div>
+      </div>
+      <div class="tile">
+        <div class="k">이동 상태</div>
+        <div class="v" id="v-move" style="font-size:19px">–</div>
+        <div class="n" id="n-move">남은 거리</div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>부하 걸기</h2>
+    <div class="bar">
+      <span class="lab">단계</span>
+      <div class="seg" role="group" aria-label="부하 단계">
+        <button data-lv="0" aria-pressed="true">0 끔</button>
+        <button data-lv="1" aria-pressed="false">1 약</button>
+        <button data-lv="2" aria-pressed="false">2 중</button>
+        <button data-lv="3" aria-pressed="false">3 강</button>
+      </div>
+      <span class="sub" id="lvInfo">연결 0개</span>
+      <div class="grow"></div>
+      <button id="mark">지금 멈칫했다 <span class="sub">Space</span></button>
+      <button id="export">기록 내보내기</button>
+      <button id="reset">기록 지우기</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>속도 — 최근 <span id="winSec">120</span>초</h2>
+    <div class="chart" id="chartBox">
+      <svg id="chart" viewBox="0 0 960 190" preserveAspectRatio="none" role="img"
+           aria-label="시간에 따른 로봇 실측 속도"></svg>
+      <div class="tip" id="tip"></div>
+      <div class="legendnote">
+        <span><i class="sw"></i> 실측 속도</span>
+        <span><i class="sw stop"></i> 멈춤 구간 (0.10 m/s 미만)</span>
+        <span><i class="sw mark"></i> 내가 표시한 시점</span>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>부하 단계별 누적</h2>
+    <div class="chart" style="padding:4px 0 0">
+      <table id="tbl">
+        <thead><tr>
+          <th>단계</th><th>관찰 시간</th><th>멈춤 횟수</th><th>멈춤 총시간</th>
+          <th>분당 멈춤</th><th>CPU 경고</th><th>내 표시</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>이벤트</h2>
+    <div class="log" id="log"></div>
+  </section>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  // ── 부하 단계 정의 (load_test.py 와 같은 구성) ──────────────────
+  //   숫자 = 그 토픽을 구독하는 WebSocket 연결 수.
+  //   연결을 늘리면 로봇이 같은 데이터를 그만큼 더 만들어 보내야 한다.
+  var LOAD = {
+    0: [],
+    1: [["/scan_matched_points2",1]],
+    2: [["/scan_matched_points2",2],["/maps/1cm/1hz",1]],
+    3: [["/scan_matched_points2",3],["/maps/1cm/1hz",2],["/maps/5cm/1hz",2]]
+  };
+  var REST_HZ_AT_L3 = 10;      // 3단계에서만 도는 REST 폴링
+
+  var WATCH = ["/tracked_pose","/fused_sensor_state","/planning_state",
+               "/jack_state","/slam/state","/alerts","/chassis_state","/motion_metrics"];
+
+  var STOP_V = 0.10;           // 이 아래면 '섰다'
+  var MIN_STOP_SEC = 0.3;      // 이보다 짧으면 측정 잡음으로 보고 뺀다
+  var WIN_SEC = 120;           // 차트가 보여주는 시간 폭
+
+  var S = {
+    ws:null, loadWs:[], restTimer:null, level:0, connected:false,
+    samples:[],            // {t, v}
+    stops:[], curStop:null,
+    marks:[], loadWarns:[],
+    perLevel:{}, levelSince:null,
+    lastPose:null, sug:null, jack:null, weight:null,
+    slamQ:null, slamScore:null, move:null, moveState:null, remain:null,
+    cpu:null, cpuAt:0, events:[]
+  };
+  for (var i=0;i<4;i++) S.perLevel[i]={sec:0,stops:0,stopSec:0,warns:0,marks:0};
+
+  var $ = function(id){ return document.getElementById(id); };
+  var now = function(){ return Date.now()/1000; };
+  var fmt = function(n,d){ return (n===null||n===undefined||isNaN(n)) ? "–" : Number(n).toFixed(d===undefined?2:d); };
+
+  function hhmmss(t){
+    var d = new Date(t*1000);
+    return String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0")
+         + ":"+String(d.getSeconds()).padStart(2,"0");
+  }
+
+  function logLine(msg){
+    S.events.push({t:now(), msg:msg});
+    if (S.events.length>400) S.events.shift();
+    var el = $("log");
+    var row = document.createElement("div");
+    row.innerHTML = '<span class="t">'+hhmmss(now())+'</span><span class="m"></span>';
+    row.lastChild.textContent = msg;
+    el.insertBefore(row, el.firstChild);
+    while (el.children.length>200) el.removeChild(el.lastChild);
+  }
+
+  // ── 연결 ────────────────────────────────────────────────────────
+  function wsUrl(ip){ return "ws://"+ip+":8090/ws/v2/topics"; }
+
+  function connect(){
+    disconnect();
+    var ip = $("ip").value.trim();
+    if (!ip) return;
+    var ws;
+    try { ws = new WebSocket(wsUrl(ip)); }
+    catch(e){ setConn(false,"주소 오류"); logLine("연결 실패: "+e.message); return; }
+    S.ws = ws;
+    setConn(false,"연결 중…");
+    ws.onopen = function(){
+      setConn(true,"연결됨");
+      logLine("연결됨 — "+ip);
+      WATCH.forEach(function(t){ ws.send(JSON.stringify({enable_topic:t})); });
+      S.levelSince = now();
+    };
+    ws.onmessage = function(ev){ if (typeof ev.data === "string") onPacket(ev.data); };
+    ws.onerror = function(){ setConn(false,"오류"); };
+    ws.onclose = function(){
+      setConn(false,"끊김");
+      logLine("연결이 끊겼습니다");
+      setLevel(0, true);
+    };
+  }
+
+  function disconnect(){
+    if (S.ws){ try{ S.ws.close(); }catch(e){} S.ws=null; }
+    dropLoad();
+  }
+
+  function setConn(ok,txt){
+    S.connected = ok;
+    $("dot").className = "dot" + (ok ? " on" : (txt==="오류" ? " err":""));
+    $("connTxt").textContent = txt;
+    $("connTxt").className = ok ? "c-good" : "c-mut";
+    $("conn").textContent = ok ? "끊기" : "연결";
+  }
+
+  // ── 수신 처리 ───────────────────────────────────────────────────
+  function onPacket(raw){
+    var d; try{ d = JSON.parse(raw); }catch(e){ return; }
+    var tp = d.topic;
+    var t = now();
+
+    if (tp === "/tracked_pose" && d.pos){
+      if (S.lastPose){
+        var dt = t - S.lastPose.t;
+        if (dt > 0.05){
+          var dx = d.pos[0]-S.lastPose.x, dy = d.pos[1]-S.lastPose.y;
+          // /tracked_pose 에는 speed 필드가 없다 — 연속 포즈의 위치 차분으로 구한다
+          pushSpeed(t, Math.hypot(dx,dy)/dt);
+          S.lastPose = {t:t, x:d.pos[0], y:d.pos[1]};
+        }
+      } else S.lastPose = {t:t, x:d.pos[0], y:d.pos[1]};
+    }
+    else if (tp === "/fused_sensor_state"){
+      if (d.suggested_speed !== undefined) S.sug = d.suggested_speed;
+      if (d.collide_dir) logLine("충돌 방향 감지 collide_dir="+d.collide_dir);
+      if (d.pushed) logLine("밀림 감지 pushed");
+      if (d.slipping) logLine("미끄러짐 감지 slipping");
+    }
+    else if (tp === "/planning_state"){
+      S.move = d.action_type || null;
+      S.moveState = d.move_state || null;
+      S.remain = (typeof d.remaining_distance === "number") ? d.remaining_distance : null;
+      if (d.stuck_state && d.stuck_state !== "none") logLine("stuck_state = "+d.stuck_state);
+      if (d.fail_reason) logLine("이동 실패 "+d.fail_reason+" "+(d.fail_reason_str||""));
+    }
+    else if (tp === "/jack_state"){ S.jack = d.state; S.weight = d.weight; }
+    else if (tp === "/slam/state"){ S.slamQ = d.position_quality; S.slamScore = d.lidar_matching_score; }
+    else if (tp === "/chassis_state"){
+      if (d.emergency_stop_pressed) logLine("비상정지 눌림");
+    }
+    else if (tp === "/alerts"){
+      var arr = d.alerts || d.data || [];
+      if (!Array.isArray(arr)) arr = [arr];
+      arr.forEach(function(a){
+        var msg = (a && (a.msg || a.message || a.text)) || (typeof a==="string"?a:"");
+        var m = /Load average in 1 minute is ([0-9.]+)/.exec(msg);
+        if (m){
+          S.cpu = parseFloat(m[1]); S.cpuAt = t;
+          S.loadWarns.push(t);
+          S.perLevel[S.level].warns++;
+          logLine("CPU 부하 경고 — load "+m[1]);
+        }
+      });
+    }
+  }
+
+  function pushSpeed(t, v){
+    S.samples.push({t:t, v:v});
+    while (S.samples.length && S.samples[0].t < t - WIN_SEC*3) S.samples.shift();
+
+    if (v < STOP_V){
+      if (!S.curStop) S.curStop = {t0:t, lv:S.level};
+    } else if (S.curStop){
+      var dur = t - S.curStop.t0;
+      if (dur >= MIN_STOP_SEC){
+        S.stops.push({t0:S.curStop.t0, t1:t, lv:S.curStop.lv});
+        S.perLevel[S.curStop.lv].stops++;
+        S.perLevel[S.curStop.lv].stopSec += dur;
+        logLine("멈춤 "+dur.toFixed(1)+"초 (단계 "+S.curStop.lv+")");
+      }
+      S.curStop = null;
+    }
+  }
+
+  // ── 부하 걸기 ───────────────────────────────────────────────────
+  function dropLoad(){
+    S.loadWs.forEach(function(w){ try{ w.close(); }catch(e){} });
+    S.loadWs = [];
+    if (S.restTimer){ clearInterval(S.restTimer); S.restTimer = null; }
+  }
+
+  function setLevel(lv, quiet){
+    // 단계가 바뀌기 전까지의 관찰 시간을 이전 단계에 적립한다
+    if (S.levelSince !== null) S.perLevel[S.level].sec += now() - S.levelSince;
+    S.levelSince = now();
+
+    dropLoad();
+    S.level = lv;
+    var ip = $("ip").value.trim();
+    if (lv > 0 && S.connected){
+      LOAD[lv].forEach(function(pair){
+        for (var i=0;i<pair[1];i++){
+          try{
+            var w = new WebSocket(wsUrl(ip));
+            w.onopen = (function(topic,sock){ return function(){
+              sock.send(JSON.stringify({enable_topic:topic}));
+            };})(pair[0], w);
+            w.onmessage = function(){};       // 받기만 하고 버린다 — 부하가 목적
+            S.loadWs.push(w);
+          }catch(e){}
+        }
+      });
+      if (lv === 3){
+        // 브라우저는 로봇의 REST 응답을 읽을 수 없다(CORS). no-cors 로 보내도
+        // 로봇은 요청을 처리하므로 부하는 그대로 걸린다.
+        S.restTimer = setInterval(function(){
+          fetch("http://"+ip+":8090/chassis/status", {mode:"no-cors", cache:"no-store"})
+            .catch(function(){});
+        }, 1000/REST_HZ_AT_L3);
+      }
+    }
+    document.querySelectorAll("[data-lv]").forEach(function(b){
+      b.setAttribute("aria-pressed", String(Number(b.dataset.lv) === lv));
+    });
+    if (!quiet) logLine("부하 단계 "+lv+" — 추가 연결 "+S.loadWs.length+"개");
+  }
+
+  // ── 차트 ────────────────────────────────────────────────────────
+  var SVG_W = 960, SVG_H = 190, PAD_L = 42, PAD_R = 10, PAD_T = 12, PAD_B = 24;
+  var NS = "http://www.w3.org/2000/svg";
+
+  function el(name, attrs){
+    var n = document.createElementNS(NS, name);
+    for (var k in attrs) n.setAttribute(k, attrs[k]);
+    return n;
+  }
+
+  function drawChart(){
+    var svg = $("chart");
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+    var t1 = now(), t0 = t1 - WIN_SEC;
+    var pts = S.samples.filter(function(s){ return s.t >= t0; });
+    var vmax = 1.0;
+    pts.forEach(function(s){ if (s.v > vmax) vmax = s.v; });
+    vmax = Math.ceil(vmax*10)/10;
+
+    var X = function(t){ return PAD_L + (t-t0)/WIN_SEC * (SVG_W-PAD_L-PAD_R); };
+    var Y = function(v){ return PAD_T + (1 - v/vmax) * (SVG_H-PAD_T-PAD_B); };
+
+    // 축·격자 — 눈에 띄지 않게
+    [0, vmax/2, vmax].forEach(function(v){
+      svg.appendChild(el("line",{x1:PAD_L, x2:SVG_W-PAD_R, y1:Y(v), y2:Y(v),
+        stroke:"var(--line-soft)", "stroke-width":1}));
+      var tx = el("text",{x:PAD_L-8, y:Y(v)+4, "text-anchor":"end",
+        "font-size":11, fill:"var(--muted)"});
+      tx.textContent = v.toFixed(1);
+      svg.appendChild(tx);
+    });
+    for (var s=0; s<=WIN_SEC; s+=30){
+      var xx = X(t0+s);
+      var lb = el("text",{x:xx, y:SVG_H-6, "text-anchor":"middle",
+        "font-size":11, fill:"var(--muted)"});
+      lb.textContent = (s-WIN_SEC)+"초";
+      svg.appendChild(lb);
+    }
+
+    // 멈춤 구간 음영 (진행 중인 것 포함)
+    var stops = S.stops.slice();
+    if (S.curStop) stops.push({t0:S.curStop.t0, t1:t1, lv:S.curStop.lv});
+    stops.forEach(function(st){
+      if (st.t1 < t0) return;
+      var a = X(Math.max(st.t0,t0)), b = X(Math.min(st.t1,t1));
+      svg.appendChild(el("rect",{x:a, y:PAD_T, width:Math.max(b-a,1.5),
+        height:SVG_H-PAD_T-PAD_B, fill:"var(--crit)", "fill-opacity":.13}));
+    });
+
+    // CPU 부하 경고 마커 — 위쪽 가장자리에 작은 삼각형
+    S.loadWarns.forEach(function(wt){
+      if (wt < t0) return;
+      var x = X(wt);
+      svg.appendChild(el("path",{d:"M"+(x-4)+" "+PAD_T+" L"+(x+4)+" "+PAD_T+" L"+x+" "+(PAD_T+7)+" Z",
+        fill:"var(--warn)"}));
+    });
+
+    // 내가 표시한 시점 — 세로선
+    S.marks.forEach(function(mt){
+      if (mt < t0) return;
+      svg.appendChild(el("line",{x1:X(mt), x2:X(mt), y1:PAD_T, y2:SVG_H-PAD_B,
+        stroke:"var(--ink-2)", "stroke-width":2, "stroke-dasharray":"3 3"}));
+    });
+
+    // 속도 선 — 2px
+    if (pts.length > 1){
+      var dstr = pts.map(function(s,i){ return (i?"L":"M")+X(s.t).toFixed(1)+" "+Y(s.v).toFixed(1); }).join(" ");
+      svg.appendChild(el("path",{d:dstr, fill:"none", stroke:"var(--series)",
+        "stroke-width":2, "stroke-linejoin":"round", "stroke-linecap":"round"}));
+    }
+
+    // 임계선 — 0.10 m/s
+    svg.appendChild(el("line",{x1:PAD_L, x2:SVG_W-PAD_R, y1:Y(STOP_V), y2:Y(STOP_V),
+      stroke:"var(--crit)", "stroke-width":1, "stroke-dasharray":"4 4", "stroke-opacity":.55}));
+
+    svg._pts = pts; svg._X = X; svg._t0 = t0;
+  }
+
+  // 크로스헤어 + 툴팁
+  (function(){
+    var box = $("chartBox"), svg = $("chart"), tip = $("tip");
+    box.addEventListener("mousemove", function(ev){
+      var pts = svg._pts;
+      if (!pts || !pts.length){ tip.style.opacity = 0; return; }
+      var r = svg.getBoundingClientRect();
+      var px = (ev.clientX - r.left) / r.width * SVG_W;
+      var best = null, bd = 1e9;
+      pts.forEach(function(s){
+        var d = Math.abs(svg._X(s.t) - px);
+        if (d < bd){ bd = d; best = s; }
+      });
+      if (!best || bd > 60){ tip.style.opacity = 0; return; }
+      tip.textContent = hhmmss(best.t) + " · " + best.v.toFixed(2) + " m/s";
+      tip.style.left = Math.min(ev.clientX - r.left + 12, r.width - 130) + "px";
+      tip.style.top  = (ev.clientY - box.getBoundingClientRect().top - 34) + "px";
+      tip.style.opacity = 1;
+    });
+    box.addEventListener("mouseleave", function(){ tip.style.opacity = 0; });
+  })();
+
+  // ── 화면 갱신 ───────────────────────────────────────────────────
+  function paint(){
+    var t = now();
+    var last = S.samples.length ? S.samples[S.samples.length-1] : null;
+    var v = (last && t - last.t < 3) ? last.v : (S.connected ? 0 : null);
+
+    $("v-speed").textContent = fmt(v);
+    $("t-speed").className = "tile" + (v !== null && v < STOP_V ? " is-crit" : "");
+    $("n-speed").innerHTML = (v !== null && v < STOP_V)
+      ? '<span class="badge c-crit"><span class="ic">■</span>서 있음</span>'
+      : "위치 변화로 계산";
+
+    $("v-sug").textContent = fmt(S.sug);
+
+    var cpuFresh = S.cpu !== null && (t - S.cpuAt) < 90;
+    $("v-load").textContent = cpuFresh ? fmt(S.cpu,1) : "경고 없음";
+    $("v-load").style.fontSize = cpuFresh ? "25px" : "17px";
+    $("t-load").className = "tile" + (cpuFresh ? " is-warn" : "");
+    $("n-load").innerHTML = cpuFresh
+      ? '<span class="badge c-warn"><span class="ic">▲</span>'+Math.round(t-S.cpuAt)+'초 전 경고</span>'
+      : "load average (1분)";
+
+    $("v-jack").textContent = S.jack === null ? "–" : (S.jack === "hold" ? "적재 중" : S.jack);
+    $("v-jack").style.fontSize = "19px";
+    $("n-jack").textContent = S.weight === null ? "weight" : ("weight " + S.weight);
+
+    $("v-slam").textContent = S.slamQ === null ? "–" : S.slamQ;
+    $("n-slam").textContent = S.slamScore === null ? "matching score"
+      : ("matching " + Number(S.slamScore).toFixed(3));
+
+    $("v-move").textContent = S.move ? (S.move + (S.moveState ? " · "+S.moveState : "")) : "–";
+    $("n-move").textContent = S.remain === null ? "남은 거리" : ("남은 " + S.remain.toFixed(2) + " m");
+
+    $("lvInfo").textContent = "추가 연결 " + S.loadWs.length + "개"
+      + (S.level === 3 ? " + REST " + REST_HZ_AT_L3 + "회/초" : "");
+
+    // 누적 표 — 현재 단계는 경과분을 얹어 보여준다
+    var tb = $("tbl").querySelector("tbody");
+    tb.innerHTML = "";
+    var NAME = {0:"0 끔",1:"1 약",2:"2 중",3:"3 강"};
+    for (var lv=0; lv<4; lv++){
+      var p = S.perLevel[lv];
+      var sec = p.sec + (lv === S.level && S.levelSince !== null ? t - S.levelSince : 0);
+      var perMin = sec > 20 ? (p.stops / (sec/60)) : null;
+      var tr = document.createElement("tr");
+      if (lv === S.level) tr.className = "now";
+      tr.innerHTML =
+        "<td>"+NAME[lv]+"</td>" +
+        "<td>"+(sec>=60 ? (sec/60).toFixed(1)+"분" : Math.round(sec)+"초")+"</td>" +
+        "<td>"+p.stops+"</td>" +
+        "<td>"+p.stopSec.toFixed(1)+"초</td>" +
+        "<td>"+(perMin===null ? "–" : perMin.toFixed(1))+"</td>" +
+        "<td>"+p.warns+"</td>" +
+        "<td>"+p.marks+"</td>";
+      tb.appendChild(tr);
+    }
+
+    drawChart();
+  }
+
+  // ── 조작 ────────────────────────────────────────────────────────
+  $("conn").onclick = function(){ if (S.connected || S.ws) { disconnect(); setConn(false,"끊김"); } else connect(); };
+  document.querySelectorAll("[data-lv]").forEach(function(b){
+    b.onclick = function(){ setLevel(Number(b.dataset.lv)); };
+  });
+  function doMark(){
+    S.marks.push(now());
+    S.perLevel[S.level].marks++;
+    logLine("표시 — 지금 멈칫 (단계 "+S.level+")");
+  }
+  $("mark").onclick = doMark;
+  document.addEventListener("keydown", function(e){
+    if (e.code === "Space" && e.target.tagName !== "INPUT"){ e.preventDefault(); doMark(); }
+  });
+  $("reset").onclick = function(){
+    S.samples=[]; S.stops=[]; S.curStop=null; S.marks=[]; S.loadWarns=[]; S.events=[];
+    for (var i=0;i<4;i++) S.perLevel[i]={sec:0,stops:0,stopSec:0,warns:0,marks:0};
+    S.levelSince = now(); $("log").innerHTML = "";
+    logLine("기록을 지웠습니다");
+  };
+  $("export").onclick = function(){
+    var out = {
+      saved_at: new Date().toISOString(),
+      robot_ip: $("ip").value.trim(),
+      per_level: S.perLevel, level_now: S.level,
+      stops: S.stops, marks: S.marks, load_warns: S.loadWarns,
+      samples: S.samples, events: S.events
+    };
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(out,null,1)], {type:"application/json"}));
+    a.download = "robot_monitor_" + new Date().toISOString().replace(/[:.]/g,"-") + ".json";
+    a.click();
+  };
+
+  if (location.protocol === "https:") $("httpsWarn").hidden = false;
+  $("winSec").textContent = WIN_SEC;
+  setInterval(paint, 250);
+  paint();
+  connect();
+})();
+</script>
+</html>
