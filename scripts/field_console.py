@@ -147,10 +147,19 @@ def new_job(title: str) -> Job:
 
 
 def run_cmd(job: Job, args: list[str], cwd: str | None = None) -> int:
-    """명령 하나를 돌리며 출력을 job 에 넣는다."""
+    """명령 하나를 돌리며 출력을 job 에 넣는다.
+
+    ★ 파이썬을 부를 때는 -u 를 붙인다.
+      파이프로 받으면 블록 버퍼링이 걸려서, 스크립트가 출력해도 화면에
+      한참 뒤에야(또는 끝나야) 나온다. drive_log 는 print 96곳 중 22곳만
+      flush=True 라 -u 가 없으면 "멈춘 것처럼" 보인다.
+    """
+    if args and args[0].lower().endswith("python.exe") and "-u" not in args:
+        args = [args[0], "-u"] + args[1:]
+    env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="cp949")
     try:
         p = subprocess.Popen(
-            args, cwd=cwd or ROOT,
+            args, cwd=cwd or ROOT, env=env,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
@@ -187,10 +196,13 @@ def job_netcheck(job: Job) -> None:
     ]
     summary = []
     for i, (name, ip, fn) in enumerate(targets, 1):
-        job.put("[%d/5] %s (%s) ping 20회 ..." % (i, name, ip))
+        job.put("[%d/5] %s (%s) ping 20회 … (응답이 없으면 최대 25초)" % (i, name, ip))
         try:
+            # -w 1000: 한 번에 1초까지만 기다린다.
+            # 기본값(4초)이면 응답 없을 때 한 대상에 80초, 세 대상이면 4분이 넘는다.
+            # 현장에서 정상 응답하면 이 값은 영향이 없다.
             out = dec(subprocess.run(
-                ["ping", ip, "-n", "20"], capture_output=True,
+                ["ping", ip, "-n", "20", "-w", "1000"], capture_output=True, timeout=60,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             ).stdout)
         except Exception as e:
@@ -209,7 +221,8 @@ def job_netcheck(job: Job) -> None:
     job.put("[4/5] 경로 추적 ...")
     try:
         out = dec(subprocess.run(
-            ["tracert", "-d", "-h", "10", CFG["ROBOT_IP"]], capture_output=True, timeout=180,
+            ["tracert", "-d", "-h", "10", "-w", "1000", CFG["ROBOT_IP"]],
+            capture_output=True, timeout=120,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         ).stdout)
     except Exception as e:
@@ -266,19 +279,60 @@ def job_probe(job: Job) -> None:
 
 
 def job_record(job: Job, cycles: int) -> None:
+    """drive_log 를 **새 콘솔 창**으로 띄운다.
+
+    ★ 왜 창을 따로 여는가
+      drive_log 의 스페이스바 마킹은 msvcrt.kbhit() 를 쓴다. 이건 **콘솔 입력**이라
+      창 없이(CREATE_NO_WINDOW) 띄우면 아예 동작하지 않는다. 그러면
+      events.jsonl 에 kind:"mark" 가 안 남고 summary.md 의
+      "★ 사용자가 표시한 멈칫" 이 0건이 된다 — 반응지연 보정(t_onset)과
+      마크 시점 스냅샷도 같이 사라진다.
+
+      그래서 기록은 **검증된 기존 경로 그대로** 새 창에서 돌리고,
+      이 화면은 진행 상황과 [멈칫] 버튼(폰용 백업)만 맡는다.
+    """
     dl = os.path.join(ROOT, "scripts", "drive_log.py")
     if not os.path.exists(dl):
         job.put("[없음] scripts/drive_log.py 가 없습니다")
         return
     blog = os.path.join(ROOT, "BackEnd", "_logs", "backend.log")
-    job.put("사이클 %d회 기록 시작" % cycles)
-    job.put("불편한 정지를 볼 때마다 위의 [멈칫] 버튼을 누르세요")
-    job.put("-" * 52)
-    args = [PY, dl, "--ip", CFG["ROBOT_IP"], "--cycles", str(cycles),
+    args = [PY, "-u", dl, "--ip", CFG["ROBOT_IP"], "--cycles", str(cycles),
             "--server", CFG["BACKEND"]]
     if os.path.exists(blog):
         args += ["--backend-log", blog]
-    run_cmd(job, args)
+
+    job.put("사이클 %d회 — 새 창에서 drive_log 가 실행됩니다" % cycles)
+    job.put("")
+    job.put("  [그 창]  스페이스바 → drive_log 기록에 직접 들어갑니다 (권장)")
+    job.put("  [이 화면] 위의 [멈칫] 버튼 → 폰에서 누를 때. 별도 파일로 남습니다")
+    job.put("")
+    job.put("  둘 다 같은 시계(epoch)를 쓰므로 나중에 합칠 수 있습니다.")
+    job.put("-" * 52)
+
+    try:
+        p = subprocess.Popen(
+            args, cwd=ROOT,
+            env=dict(os.environ, PYTHONUNBUFFERED="1"),
+            creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
+        )
+    except Exception as e:
+        job.put("[실행 실패] %s" % e)
+        return
+    job.proc = p
+
+    t0 = time.time()
+    last = 0
+    while p.poll() is None:
+        time.sleep(1.0)
+        el = int(time.time() - t0)
+        if el - last >= 30:                 # 30초마다 살아있음을 알린다
+            last = el
+            job.put("  기록 중… %d분 %02d초 (멈칫 표시 %d건)"
+                    % (el // 60, el % 60, len(MARKS)))
+    job.put("")
+    job.put("drive_log 종료 (코드 %s)" % p.returncode)
+    job.put("결과는 _logs 안에 사이클 폴더로 저장됐습니다.")
+    job.put("[6] 로그 수집 으로 묶어서 챙기세요.")
 
 
 # ── 3) 멈칫 표시 ────────────────────────────────────────────────
@@ -330,6 +384,9 @@ def job_collect(job: Job) -> None:
 
 # ── 5) 상태 ─────────────────────────────────────────────────────
 def get_status() -> dict:
+    # config.bat 을 고쳤을 때 [새로고침]만으로 반영되게 매번 다시 읽는다.
+    # (현장에서 로봇 IP 가 다르면 콘솔을 재시작해야 하는 게 번거롭다)
+    load_config()
     st: dict = {"time": datetime.now().strftime("%H:%M:%S")}
 
     def sh(args):
@@ -418,6 +475,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
         p = self.path.split("?")[0]
         if p == "/":
             self._send(200, HTML.encode("utf-8"), "text/html; charset=utf-8")
+        elif p == "/monitor":
+            # tools/robot_monitor.html 을 이 서버가 직접 서빙한다.
+            # file:// 로 열면 폰에서는 아예 못 열고, 브라우저마다 동작이 갈린다.
+            mp = os.path.join(ROOT, "tools", "robot_monitor.html")
+            if os.path.exists(mp):
+                self._send(200, open(mp, "rb").read(), "text/html; charset=utf-8")
+            else:
+                msg = ("tools/robot_monitor.html 이 없습니다.\n\n"
+                       "받는 법:\n"
+                       "  git fetch origin\n"
+                       "  git checkout origin/feature/lg_luke -- tools/robot_monitor.html\n")
+                self._send(404, msg.encode("utf-8"), "text/plain; charset=utf-8")
         elif p == "/api/status":
             self._json(get_status())
         elif p.startswith("/api/job/"):
@@ -621,8 +690,14 @@ td:first-child{color:var(--ink-2);width:120px;white-space:nowrap}
   <div class="card">
     <h2><span class="num">4</span> 주행 기록</h2>
     <p class="hint">자동 감지는 "속도가 떨어졌다"만 압니다.
-      <b>어느 게 불편한 정지인지는 사람만 압니다.</b>
-      로봇을 따라다니며 아래 버튼을 누르세요 — 같은 망의 폰으로 이 화면을 열면 됩니다.</p>
+      <b>어느 게 불편한 정지인지는 사람만 압니다.</b></p>
+    <p class="hint">[기록 시작]을 누르면 <b>검은 창이 하나 더 열립니다.</b> 그게 기록기입니다.
+      창을 닫지 마세요.</p>
+    <p class="hint">멈칫을 표시하는 방법이 둘입니다 —
+      <b>그 검은 창에서 스페이스바</b>(권장. 기록기 안에 직접 들어가고
+      반응지연 보정과 스냅샷까지 붙습니다),
+      또는 <b>아래 [멈칫] 버튼</b>(폰에서 누를 때. 별도 파일로 남습니다).
+      둘 다 같은 시계를 쓰므로 나중에 합칠 수 있습니다.</p>
     <div class="row" style="margin-bottom:12px">
       <span class="hint" style="margin:0">사이클</span>
       <input type="number" id="cycles" value="2" min="1" max="20">
@@ -630,6 +705,8 @@ td:first-child{color:var(--ink-2);width:120px;white-space:nowrap}
       <button class="danger" id="stop-record" hidden>기록 중지</button>
     </div>
     <button class="big mark" id="mark">멈칫 &mdash; 지금 불편하게 섰다</button>
+    <p class="hint" style="margin:10px 0 0">서버PC 앞이면 검은 창의 스페이스바가 낫습니다.
+      이 버튼은 <b>폰으로 로봇을 따라다닐 때</b> 쓰세요.</p>
     <div class="marks" id="marks"></div>
     <pre id="out-record" hidden></pre>
   </div>
@@ -762,8 +839,7 @@ $('#mark').onclick = async ()=>{
 };
 
 $('#monitor').onclick = ()=>{
-  window.open('/../tools/robot_monitor.html', '_blank');
-  alert('브라우저가 막으면 tools\\robot_monitor.html 을 직접 여세요.');
+  window.open('/monitor', '_blank');
 };
 
 $('#refresh').onclick = loadStatus;

@@ -2017,7 +2017,11 @@ def probe(a):
             time.sleep(0.04)
 
     _plog = []
-    _real_print = print
+    # ★ builtins 에서 가져와야 한다. 그냥 `_real_print = print` 로 쓰면
+    #   아래 `def print` 때문에 print 가 이 함수의 지역변수로 잡혀서
+    #   UnboundLocalError 가 난다 — --probe 가 100% 실패했다 (2026-09-22 발견).
+    import builtins
+    _real_print = builtins.print
 
     def print(*args, **kw):       # noqa: A001 - 이 함수 안에서만 가린다
         s = " ".join(str(x) for x in args)
