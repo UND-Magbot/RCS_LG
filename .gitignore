@@ -1,0 +1,42 @@
+# ── 의존성 · 빌드 산출물 ──
+BackEnd/venv/
+BackEnd/venv_old/
+frontend/node_modules/
+frontend/.next/
+frontend/.next_old_asus/
+frontend/out/
+BackEnd/web/
+__pycache__/
+*.pyc
+
+# ── 서버별 설정 ──
+BackEnd/config.env
+frontend/.env.local
+
+# ── 운영 데이터 ──
+_db/
+*.sql
+
+# ── 맵핑 산출물 (DB엔 경로만 저장) ──
+BackEnd/static/maps/
+
+# ── 로그 ──
+BackEnd/_logs/
+_logs/
+로그수집_*.zip
+
+# ── 백업본 ──
+_backup/
+*.bak
+*.bak_*
+
+# ── 안드로이드 빌드 ──
+TabletApp/.gradle/
+TabletApp/app/build/
+TabletApp/build/
+TabletApp/local.properties
+
+# ── 현장작업 산출물 ──
+현장작업/사용폴더경로.txt
+현장작업/차이_*.txt
+현장작업/현장수정분_*.patch

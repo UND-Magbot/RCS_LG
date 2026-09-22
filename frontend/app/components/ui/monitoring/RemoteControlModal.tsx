@@ -1,0 +1,360 @@
+"use client";
+
+import { useState, useCallback, useRef, useEffect } from "react";
+
+// 비워두면 상대경로("/api/...") — 화면을 준 서버에게 그대로 물어본다.
+// localhost 를 폴백으로 두면 다른 PC 에서 열었을 때 원격제어만 조용히 실패한다.
+const API = process.env.NEXT_PUBLIC_API_URL || "";
+
+interface RemoteControlModalProps {
+  robotName: string;
+  robotIp: string;
+  onClose: () => void;
+}
+
+export function RemoteControlModal({ robotName, robotIp, onClose }: RemoteControlModalProps) {
+  const [status, setStatus] = useState("");
+  const [isRemoteMode, setIsRemoteMode] = useState(false);
+  // 일시정지 상태 — 서버 메모리 플래그를 폴링해서 [작업 정지]/[재개] 를 바꿔 보여준다
+  const [isPaused, setIsPaused] = useState(false);
+  const pausePollRef = useRef<NodeJS.Timeout | null>(null);
+  const movingRef = useRef(false);
+  const intervalRef = useRef<NodeJS.Timeout | null>(null);
+
+  const showStatus = (msg: string) => {
+    setStatus(msg);
+    setTimeout(() => setStatus(""), 3000);
+  };
+
+  const setControlMode = useCallback(async (mode: string) => {
+    try {
+      const res = await fetch(`${API}/api/robots/remote/control-mode/${robotIp}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode }),
+      });
+      if (res.ok) {
+        setIsRemoteMode(mode === "remote");
+        showStatus(mode === "remote" ? "원격 모드 활성화" : "자동 모드 복귀");
+      } else {
+        showStatus("모드 전환 실패");
+      }
+    } catch {
+      showStatus("연결 실패");
+    }
+  }, [robotIp]);
+
+  const sendTwist = useCallback(async (lv: number, av: number) => {
+    try {
+      await fetch(`${API}/api/robots/remote/twist/${robotIp}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ linear_velocity: lv, angular_velocity: av }),
+      });
+    } catch {}
+  }, [robotIp]);
+
+  const startMove = useCallback((lv: number, av: number) => {
+    movingRef.current = true;
+    sendTwist(lv, av);
+    intervalRef.current = setInterval(() => {
+      if (movingRef.current) sendTwist(lv, av);
+    }, 300);
+  }, [sendTwist]);
+
+  const stopMove = useCallback(() => {
+    movingRef.current = false;
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+    sendTwist(0, 0);
+  }, [sendTwist]);
+
+  const fetchPaused = useCallback(async () => {
+    try {
+      const res = await fetch(`${API}/api/robots/remote/paused/${robotIp}`);
+      if (res.ok) setIsPaused(!!(await res.json()).paused);
+    } catch {}
+  }, [robotIp]);
+
+  // 작업 정지 = 일시정지. 현재 이동만 취소하고 그 자리에 세운다.
+  // 잭 상태와 배차 세션은 건드리지 않는다 — [재개] 하면 하던 이동을 그대로 다시 시도한다.
+  // (예전에는 stop-all 을 불러 잭다운까지 했다. 랙을 든 채였으면 그 자리에 내려놓아
+  //  통로에 랙이 남고 되돌리기 어려웠다 → 2026-08-19 변경)
+  const pauseJob = useCallback(async () => {
+    try {
+      const res = await fetch(`${API}/api/robots/remote/pause/${robotIp}`, { method: "POST" });
+      if (res.ok) {
+        setIsPaused(true);
+        showStatus("일시정지 — [재개] 를 누르면 하던 작업을 이어서 진행합니다");
+      } else {
+        showStatus("일시정지 실패");
+      }
+    } catch {
+      showStatus("연결 실패");
+    }
+  }, [robotIp]);
+
+  const resumeJob = useCallback(async () => {
+    try {
+      const res = await fetch(`${API}/api/robots/remote/resume/${robotIp}`, { method: "POST" });
+      if (res.ok) {
+        setIsPaused(false);
+        showStatus("재개 — 하던 이동을 다시 시도합니다");
+      } else {
+        showStatus("재개 실패");
+      }
+    } catch {
+      showStatus("연결 실패");
+    }
+  }, [robotIp]);
+
+  const cancelMove = useCallback(async () => {
+    try {
+      const res = await fetch(`${API}/api/robots/remote/cancel-move/${robotIp}`, { method: "POST" });
+      showStatus(res.ok ? "이동 취소 완료" : "이동 취소 실패");
+    } catch {
+      showStatus("연결 실패");
+    }
+  }, [robotIp]);
+
+  const jackControl = useCallback(async (action: string) => {
+    try {
+      const res = await fetch(`${API}/api/robots/remote/jack/${robotIp}/${action}`, { method: "POST" });
+      showStatus(res.ok ? "명령 전송 완료" : "명령 실패");
+    } catch {
+      showStatus("연결 실패");
+    }
+  }, [robotIp]);
+
+  const dockToCharger = useCallback(async () => {
+    try {
+      const res = await fetch(`${API}/api/robots/remote/dock/${robotIp}`, { method: "POST" });
+      showStatus(res.ok ? "충전소 복귀 명령 전송" : "충전소 복귀 실패");
+    } catch {
+      showStatus("연결 실패");
+    }
+  }, [robotIp]);
+
+  const returnToStandby = useCallback(async () => {
+    try {
+      const res = await fetch(`${API}/api/robots/remote/return-to-standby/${robotIp}`, { method: "POST" });
+      showStatus(res.ok ? "대기장소 복귀 시작" : "대기장소 복귀 실패");
+    } catch {
+      showStatus("연결 실패");
+    }
+  }, [robotIp]);
+
+  const relocalize = useCallback(async () => {
+    try {
+      const res = await fetch(`${API}/api/robots/remote/relocalize/${robotIp}`, { method: "POST" });
+      showStatus(res.ok ? "시스템 재시작 중... (약 90초)" : "시스템 재시작 실패");
+    } catch {
+      showStatus("연결 실패");
+    }
+  }, [robotIp]);
+
+  const clearDispatch = useCallback(async () => {
+    if (!window.confirm("이 로봇의 실행 중인 배차 작업을 삭제할까요?\n(로봇은 움직이지 않고 작업 기록만 정리됩니다)")) return;
+    try {
+      const res = await fetch(`${API}/api/robots/remote/clear-dispatch/${robotIp}`, { method: "POST" });
+      showStatus(res.ok ? "배차 작업을 정리했습니다" : "정리 실패");
+    } catch {
+      showStatus("연결 실패");
+    }
+  }, [robotIp]);
+
+  // 일시정지 상태 폴링 — 다른 화면(콘솔)에서 정지시켜도 여기 버튼이 따라 바뀐다
+  useEffect(() => {
+    fetchPaused();
+    pausePollRef.current = setInterval(fetchPaused, 3000);
+    return () => {
+      if (pausePollRef.current) clearInterval(pausePollRef.current);
+      pausePollRef.current = null;
+    };
+  }, [fetchPaused]);
+
+  useEffect(() => {
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+      // 유지하던 조종용 WebSocket 연결 정리 (유휴 연결 누적 방지)
+      fetch(`${API}/api/robots/remote/twist-close/${robotIp}`, { method: "POST" }).catch(() => {});
+    };
+  }, [robotIp]);
+
+  const handleClose = () => {
+    if (isRemoteMode) {
+      stopMove();
+      setControlMode("auto");
+    }
+    onClose();
+  };
+
+  return (
+    <div className="remote-modal-backdrop" onClick={handleClose}>
+      <div className="remote-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="remote-modal__header">
+          <h3>원격 제어 — {robotName}</h3>
+          <button className="remote-modal__close" onClick={handleClose}>✕</button>
+        </div>
+
+        <div className="remote-modal__body">
+          {/* 모드 전환 */}
+          <div className="remote-modal__section">
+            <div className="remote-modal__mode-btns">
+              <button
+                className={`remote-modal__mode-btn${!isRemoteMode ? " remote-modal__mode-btn--active" : ""}`}
+                onClick={() => setControlMode("auto")}
+                disabled={!isRemoteMode}
+              >자동 모드</button>
+              <button
+                className={`remote-modal__mode-btn${isRemoteMode ? " remote-modal__mode-btn--active" : ""}`}
+                onClick={() => setControlMode("remote")}
+                disabled={isRemoteMode}
+              >원격 모드</button>
+            </div>
+          </div>
+
+          {!isRemoteMode ? (
+            <>
+              {/* 자동 모드: 이동 정지 + 충전소 복귀 */}
+              <div className="remote-modal__section">
+                <h4>이동 제어</h4>
+                <div className="remote-modal__jack-btns">
+                  {isPaused ? (
+                    <button
+                      className="remote-modal__action-btn"
+                      style={{ borderColor: "rgba(61,224,164,0.5)", color: "var(--color-success, #3de0a4)" }}
+                      onClick={resumeJob}
+                    >재개 (이어서 진행)</button>
+                  ) : (
+                    <button
+                      className="remote-modal__action-btn"
+                      style={{ borderColor: "rgba(245,101,101,0.4)", color: "var(--color-error)" }}
+                      onClick={pauseJob}
+                    >작업 정지 (일시정지)</button>
+                  )}
+                  <button
+                    className="remote-modal__action-btn"
+                    style={{ borderColor: "rgba(54,223,200,0.4)", color: "var(--color-info)" }}
+                    onClick={dockToCharger}
+                  >충전소 복귀</button>
+                  <button
+                    className="remote-modal__action-btn"
+                    style={{ borderColor: "rgba(100,149,237,0.4)", color: "#6495ed" }}
+                    onClick={returnToStandby}
+                  >대기장소 복귀</button>
+                  <button
+                    className="remote-modal__action-btn"
+                    style={{ borderColor: "rgba(160,160,160,0.4)", color: "var(--color-text-secondary)" }}
+                    onClick={relocalize}
+                  >시스템 재시작</button>
+                </div>
+              </div>
+
+              {/* 자동 모드: 잭 제어 */}
+              <div className="remote-modal__section">
+                <h4>잭 제어</h4>
+                <div className="remote-modal__jack-btns">
+                  <button
+                    className="remote-modal__action-btn remote-modal__action-btn--up"
+                    onClick={() => jackControl("jack_up")}
+                  >잭 업</button>
+                  <button
+                    className="remote-modal__action-btn remote-modal__action-btn--down"
+                    onClick={() => jackControl("jack_down")}
+                  >잭 다운</button>
+                </div>
+              </div>
+            </>
+          ) : (
+            <>
+              {/* 원격 모드: 방향 제어 */}
+              <div className="remote-modal__section">
+                <h4>방향 제어</h4>
+                <div className="remote-modal__dpad">
+                  <div className="remote-modal__dpad-row">
+                    <div className="remote-modal__dpad-spacer" />
+                    <button
+                      className="remote-modal__dpad-btn"
+                      onMouseDown={() => startMove(0.3, 0)}
+                      onMouseUp={stopMove}
+                      onMouseLeave={stopMove}
+                      onTouchStart={() => startMove(0.3, 0)}
+                      onTouchEnd={stopMove}
+                    >▲<br /><span>전진</span></button>
+                    <div className="remote-modal__dpad-spacer" />
+                  </div>
+                  <div className="remote-modal__dpad-row">
+                    <button
+                      className="remote-modal__dpad-btn"
+                      onMouseDown={() => startMove(0, 0.5)}
+                      onMouseUp={stopMove}
+                      onMouseLeave={stopMove}
+                      onTouchStart={() => startMove(0, 0.5)}
+                      onTouchEnd={stopMove}
+                    >◀<br /><span>좌회전</span></button>
+                    <button
+                      className="remote-modal__dpad-btn remote-modal__dpad-btn--stop"
+                      onClick={stopMove}
+                    >■<br /><span>정지</span></button>
+                    <button
+                      className="remote-modal__dpad-btn"
+                      onMouseDown={() => startMove(0, -0.5)}
+                      onMouseUp={stopMove}
+                      onMouseLeave={stopMove}
+                      onTouchStart={() => startMove(0, -0.5)}
+                      onTouchEnd={stopMove}
+                    >▶<br /><span>우회전</span></button>
+                  </div>
+                  <div className="remote-modal__dpad-row">
+                    <div className="remote-modal__dpad-spacer" />
+                    <button
+                      className="remote-modal__dpad-btn"
+                      onMouseDown={() => startMove(-0.2, 0)}
+                      onMouseUp={stopMove}
+                      onMouseLeave={stopMove}
+                      onTouchStart={() => startMove(-0.2, 0)}
+                      onTouchEnd={stopMove}
+                    >▼<br /><span>후진</span></button>
+                    <div className="remote-modal__dpad-spacer" />
+                  </div>
+                </div>
+              </div>
+
+              {/* 원격 모드: 잭 제어 */}
+              <div className="remote-modal__section">
+                <h4>잭 제어</h4>
+                <div className="remote-modal__jack-btns">
+                  <button
+                    className="remote-modal__action-btn remote-modal__action-btn--up"
+                    onClick={() => jackControl("jack_up")}
+                  >잭 업</button>
+                  <button
+                    className="remote-modal__action-btn remote-modal__action-btn--down"
+                    onClick={() => jackControl("jack_down")}
+                  >잭 다운</button>
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* 배차 작업 강제 정리 (로봇 이동 없음) — 자동/원격 공통 */}
+          <div className="remote-modal__section">
+            <h4>배차 작업</h4>
+            <button
+              className="remote-modal__action-btn"
+              style={{ borderColor: "rgba(245,101,101,0.5)", color: "var(--color-error)", width: "100%" }}
+              onClick={clearDispatch}
+            >작업 강제 종료 (이동 없이 정리)</button>
+          </div>
+        </div>
+
+        {status && (
+          <div className="remote-modal__status">{status}</div>
+        )}
+      </div>
+    </div>
+  );
+}

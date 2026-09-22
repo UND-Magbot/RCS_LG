@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "disable_existing_loggers": false,
+  "formatters": {
+    "std": {
+      "format": "%(asctime)s  %(levelname)-7s  %(name)s  %(message)s",
+      "datefmt": "%m-%d %H:%M:%S"
+    }
+  },
+  "handlers": {
+    "console": {
+      "class": "logging.StreamHandler",
+      "formatter": "std",
+      "stream": "ext://sys.stderr"
+    },
+    "file": {
+      "class": "logging.handlers.RotatingFileHandler",
+      "formatter": "std",
+      "filename": "_logs/backend.log",
+      "maxBytes": 10485760,
+      "backupCount": 5,
+      "encoding": "utf-8"
+    }
+  },
+  "root": {
+    "level": "INFO",
+    "handlers": [
+      "console",
+      "file"
+    ]
+  },
+  "loggers": {
+    "uvicorn": {
+      "handlers": [
+        "console",
+        "file"
+      ],
+      "level": "INFO",
+      "propagate": false
+    },
+    "uvicorn.error": {
+      "handlers": [
+        "console",
+        "file"
+      ],
+      "level": "WARNING",
+      "propagate": false
+    },
+    "uvicorn.access": {
+      "handlers": [
+        "console",
+        "file"
+      ],
+      "level": "INFO",
+      "propagate": false
+    },
+    "watchfiles": {
+      "handlers": [
+        "console"
+      ],
+      "level": "WARNING",
+      "propagate": false
+    }
+  }
+}

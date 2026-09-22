@@ -1,0 +1,121 @@
+RCS_LG 패치 — 2026-09-10  (로그 · 진단)   [3차 · 문서 대조 후 전면 재작성]
+
+★ 먼저 읽어주세요
+  이 zip 은 **로그 남기기 + 진단 도구** 만 담았습니다.
+  주행 로직(진입점 -1 규약 · 접근점 생략)과 오디오(음원 증폭 · mode 볼륨) 는
+  **RCS_LG_패치_20260909_2.zip** 에 있습니다. 아직 안 넣으셨다면 두 개를 같이
+  적용하세요. 서로 겹치는 파일은 없습니다.
+
+
+[적용]
+  1. 압축 해제 -> BackEnd/ 와 scripts/ 를 서버의 같은 경로에 덮어쓰기
+  2. 인터넷 되는 곳에서 한 번만:
+        BackEndenv\Scripts\python.exe -m pip install pillow numpy
+  3. 서버시작_0828.bat 로 서버 재시작
+
+
+[1] 백엔드 파일 로그  ·  app/main.py
+
+  전 : basicConfig 에 handlers 가 없어 콘솔로만 나갔다. 런처가 별도 창을 띄우는
+       구조라 창을 닫으면 로그가 통째로 사라졌고, 현장에서 문제가 나도
+       [safety]/[route] 로그를 볼 수 없었다.
+  후 : 콘솔 + 파일 동시 기록.
+        BackEnd/_logs/backend.log
+        10 MB 차면 .1 ~ .3 으로 밀리고 그 이상 자동 삭제 (최대 약 40 MB)
+  ※ 콘솔 출력은 그대로입니다. 파일에도 같이 남을 뿐입니다.
+
+
+[2] 진단 기록기  ·  scripts/run_probe.py   **읽기 전용 — 명령을 보내지 않습니다**
+
+  실행
+     BackEndenv\Scripts\python.exe scriptsun_probe.py ^
+         --robot <로봇IP> --server 127.0.0.1:8002
+
+     --server 서버를 다른 PC 에서 볼 때만 바꿉니다 (예: 192.168.39.110:8002)
+     --sec    기록 시간(초). 기본 0 = 무한
+     --half   폴백 반폭. 로봇이 /robot_model 을 보내면 그 실측값을 쓰므로 보통 불필요
+
+  켜 둔 채로 R1·R2 호출을 평소대로 누르시면 됩니다. Ctrl+C 로 종료.
+
+  저장 위치 (실행 위치와 무관 · 저장소 기준 고정)
+     <저장소>/_logs/run_<날짜_시각>/
+        summary.txt    ★ 이것만 보내주시면 됩니다
+        timeline.txt · events.csv · raw.jsonl · costmap/*.png
+
+
+[3] 이번 판에서 새로 들어간 것 — 문서 원문 대조로 찾은 필드들
+
+  · expanded_footprint      로봇이 **회피에 실제로 쓰는 크기**.
+                            footprint 와의 차이가 곧 footprint_expansion 이라,
+                            지금 규명 중인 '옆 여유' 문제의 답이 바로 나옵니다.
+                            요약에 "-> footprint_expansion = 좌우 N cm" 로 찍힙니다.
+  · stuck_state             로봇 스스로 '막혔다'(move_stucked) 고 판단했는지
+  · wheel_slipping          바퀴 미끄러짐
+  · lidar_matched           라이다가 맵과 매칭됐는지 (위치추정 실패 판별)
+  · /jack_state             progress(0=내림/1=올림) · weight(적재 하중)
+                            -> 랙을 실었는지, 하중이 얼마인지
+  · fail_reason_str         이동 실패 사유 문자열
+
+
+[4] summary.txt 실제 출력 예 (검증 시 나온 것)
+
+  진단 기록  20260909_231504
+  총 45초 · costmap 44장 · 정지 이벤트 2건
+  속도 판정 : 계산(위치 차분) - tracked_pose 에 speed 없음
+
+  [로봇이 보고한 크기]  <- 랙 적재 여부가 반영된 값이다
+     footprint           반폭 44.0 cm · 앞끝 44.0 cm
+     expanded_footprint  반폭 54.0 cm · 앞끝 54.0 cm   <- 회피에 실제로 쓰는 크기
+     -> footprint_expansion = 좌우 10.0 cm / 앞뒤 10.0 cm
+     width               88.0 cm
+
+  STOP #1   18.2s ~ 23.2s  (5.1초 정지)  샘플 5개
+     위치            (2.00, 2.00)  방향 0.0도
+     서버 zone       None     <- 서버는 관여 안 함
+     wheel_overload  True (4/5 회)  *** 과부하
+     wheel_slipping  True  *** 바퀴 미끄러짐
+     slam            reliable=모두 True quality 최저=8 lidar_matched=모두 True
+     costmap 정면    1.2 m (최소)   *** 장애물 있음
+     costmap 좌/우   0.7 / 0.55  (최소)
+     stuck_state     move_stucked  *** 로봇이 '막혔다' 고 판단
+     move            along_given_route / moving / fail=없음
+     jack            progress=1.0 weight=42.5
+     => 짚이는 것     바퀴 과부하, 바퀴 미끄러짐, 로봇 stuck(move_stucked), 정면 장애물 1.2 m
+
+  마지막 '=> 짚이는 것' 한 줄만 보시면 됩니다.
+
+
+[5] 필드명 근거
+
+  AutoXing WebSocket Reference 원문 + 실기 검증된 우리 코드
+  (services/safety_zone.py · scripts/robot_check.py) 를 대조해 확정했습니다.
+
+  ★ /tracked_pose 에는 speed 필드가 **없습니다**(문서 명시).
+    safety_zone.py 도 pos·ori 만 읽고 속도는 위치 차분으로 구합니다.
+    그래서 이 스크립트도 위치 차분으로 계산합니다. speed 가 오면 그걸 씁니다.
+    (제자리 회전은 정지로 세지 않습니다 — 병진만 보면 회전을 멈춤으로 오인합니다)
+
+
+[검증 상태]  — 가짜 AutoXing 로봇을 만들어 실제로 돌려 확인
+
+  문서 원문 필드로만 통신          통과 (speed 미전송 조건)
+  정지 이벤트 검출                 통과 — 5.0초 정지 2건
+  정지 '도중' 값 집계              통과 — 과부하 5/5 회
+  expanded_footprint 자동 산출     통과 — +10.0 cm 정확히
+  costmap 정면/좌/우 판독          통과 — 1.2 / 0.7 / 0.55 (심은 값과 일치)
+  stuck_state · wheel_slipping     통과
+  /jack_state 하중                 통과 — weight 42.5
+  서버 zone 폴링                   통과 — 실제 백엔드(8002)
+  백엔드 파일 로그                 통과 — 실제 출력이 backend.log 에 기록
+  py_compile / pyflakes            통과 (지적 0건)
+
+  ※ 남은 미검증 — 실제 로봇 하드웨어에서의 동작.
+    가짜 로봇은 문서 원문대로 만들었지만, 실기가 문서와 다를 가능성은 남습니다.
+    그래서 스크립트가 **로봇이 안 보낸 토픽을 요약에 적어줍니다**
+    ("로봇이 안 보낸 토픽: ..."). 그 줄이 있으면 알려주세요.
+
+
+[문제가 생기면 보내주실 것]
+  _logsun_<시각>\summary.txt
+  BackEnd\_logsackend.log              (같은 시간대)
+  _logsun_<시각>aw.jsonl             (필드가 비어 있을 때)

@@ -1,0 +1,22 @@
+{
+  "voice": {
+    "enabled": true,
+    "volume": 100,
+    "interval_sec": 6.0,
+    "stop_delay_sec": 3.0,
+    "audio_id": "3512069",
+    "url": "/static/audio/lg/01_moving.mp3",
+    "mode": 1,
+    "server_port": 8002,
+    "server_url": ""
+  },
+  "safety": {
+    "enabled": true,
+    "yellow_m": 3.0,
+    "red_m": 1.0,
+    "slow_speed": 0.15,
+    "band_half_w": 0.5,
+    "near_min": 0.45,
+    "clear_hold_sec": 2.0
+  }
+}

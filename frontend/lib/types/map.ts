@@ -1,0 +1,184 @@
+export type MapTool = "select" | "point" | "jackPoint" | "line" | "curveLine" | "polygon" | "del" | "chargingPile" | "currentPos" | "currentPosJack" | "firewall" | "virtualwall";
+
+export type POIType = "waypoint" | "standby" | "charging" | "firewall" | "jack";
+
+export type RackSize = "S600" | "S300" | "LG" | "LG2";
+
+export type LoadType = "normal" | "heavy";
+
+export type LineDirection = "forward" | "backward" | "bidirectional";
+
+export type POI = {
+  id: string;
+  x: number;
+  y: number;
+  name: string;
+  type: POIType;
+  phoneNumber?: string;
+  angle?: number;
+  loadType?: LoadType;
+  robotSns?: string[];
+  address?: string;
+  dockingRadius?: number;
+  rackSize?: RackSize;
+};
+
+export type PathLine = {
+  id: string;
+  fromId: string;
+  toId: string;
+  direction: LineDirection;
+  lineType: "straight" | "curve" | "firewall";
+  controlPoints?: { x: number; y: number }[];
+};
+
+export type PolygonShape = {
+  id: string;
+  points: { x: number; y: number }[];
+  name: string;
+  shapeType?: "polygon" | "firewall";
+};
+
+export type ConnectedRobot = {
+  sn: string;
+  name: string;
+  ip: string;
+} | null;
+
+export type RobotPose = {
+  pos: [number, number];
+  ori: number;
+} | null;
+
+export type MapMeta = {
+  grid_origin_x: number;
+  grid_origin_y: number;
+  grid_resolution: number;
+} | null;
+
+export type MapCanvasProps = {
+  pois: POI[];
+  lines: PathLine[];
+  polygons: PolygonShape[];
+  activeTool: MapTool;
+  selectedPOI: string | null;
+  lineStartPOI: string | null;
+  zoom: number;
+  offset: { x: number; y: number };
+  rotation: number;
+  mapImageUrl: string | null;
+  robotPose?: RobotPose;
+  mapMeta?: MapMeta;
+  onCanvasClick: (x: number, y: number) => void;
+  onPOIClick: (id: string) => void;
+  onLineClick: (id: string) => void;
+  onPolygonClick: (id: string) => void;
+  onZoomChange: (zoom: number) => void;
+  onOffsetChange: (offset: { x: number; y: number }) => void;
+  onImageLoad?: (w: number, h: number) => void;
+  vwTempPoints?: { x: number; y: number }[];
+  /** 가상벽 오프셋 (SVG 픽셀). 미리보기를 실제 생성 위치에 그리기 위해 쓴다 */
+  vwOffsetPx?: number;
+  /** 가상벽 오프셋 방향 */
+  vwSide?: "left" | "right";
+  /** 캔버스 더블클릭 — 가상벽 그리기 종료 */
+  onCanvasDoubleClick?: () => void;
+  /** 통로 모드면 한 줄을 그려도 벽 2줄이 만들어진다 */
+  vwMode?: "line" | "corridor";
+  /** 통로 기준선이 '실제 벽'인지 '통로 중심'인지 */
+  vwBase?: "wall" | "center";
+  /** 각도 스냅 사용 여부 (미리보기에도 반영) */
+  vwAngleSnap?: boolean;
+  /** 통로 폭 (SVG 픽셀) */
+  vwWidthPx?: number;
+  /** 작업지점(R/J) 앞 벽을 자동으로 끊어 출입구를 낼지 */
+  vwAutoGap?: boolean;
+  /** 출입구 폭 (SVG 픽셀) */
+  vwGapPx?: number;
+};
+
+export type MapToolbarTopProps = {
+  onUndo: () => void;
+  onFullscreen: () => void;
+  isFullscreen: boolean;
+  /** 활성 도구 모드 (포인트/작업 포인트/가상벽/삭제 등) */
+  activeTool: MapTool;
+  /** 모드 전환 핸들러 */
+  onToolChange: (tool: MapTool) => void;
+  /** 즉시 실행 — 로봇 현재 위치에 충전소 POI 자동 생성 */
+  onChargingPile: () => void;
+  /** 즉시 실행 — 로봇 현재 위치에 일반 POI 자동 생성 */
+  onCurrentPos: () => void;
+};
+
+export type MapToolbarLeftProps = {
+  activeTool: MapTool;
+  onToolChange: (tool: MapTool) => void;
+};
+
+export type MapFloatingPanelProps = {
+  open: boolean;
+  onToggle: () => void;
+  onStartMapping: () => void;
+  onClearMap: () => void;
+};
+
+export type RobotConnectModalProps = {
+  open: boolean;
+  onClose: () => void;
+  onConnect: (sn: string, name: string, ip: string) => void;
+};
+
+export type POIEditPopupProps = {
+  poi: POI;
+  onUpdate: (id: string, data: Partial<POI>) => void;
+  onDelete: (id: string) => void;
+  onClose: () => void;
+  /** 유형이 바뀌면 자동으로 그 유형의 다음 이름(C1/J2/R3/W4) 으로 변경. */
+  getNextNameForType?: (type: POIType) => string;
+};
+
+export type LineDirectionPopupProps = {
+  position: { x: number; y: number };
+  onSelect: (direction: LineDirection) => void;
+  onCancel: () => void;
+};
+
+export type LineEditPopupProps = {
+  line: PathLine;
+  fromPoiName: string;
+  toPoiName: string;
+  onUpdate: (id: string, data: Partial<PathLine>) => void;
+  onDelete: (id: string) => void;
+  onClose: () => void;
+};
+
+export type MappingSetupModalProps = {
+  open: boolean;
+  businesses: { business_id: number; name: string }[];
+  onClose: () => void;
+  onConfirm: (businessId: number, areaId: string, areaName: string) => void;
+};
+
+export type MappingStatus = "idle" | "mapping" | "finished" | "cancelled";
+
+export type MappingModalProps = {
+  open: boolean;
+  businessId: number | null;
+  areaId: string;
+  areaName: string;
+  connectedRobot: ConnectedRobot;
+  onClose: () => void;
+  onMappingComplete?: () => void;
+};
+
+export type MapSyncModalProps = {
+  open: boolean;
+  onClose: () => void;
+  mappingId: number;
+  mapId: number;
+  areaName: string;
+  onSyncComplete?: () => void;
+  /** 툴바에서 어떤 버튼으로 열었는지 — "poi": overlay만(빠름) / "map": 맵 전체(재시작) */
+  mode?: "map" | "poi";
+};

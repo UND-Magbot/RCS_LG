@@ -1,0 +1,294 @@
+/* ─── Header ─── */
+.menu-perm__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.menu-perm__title {
+  margin: 0;
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+}
+
+/* ─── Action Buttons ─── */
+.menu-perm__action-btn--backup {
+  padding: var(--space-1) var(--space-3);
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-button);
+  color: var(--text-primary);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  transition: background var(--transition-base) var(--ease-default);
+}
+
+.menu-perm__action-btn--backup:hover {
+  background: var(--bg-hover);
+}
+
+.menu-perm__action-btn--backup:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ─── Panels ─── */
+.menu-perm__panels {
+  display: flex;
+  gap: var(--space-4);
+  flex: 1;
+  min-height: 0;
+}
+
+.menu-perm__panel {
+  flex: 1;
+  background: var(--bg-surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  min-height: 400px;
+}
+
+/* ─── PersonTree ─── */
+.person-tree {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  height: 100%;
+}
+
+.person-tree__title {
+  margin: 0;
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+}
+
+.person-tree__search {
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  color: var(--text-primary);
+  font-size: var(--font-size-sm);
+}
+
+.person-tree__search::placeholder {
+  color: var(--text-muted);
+}
+
+.person-tree__search:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px var(--focus-ring);
+}
+
+.person-tree__list {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.person-tree__group-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-2) var(--space-2);
+  background: none;
+  border: none;
+  color: var(--text-primary);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  border-radius: var(--radius-button);
+  transition: background var(--transition-base) var(--ease-default);
+}
+
+.person-tree__group-header:hover {
+  background: var(--bg-hover);
+}
+
+.person-tree__arrow {
+  transition: transform var(--transition-base) var(--ease-default);
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+.person-tree__arrow--expanded {
+  transform: rotate(90deg);
+}
+
+.person-tree__count {
+  margin-left: auto;
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+}
+
+.person-tree__users {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.person-tree__user {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-1) var(--space-3);
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+  border-radius: var(--radius-button);
+  transition: background var(--transition-base) var(--ease-default),
+    color var(--transition-base) var(--ease-default);
+}
+
+.person-tree__user:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.person-tree__user--selected {
+  background: var(--bg-active-indicator);
+  color: var(--color-primary);
+}
+
+.person-tree__login-id {
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+/* ─── MenuTree ─── */
+.menu-tree {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  height: 100%;
+}
+
+.menu-tree__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.menu-tree__save-btn {
+  padding: var(--space-1) var(--space-3);
+  background: var(--color-primary);
+  border: none;
+  border-radius: var(--radius-button);
+  color: var(--text-on-primary);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  transition: opacity var(--transition-base) var(--ease-default);
+}
+
+.menu-tree__save-btn:hover {
+  opacity: 0.9;
+}
+
+.menu-tree__save-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.menu-tree__title {
+  margin: 0;
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.menu-tree__user-label {
+  color: var(--color-primary);
+}
+
+.menu-tree__empty {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+  padding: var(--space-6) 0;
+  text-align: center;
+}
+
+.menu-tree__search {
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  color: var(--text-primary);
+  font-size: var(--font-size-sm);
+}
+
+.menu-tree__search::placeholder {
+  color: var(--text-muted);
+}
+
+.menu-tree__search:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px var(--focus-ring);
+}
+
+.menu-tree__list {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.menu-tree__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+  border-radius: var(--radius-button);
+  transition: background var(--transition-base) var(--ease-default);
+}
+
+.menu-tree__item:hover {
+  background: var(--bg-hover);
+}
+
+.menu-tree__item--parent {
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+  border-bottom: 1px solid var(--divider);
+  padding-bottom: var(--space-2);
+  margin-bottom: var(--space-1);
+}
+
+.menu-tree__item--child {
+  padding-left: calc(var(--space-3) + 16px);
+  color: var(--text-muted);
+  font-size: calc(var(--font-size-sm) - 1px);
+  border-left: 2px solid var(--divider);
+  margin-left: var(--space-3);
+}
+
+.menu-tree__checkbox {
+  accent-color: var(--color-primary);
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}

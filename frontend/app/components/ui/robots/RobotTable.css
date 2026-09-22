@@ -1,0 +1,204 @@
+.robot-table__wrapper {
+  background: var(--bg-surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  height: 600px;
+  overflow: hidden;
+}
+
+.robot-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+/* Column widths — SN | RobotName | Model | RunState | Online | Signal | Power | Enable | Operation */
+.robot-table col:nth-child(1) { width: 18%; } /* SN */
+.robot-table col:nth-child(2) { width: 14%; } /* RobotName */
+.robot-table col:nth-child(3) { width: 10%; } /* Model */
+.robot-table col:nth-child(4) { width: 12%; } /* RunState */
+.robot-table col:nth-child(5) { width: 9%; }  /* Online */
+.robot-table col:nth-child(6) { width: 11%; } /* Signal */
+.robot-table col:nth-child(7) { width: 10%; } /* Power */
+.robot-table col:nth-child(8) { width: 8%; }  /* Enable */
+.robot-table col:nth-child(9) { width: 8%; }  /* Operation */
+
+.robot-table thead {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.robot-table thead th {
+  background: var(--bg-table-header);
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: var(--letter-spacing-wide);
+  text-align: center;
+  padding: var(--space-3) var(--space-3);
+  white-space: nowrap;
+  border-bottom: 1px solid var(--border-table-header);
+}
+
+.robot-table thead th:first-child {
+  border-top-left-radius: var(--radius-card);
+}
+
+.robot-table thead th:last-child {
+  border-top-right-radius: var(--radius-card);
+}
+
+.robot-table tbody td {
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--font-size-md);
+  border-bottom: 1px solid var(--divider);
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  height: 53px;
+  vertical-align: middle;
+  text-align: center;
+}
+
+.robot-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.robot-table tbody tr:last-child td:first-child {
+  border-bottom-left-radius: var(--radius-card);
+}
+
+.robot-table tbody tr:last-child td:last-child {
+  border-bottom-right-radius: var(--radius-card);
+}
+
+.robot-table__row {
+  height: 53px;
+}
+
+/* Offline row */
+.robot-table__row--offline {
+  opacity: 0.5;
+}
+
+/* Name column */
+.robot-table__name {
+  font-weight: 600;
+}
+
+/* RunState styles */
+.robot-table__run-state--executing {
+  color: var(--color-primary);
+  font-weight: 700;
+}
+
+.robot-table__run-state--charging {
+  color: var(--color-info);
+}
+
+/* Online indicator */
+.robot-table__online--on {
+  color: var(--color-success);
+  font-weight: 600;
+}
+
+.robot-table__online--off {
+  color: var(--color-error);
+  font-weight: 600;
+}
+
+/* Muted text (N/A, dashes) */
+.robot-table__muted {
+  color: var(--text-muted);
+  cursor: default;
+}
+
+/* Power styles */
+.robot-table__power {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.robot-table__power--danger {
+  color: var(--color-error);
+  font-weight: 600;
+}
+
+/* Toggle switch (same pattern as DeviceInfoPopup) */
+.robot-table__toggle {
+  position: relative;
+  display: inline-block;
+  width: 38px;
+  height: 20px;
+  cursor: pointer;
+}
+
+.robot-table__toggle input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.robot-table__toggle-slider {
+  position: absolute;
+  inset: 0;
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  transition: background var(--transition-slow) var(--ease-default);
+}
+
+.robot-table__toggle-slider::before {
+  content: "";
+  position: absolute;
+  height: 14px;
+  width: 14px;
+  left: 2px;
+  bottom: 2px;
+  background: var(--text-muted);
+  border-radius: 50%;
+  transition: transform var(--transition-slow) var(--ease-default), background var(--transition-slow) var(--ease-default);
+}
+
+.robot-table__toggle input:checked + .robot-table__toggle-slider {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+.robot-table__toggle input:checked + .robot-table__toggle-slider::before {
+  transform: translateX(18px);
+  background: var(--text-on-primary);
+}
+
+.robot-table__toggle input:disabled + .robot-table__toggle-slider {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Info button */
+.robot-table__info-btn {
+  background: transparent;
+  border: 1px solid var(--color-primary);
+  border-radius: var(--radius-button);
+  color: var(--color-primary);
+  font-size: var(--font-size-sm);
+  padding: 4px 12px;
+  cursor: pointer;
+  transition: background var(--transition-base) var(--ease-default);
+}
+
+.robot-table__info-btn:hover {
+  background: var(--bg-primary-subtle);
+}
+
+/* Empty state */
+.robot-table__empty {
+  text-align: center;
+  color: var(--text-muted);
+  padding: var(--space-6) 0 !important;
+  font-size: var(--font-size-base);
+}

@@ -1,0 +1,1000 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>현장 세팅 체크리스트</title>
+<style>
+:root { color-scheme: light dark; }
+html, body { margin: 0; padding: 0; }
+img { max-width: 100%; }
+
+  :root {
+    --bg:        #EEF1F2;
+    --surface:   #FFFFFF;
+    --surface-2: #E4E9EA;
+    --ink:       #141A1D;
+    --ink-2:     #3F4B50;
+    --muted:     #6B7A80;
+    --line:      #C6D0D3;
+    --line-2:    #9FADB2;
+    --server:    #0E6E72;
+    --robot:     #A8541A;
+    --ok:        #12735A;
+    --blocked:   #B0242C;
+    --warn:      #8A6A08;
+    --chip-bg:   #DCE3E5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg:        #101618;
+      --surface:   #182023;
+      --surface-2: #1F292C;
+      --ink:       #E6EDEF;
+      --ink-2:     #B4C2C6;
+      --muted:     #84969C;
+      --line:      #2E3B3F;
+      --line-2:    #4A5C61;
+      --server:    #4FC3C7;
+      --robot:     #E8A166;
+      --ok:        #4FC59A;
+      --blocked:   #F0787F;
+      --warn:      #D9B23F;
+      --chip-bg:   #243034;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg:        #101618;
+    --surface:   #182023;
+    --surface-2: #1F292C;
+    --ink:       #E6EDEF;
+    --ink-2:     #B4C2C6;
+    --muted:     #84969C;
+    --line:      #2E3B3F;
+    --line-2:    #4A5C61;
+    --server:    #4FC3C7;
+    --robot:     #E8A166;
+    --ok:        #4FC59A;
+    --blocked:   #F0787F;
+    --warn:      #D9B23F;
+    --chip-bg:   #243034;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Malgun Gothic",
+                 "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+    font-size: 16px;
+    line-height: 1.7;
+    margin: 0;
+    padding: 0 20px 96px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 980px; margin: 0 auto; }
+
+  code, .mono, td.mono, .ip {
+    font-family: ui-monospace, "Cascadia Mono", Consolas, "SFMono-Regular",
+                 "D2Coding", monospace;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ── 헤더 ─────────────────────────────── */
+  header {
+    padding: 64px 0 40px;
+    border-bottom: 2px solid var(--ink);
+    margin-bottom: 48px;
+  }
+  .eyebrow {
+    font-size: 12px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 600;
+    margin: 0 0 14px;
+  }
+  h1 {
+    font-size: clamp(30px, 5vw, 46px);
+    line-height: 1.15;
+    letter-spacing: -0.025em;
+    font-weight: 800;
+    margin: 0 0 18px;
+    text-wrap: balance;
+  }
+  .lede {
+    font-size: 17px;
+    color: var(--ink-2);
+    max-width: 62ch;
+    margin: 0;
+  }
+  .meta-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 20px;
+    margin-top: 26px;
+    font-size: 13px;
+    color: var(--muted);
+  }
+  .meta-row span { display: inline-flex; gap: 7px; align-items: baseline; }
+  .meta-row b { color: var(--ink-2); font-weight: 600; }
+
+  /* ── 섹션 ─────────────────────────────── */
+  section { margin: 0 0 64px; }
+  h2 {
+    font-size: 13px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 700;
+    margin: 0 0 10px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--line);
+  }
+  h3 {
+    font-size: 22px;
+    letter-spacing: -0.015em;
+    font-weight: 700;
+    margin: 0 0 12px;
+    text-wrap: balance;
+  }
+  h4 {
+    font-size: 16px;
+    font-weight: 700;
+    margin: 28px 0 8px;
+  }
+  p { margin: 0 0 14px; max-width: 68ch; }
+  .dim { color: var(--ink-2); }
+
+  /* ── 도식 ─────────────────────────────── */
+  figure {
+    margin: 26px 0 8px;
+    padding: 22px 20px 16px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    overflow-x: auto;
+  }
+  figure svg { display: block; width: 100%; min-width: 640px; height: auto; }
+  figcaption {
+    margin-top: 16px;
+    padding-top: 12px;
+    border-top: 1px solid var(--line);
+    font-size: 13px;
+    color: var(--muted);
+    min-width: 640px;
+  }
+
+  /* ── 표 ───────────────────────────────── */
+  .tablewrap { overflow-x: auto; margin: 20px 0; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    min-width: 560px;
+    font-size: 14px;
+  }
+  th {
+    text-align: left;
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 700;
+    padding: 0 14px 8px 0;
+    border-bottom: 1.5px solid var(--line-2);
+    white-space: nowrap;
+  }
+  td {
+    padding: 11px 14px 11px 0;
+    border-bottom: 1px solid var(--line);
+    vertical-align: top;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  td.mono { font-size: 13px; }
+  .num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+  /* ── 칩 / 배지 ────────────────────────── */
+  .chip {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    padding: 2px 8px;
+    border-radius: 3px;
+    background: var(--chip-bg);
+    color: var(--ink-2);
+    white-space: nowrap;
+  }
+  .chip.ok      { background: transparent; color: var(--ok);      box-shadow: inset 0 0 0 1.2px currentColor; }
+  .chip.bad     { background: transparent; color: var(--blocked); box-shadow: inset 0 0 0 1.2px currentColor; }
+  .chip.warn    { background: transparent; color: var(--warn);    box-shadow: inset 0 0 0 1.2px currentColor; }
+  .chip.server  { background: transparent; color: var(--server);  box-shadow: inset 0 0 0 1.2px currentColor; }
+  .chip.robot   { background: transparent; color: var(--robot);   box-shadow: inset 0 0 0 1.2px currentColor; }
+
+  /* ── 콜아웃 ───────────────────────────── */
+  .note {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--line-2);
+    border-radius: 3px;
+    padding: 16px 20px;
+    margin: 20px 0;
+  }
+  .note.alert { border-left-color: var(--blocked); }
+  .note.good  { border-left-color: var(--ok); }
+  .note p:last-child { margin-bottom: 0; }
+  .note .h {
+    font-weight: 700;
+    font-size: 14px;
+    margin: 0 0 6px;
+    display: block;
+  }
+
+  /* ── 2단 카드 ─────────────────────────── */
+  .cols {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 18px;
+    margin: 22px 0;
+  }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 20px;
+  }
+  .card .tag {
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    font-weight: 700;
+    margin-bottom: 10px;
+    display: block;
+  }
+  .card.s .tag { color: var(--server); }
+  .card.r .tag { color: var(--robot); }
+  .card h4 { margin: 0 0 10px; font-size: 17px; }
+  .card dl { margin: 0; font-size: 13.5px; }
+  .card dt {
+    color: var(--muted);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    font-weight: 700;
+    margin-top: 12px;
+  }
+  .card dt:first-child { margin-top: 0; }
+  .card dd { margin: 2px 0 0; }
+
+  ul { margin: 0 0 14px; padding-left: 20px; max-width: 68ch; }
+  li { margin-bottom: 6px; }
+
+  .rule { height: 1px; background: var(--line); border: 0; margin: 44px 0; }
+
+  footer {
+    margin-top: 72px;
+    padding-top: 24px;
+    border-top: 2px solid var(--ink);
+    font-size: 13px;
+    color: var(--muted);
+  }
+
+  @media (max-width: 640px) {
+    header { padding-top: 40px; }
+    body { padding: 0 16px 64px; }
+  }
+
+
+  /* ── 단계 (실제 순서가 있는 절차) ───────── */
+  .step {
+    display: grid;
+    grid-template-columns: 92px 1fr;
+    gap: 20px;
+    padding: 24px 0;
+    border-top: 1px solid var(--line);
+  }
+  .step:first-of-type { border-top: 1.5px solid var(--line-2); }
+  .step-n {
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    font-weight: 800;
+    color: var(--server);
+    padding-top: 5px;
+    white-space: nowrap;
+  }
+  .step-b h4 { margin: 0 0 8px; font-size: 18px; }
+  .step-b > :last-child { margin-bottom: 0; }
+
+  .chk {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--ok);
+    border-radius: 3px;
+    padding: 10px 14px;
+    margin: 14px 0 0;
+    font-size: 13.5px;
+  }
+  .chk b {
+    color: var(--ok);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    margin-right: 8px;
+  }
+  .warnline {
+    margin: 12px 0 0;
+    padding-left: 14px;
+    border-left: 3px solid var(--warn);
+    font-size: 13.5px;
+    color: var(--ink-2);
+  }
+
+  ol.tight { margin: 10px 0 0; padding-left: 22px; max-width: 68ch; }
+  ol.tight li { margin-bottom: 5px; }
+  .card ol.tight { font-size: 13.5px; }
+
+  .sm { font-size: 12.5px; }
+  .note p.mono.sm { line-height: 1.6; }
+  td[rowspan] { vertical-align: middle; }
+
+  @media (max-width: 640px) {
+    .step { grid-template-columns: 1fr; gap: 6px; }
+    .step-n { padding-top: 0; }
+  }
+
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <p class="eyebrow">RCS LG · LGIT L150 · 현장 세팅</p>
+  <h1>현장에서 순서대로 짚어야 할 것들</h1>
+  <p class="lede">
+    네트워크부터 시운전까지 6단계. 각 단계마다 <strong>무엇을 확인해야 넘어가도 되는지</strong>와,
+    그동안 실제로 걸렸던 함정을 같이 적었습니다. 인터넷 없이 열립니다.
+  </p>
+  <div class="meta-row">
+    <span><b>작성</b> 2026-08-24</span>
+    <span><b>대상</b> 서버 노트북 · 로봇 · 태블릿 4대</span>
+    <span><b>패치</b> <code>RCS_LG_패치_20260824</code></span>
+    <span><b>브랜치</b> <code>feature/luke-lg</code></span>
+  </div>
+</header>
+
+<!-- ══════════ 00 준비물 ══════════ -->
+<section>
+  <h2>00 — 가져갈 것</h2>
+  <h3>현장에는 인터넷이 없다. 필요한 건 전부 들고 가야 한다</h3>
+  <p class="dim">
+    현장 망은 LG U+ M2M 전용 APN 이라 일반 인터넷이 나가지 않습니다.
+    파일을 받거나 검색해서 해결할 수 없으므로, 아래를 <strong>USB 나 노트북에 미리 담아</strong> 갑니다.
+  </p>
+
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>항목</th><th>내용</th><th>용도</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><span class="mono">RCS_LG_패치_20260824.zip</span></td>
+          <td>백엔드 8파일 + 설명서 + <span class="mono">app-poi-release.apk</span></td>
+          <td>서버에 덮어쓰기 · 태블릿 설치</td>
+        </tr>
+        <tr>
+          <td>이 문서 · 통신 구조도</td>
+          <td><span class="mono">현장자료/*.html</span></td>
+          <td>브라우저로 그냥 열림 (오프라인)</td>
+        </tr>
+        <tr>
+          <td>랜선</td>
+          <td>서버 노트북 ↔ 서버 라우터</td>
+          <td>WiFi 로 하면 IP 고정이 엉뚱한 프로필에 걸린다</td>
+        </tr>
+        <tr>
+          <td>USB 케이블 / OTG</td>
+          <td>태블릿에 APK 전달용</td>
+          <td>인터넷으로 못 받는다</td>
+        </tr>
+        <tr>
+          <td>라우터 관리 계정</td>
+          <td><span class="mono">http://192.168.39.1:8090</span> · <span class="mono">admin / uned123456</span></td>
+          <td>포트포워딩 확인·수정</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="note">
+    <span class="h">라우터 관리 포트가 <span class="mono">8090</span> 입니다 — 로봇 제어 포트와 같은 번호</span>
+    <p>
+      라우터 2대의 LAN 대역도 <strong>둘 다 <span class="mono">192.168.39.x</span></strong> 라
+      어느 라우터에 붙어 있는지 헷갈리기 쉽습니다. 관리 페이지에 들어가면
+      <strong>SSID 이름부터 확인</strong>하세요 — 서버는 <span class="mono">TC700_5168495</span>,
+      로봇은 <span class="mono">TC700_5170086</span> 입니다. (초기 자료와 반대이니 주의)
+    </p>
+  </div>
+</section>
+
+<hr class="rule"/>
+
+<!-- ══════════ 01 순서 ══════════ -->
+<section>
+  <h2>01 — 세팅 순서</h2>
+  <h3>순서가 중요하다. 특히 DHCP 끄기는 맨 마지막이다</h3>
+  <p class="dim">
+    먼저 끄면 다른 장비를 붙일 때 주소를 못 받아 작업이 막힙니다.
+    각 단계의 <strong>확인</strong>을 통과해야 다음으로 넘어갑니다.
+  </p>
+
+  <div class="step">
+    <div class="step-n">STEP 1</div>
+    <div class="step-b">
+      <h4>서버 노트북을 랜선으로 연결하고 WiFi 를 끈다</h4>
+      <p class="dim">
+        유선·무선을 동시에 켜두면 라우팅 우선순위가 흔들려 <strong>"됐다 안 됐다"</strong> 하는 증상이 납니다.
+        IP 고정도 <strong>어댑터·SSID 프로필 단위</strong>라, 무선 프로필에 넣고 유선으로 통신하면 적용이 안 됩니다.
+      </p>
+      <p class="chk"><b>확인</b> WiFi 아이콘 꺼짐 · 이더넷만 연결됨</p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-n">STEP 2</div>
+    <div class="step-b">
+      <h4>이더넷에 고정 IP 를 직접 입력한다</h4>
+      <div class="tablewrap">
+        <table>
+          <tbody>
+            <tr><td>IP 주소</td><td class="mono">192.168.39.110</td></tr>
+            <tr><td>서브넷</td><td class="mono">24</td><td class="dim">칸이 접두사 길이를 요구하면 <span class="mono">255.255.255.0</span> 이 아니라 <span class="mono">24</span></td></tr>
+            <tr><td>게이트웨이</td><td class="mono">192.168.39.1</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="dim">
+        <strong>라우터에서 DHCP 를 끄는 것과 장비에 IP 를 넣는 것은 다른 작업입니다.</strong>
+        끄기만 하면 주소를 아예 못 받아 <span class="mono">169.254.x.x</span> 가 뜹니다.
+      </p>
+      <p class="chk"><b>확인</b> <span class="mono">Get-NetIPAddress -InterfaceAlias '이더넷'</span> →
+        <span class="mono">PrefixOrigin = Manual</span> · IP <span class="mono">.110</span></p>
+      <p class="warnline">
+        <span class="mono">Dhcp</span> 로 나오면 <strong>고정이 그 어댑터에 안 걸린 것</strong>입니다.
+        08-21 에 나온 <span class="mono">39.44</span> 가 정확히 이 상태였습니다 — 아무도 입력한 적 없는 값이었습니다.
+      </p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-n">STEP 3</div>
+    <div class="step-b">
+      <h4>라우터 포트포워딩을 확인한다</h4>
+      <p class="dim">
+        태블릿 4대가 전부 이 규칙을 거쳐 서버에 들어옵니다. 어긋나면 <strong>태블릿 화면이 아예 안 뜹니다.</strong>
+      </p>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>라우터</th><th>포트</th><th>대상</th><th>용도</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>서버 <span class="mono">TC700_5168495</span></td>
+              <td class="mono">8002</td>
+              <td class="mono">192.168.39.110</td>
+              <td>태블릿 → 관제 서버</td>
+            </tr>
+            <tr>
+              <td>로봇 <span class="mono">TC700_5170086</span></td>
+              <td class="mono">8090</td>
+              <td class="mono">192.168.39.100</td>
+              <td>서버 → 로봇 제어</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="chk"><b>확인</b> 두 규칙이 위 값 그대로인지 · TCP 로 등록됐는지</p>
+      <p class="warnline">
+        ★ <strong>LG 기존 벤더의 <span class="mono">8002 → 192.168.101.2</span> 규칙이 남아 있을 수 있습니다.</strong>
+        남아 있으면 태블릿 요청이 우리 서버가 아니라 LG 장비로 배달됩니다. 포워딩 표를 열면 <strong>이것부터</strong> 지우세요.
+      </p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-n">STEP 4</div>
+    <div class="step-b">
+      <h4>그 다음에 라우터 DHCP 를 끈다</h4>
+      <p class="dim">LG 표준 방식입니다. 겹칠 주소를 아예 없애는 것이라 <strong>STEP 2 를 마친 뒤에</strong> 합니다.</p>
+      <p class="chk"><b>확인</b> <span class="mono">ping 192.168.39.1</span> 응답 · 노트북 IP 가 <span class="mono">.110</span> 유지</p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-n">STEP 5</div>
+    <div class="step-b">
+      <h4>패치를 적용하고 백엔드를 올린다</h4>
+      <p class="dim">
+        <strong>작업 중인 로봇이 없는지 먼저 확인합니다.</strong> 랙을 들고 이동 중에 서버를 내리면 로봇이 그대로 멈춥니다.
+      </p>
+      <ol class="tight">
+        <li>백엔드 콘솔에서 <span class="mono">Ctrl+C</span></li>
+        <li>zip 의 <span class="mono">BackEnd/</span> 를 <span class="mono">C:\RCS_LG\BackEnd\</span> 에 경로 그대로 덮어쓰기</li>
+        <li><span class="mono">cd C:\RCS_LG\BackEnd</span> → <span class="mono">.\run_local.ps1</span></li>
+      </ol>
+      <p class="chk"><b>확인</b> <span class="mono">Invoke-RestMethod http://127.0.0.1:8002/ping</span> → 응답</p>
+      <p class="warnline">
+        <span class="mono">default_area.json</span> 은 zip 에 <strong>일부러 넣지 않았습니다.</strong>
+        개발 PC 값이라 덮어쓰면 현장 맵이 엉뚱하게 바뀝니다. DB 스키마도 손댈 필요 없습니다 —
+        <span class="mono">job_points</span> 테이블은 서버 시작 시 없으면 자동 생성됩니다.
+      </p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-n">STEP 6</div>
+    <div class="step-b">
+      <h4>로봇 연결 → 맵 작성 → 설정 3가지</h4>
+      <p class="dim">
+        맵을 새로 만들면 <strong>POI 번호가 전부 바뀝니다.</strong> 그래서 설정은 맵 작업 뒤에 합니다.
+      </p>
+      <ol class="tight">
+        <li>로봇이 관제에 <strong>온라인</strong>으로 뜨는지</li>
+        <li>맵 작성 · POI 등록 — <span class="mono">C1</span>(충전소) <span class="mono">c1-1</span>(사전접근) <span class="mono">R1 R2</span>(랙 보관) <span class="mono">J1 J2</span>(작업지점)</li>
+        <li><strong>02 의 설정 3가지</strong> 를 반드시 수행</li>
+      </ol>
+      <p class="chk"><b>확인</b> 콘솔에 <strong>타일 4개</strong>(R1·J1·R2·J2)가 짝지어 보이는지</p>
+    </div>
+  </div>
+</section>
+
+<hr class="rule"/>
+
+<!-- ══════════ 02 설정 3가지 ══════════ -->
+<section>
+  <h2>02 — 반드시 할 설정 3가지</h2>
+  <h3>이걸 빠뜨리면 오류 없이 조용히 안 된다</h3>
+  <p class="dim">
+    셋 다 <strong>에러가 안 납니다.</strong> 화면은 멀쩡한데 동작만 안 하거나, 절반만 됩니다.
+    그래서 가장 오래 헤매게 되는 지점입니다.
+  </p>
+
+  <div class="cols">
+    <div class="card s">
+      <span class="tag">설정 1 · 가장 잘 빠뜨림</span>
+      <h4>로봇에 충전소·대기장소 지정</h4>
+      <dl>
+        <dt>왜</dt>
+        <dd><span class="mono">register-by-ip</span> 로 등록한 로봇은 이 두 값이 <strong>비어 있습니다.</strong></dd>
+        <dt>증상</dt>
+        <dd>적재·이동·하차까지 전부 정상인데 <strong>마지막 복귀만 안 됨</strong></dd>
+        <dt>어디서</dt>
+        <dd>관제 → 로봇 관리 → 충전소 <span class="mono">C1</span> / 대기장소 <span class="mono">R1</span></dd>
+        <dt>주의</dt>
+        <dd>반드시 <strong>화면에서 이름으로</strong> 고를 것. 현장 POI 번호는 개발 PC 와 완전히 다릅니다</dd>
+        <dt>재시작</dt>
+        <dd>불필요</dd>
+      </dl>
+    </div>
+
+    <div class="card r">
+      <span class="tag">설정 2</span>
+      <h4>작업지점↔랙보관 매핑 등록</h4>
+      <dl>
+        <dt>왜</dt>
+        <dd>매핑이 있는 위치에서만 <strong>배송 모드</strong>로 돕니다. 없으면 옛 방식으로 동작합니다</dd>
+        <dt>증상</dt>
+        <dd>호출은 되는데 <strong>R 타일이 안 보이고</strong> 예전 화면이 뜸</dd>
+        <dt>어떻게</dt>
+        <dd><span class="mono">POST /api/dispatch/job-points</span><br/>
+            <span class="mono">{"area_id":&lt;현장&gt;,"j_poi_name":"J1","r_poi_name":"R1"}</span><br/>
+            J2 → R2 도 같은 방식</dd>
+        <dt>확인</dt>
+        <dd><span class="mono">GET /api/dispatch/job-points</span></dd>
+      </dl>
+    </div>
+
+    <div class="card s">
+      <span class="tag">설정 3</span>
+      <h4>태블릿 4대 주소 · POI 번호</h4>
+      <dl>
+        <dt>넣는 값</dt>
+        <dd>서버 주소 + POI 번호 <strong>두 칸뿐</strong></dd>
+        <dt>서버 주소</dt>
+        <dd class="mono">http://10.115.244.11:8002</dd>
+        <dt>POI 번호</dt>
+        <dd><strong>현장 맵의 실제 값</strong>을 확인해서 넣을 것</dd>
+        <dt>확인</dt>
+        <dd><span class="mono">GET /api/dispatch/console/status</span> → <span class="mono">pois[].poi_id</span></dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="note alert">
+    <span class="h">확인 로그 — 설정 1 이 빠지면 이게 찍힙니다</span>
+    <p class="mono sm">
+      [delivery] 충전소 POI 없음 — robot=NN<br/>
+      [relocalize] ...: 충전소/대기장소 POI 미지정 — 위치재조정 생략
+    </p>
+    <p>
+      08-24 사무실 실기에서 정확히 이걸로 멈췄습니다. 작업이 전부 성공해서
+      <strong>겉으로는 원인이 안 드러났습니다.</strong>
+    </p>
+  </div>
+</section>
+
+<hr class="rule"/>
+
+<!-- ══════════ 03 태블릿 ══════════ -->
+<section>
+  <h2>03 — 태블릿 4대</h2>
+  <h3>앱은 새로 깔아야 하지만, 콘솔·로봇 태블릿은 그대로 쓴다</h3>
+
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>태블릿</th><th>앱</th><th>조치</th><th>화면에 보여야 하는 것</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><strong>R1 · R2</strong><br/><span class="dim sm">랙 보관 위치</span></td>
+          <td rowspan="2"><span class="mono">app-poi-release.apk</span><br/><span class="dim sm">RCS 위치태블릿</span></td>
+          <td rowspan="2"><span class="chip bad">신규 설치</span></td>
+          <td><strong>[로봇 호출]</strong> 버튼만</td>
+        </tr>
+        <tr>
+          <td><strong>J1 · J2</strong><br/><span class="dim sm">작업지점</span></td>
+          <td><strong>[확인 — 랙을 치웠습니다]</strong> 버튼만</td>
+        </tr>
+        <tr>
+          <td>관제 콘솔</td>
+          <td><span class="dim">기존 RCS 관리자콘솔</span></td>
+          <td><span class="chip ok">재설치 불필요</span></td>
+          <td>앱만 껐다 켜면 새 화면 반영</td>
+        </tr>
+        <tr>
+          <td>로봇 부착</td>
+          <td><span class="dim">기존 RCS 로봇태블릿</span></td>
+          <td><span class="chip ok">재설치 불필요</span></td>
+          <td>배송 모드에선 역할 없음 — 비상 종료용</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="note good">
+    <span class="h">화면은 서버가 내려주는 것이라 앱 재빌드가 거의 필요 없습니다</span>
+    <p>
+      태블릿 앱은 <strong>브라우저 껍데기</strong>입니다. 화면을 고치면 앱을 껐다 켜는 것만으로 반영됩니다.
+      APK 를 다시 만들어야 하는 경우는 <strong>앱 기본 서버 주소를 바꿀 때</strong> 정도입니다.
+    </p>
+    <p>
+      APK 없이도 됩니다 — 태블릿 크롬에서
+      <span class="mono">http://10.115.244.11:8002/api/dispatch/tablet/poi/{번호}</span> 를 열고
+      <strong>⋮ → 홈 화면에 추가</strong> 하면 전체화면 아이콘이 생깁니다.
+    </p>
+  </div>
+
+  <p class="dim">
+    앱을 처음 켜면 <strong>서버 주소</strong>와 <strong>위치(POI) ID</strong> 두 칸만 물어봅니다.
+    R 번호를 넣으면 호출 화면, J 번호를 넣으면 확인 화면이 뜹니다. 나중에 바꾸려면 <strong>설정 초기화</strong>.
+  </p>
+</section>
+
+<hr class="rule"/>
+
+<!-- ══════════ 04 시운전 ══════════ -->
+<section>
+  <h2>04 — 시운전</h2>
+  <h3>한 바퀴 돌려서 아홉 가지를 확인한다</h3>
+
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>#</th><th>확인</th><th>방법</th><th>기대</th></tr></thead>
+      <tbody>
+        <tr><td class="num">1</td><td>백엔드 살아있음</td><td class="mono">GET /ping</td><td>응답</td></tr>
+        <tr><td class="num">2</td><td>매핑 등록됨</td><td class="mono">GET /job-points</td><td>J1→R1 · J2→R2</td></tr>
+        <tr><td class="num">3</td><td>콘솔에 R 타일</td><td>콘솔 화면</td><td>R1·J1·R2·J2 <strong>짝으로 정렬</strong></td></tr>
+        <tr><td class="num">4</td><td>화면이 안 멈춤</td><td>콘솔을 1분 지켜보기</td><td>20초씩 멈추는 구간 없음</td></tr>
+        <tr><td class="num">5</td><td>로봇 충전소 지정됨</td><td>로봇 관리 화면</td><td>충전소·대기장소 채워짐</td></tr>
+        <tr><td class="num">6</td><td><strong>배송 모드 진입</strong></td><td>R1 호출 후 백엔드 로그</td><td class="mono sm">[dispatch] 배송 모드 — robot=NN R1 → J1</td></tr>
+        <tr><td class="num">7</td><td>하차 후 잠금</td><td>J1 타일</td><td>J1 [확인] 활성 · <strong>R1 호출 비활성</strong></td></tr>
+        <tr><td class="num">8</td><td>확인 후 재활성</td><td>J1 에서 [확인]</td><td>2초 뒤 R1 호출 살아남</td></tr>
+        <tr><td class="num">9</td><td>충전소 복귀</td><td>큐 비우고 대기</td><td><span class="mono">c1-1</span> 경유 후 도킹</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="note alert">
+    <span class="h">6번이 안 찍히면 매핑을 못 찾은 것입니다</span>
+    <p>
+      배송 모드로 안 들어가고 <strong>옛 방식</strong>으로 빠진 것이니, 매핑의 <span class="mono">area_id</span> 가
+      현장 맵의 영역과 맞는지 확인하세요. 맵을 새로 만들었다면 영역 번호도 새로 생겼습니다.
+    </p>
+  </div>
+
+  <p class="dim">
+    사무실에서는 이 흐름으로 <strong>5사이클 연속</strong> 충전소를 안 거치고 순환하는 것을 확인했습니다.
+    큐가 있으면 충전소를 건너뛰고 다음 R 로 바로 갑니다.
+  </p>
+</section>
+
+<hr class="rule"/>
+
+<!-- ══════════ 05 함정 ══════════ -->
+<section>
+  <h2>05 — 그동안 실제로 걸렸던 것들</h2>
+  <h3>같은 데서 두 번 걸리지 않도록</h3>
+
+  <h4>네트워크</h4>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>걸린 것</th><th>어떻게 드러났나</th><th>확인법</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><strong>라우터 매핑이 자료와 반대</strong></td>
+          <td>초기 자료엔 5168495=로봇 이라 적혀 있었으나 실제는 <strong>5170086=로봇 · 5168495=서버</strong></td>
+          <td>관리 페이지 SSID 이름으로 확인</td>
+        </tr>
+        <tr>
+          <td><strong>서버 PC IP 불일치</strong></td>
+          <td>포워딩은 <span class="mono">.110</span> 인데 실제는 <span class="mono">.44</span>(DHCP)</td>
+          <td class="mono">PrefixOrigin</td>
+        </tr>
+        <tr>
+          <td><strong>LG 기존 8002 포워딩 잔존</strong></td>
+          <td>정상 장비 캡처에 <span class="mono">8002 → 192.168.101.2</span></td>
+          <td>포워딩 표 육안</td>
+        </tr>
+        <tr>
+          <td><strong>ping 실패 ≠ 통신 불가</strong></td>
+          <td>포워딩에 <strong>ICMP 규칙이 없던 상태</strong>였음. ping 은 ICMP</td>
+          <td class="mono sm">curl http://IP:포트/…</td>
+        </tr>
+        <tr>
+          <td><strong>서버→로봇 방향 불통</strong> <span class="chip bad">미해결</span></td>
+          <td>로봇→서버는 정상인데 반대 방향만 막힘. TCP 도 실패</td>
+          <td>라우터·USIM 교체 후 재시험 예정</td>
+        </tr>
+        <tr>
+          <td><strong>태블릿 LTE 불안정</strong> <span class="chip warn">미해결</span></td>
+          <td>연결/끊김 반복. 위치를 옮겨도 동일 → 단말 호환성으로 판정</td>
+          <td>LGIT 가 지원 모델 확인 중</td>
+        </tr>
+        <tr>
+          <td>두 라우터 LAN 대역이 같음</td>
+          <td>둘 다 <span class="mono">192.168.39.x</span> — 잘못 붙어도 대역이 맞아 보임</td>
+          <td>SSID 이름으로만 구분 가능</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h4>서버 설정</h4>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>걸린 것</th><th>증상</th><th>대응</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><strong>충전소·대기장소 미지정</strong></td>
+          <td>작업은 다 되는데 <strong>복귀만 조용히 안 됨</strong></td>
+          <td>로봇 관리에서 이름으로 지정</td>
+        </tr>
+        <tr>
+          <td><strong>매핑 미등록</strong></td>
+          <td>배송 모드로 안 들어가고 옛 화면이 뜸</td>
+          <td><span class="mono">job-points</span> 등록</td>
+        </tr>
+        <tr>
+          <td>POI 번호가 맵마다 다름</td>
+          <td>개발 PC 번호를 그대로 넣으면 엉뚱한 곳</td>
+          <td>항상 <strong>이름</strong>으로 고르기</td>
+        </tr>
+        <tr>
+          <td><span class="mono">default_area.json</span> 덮어쓰기</td>
+          <td>현장 맵이 개발 PC 영역으로 바뀜</td>
+          <td>zip 에서 <strong>제외해 뒀음</strong></td>
+        </tr>
+        <tr>
+          <td>정상 요청이 로그에 안 남음</td>
+          <td>액세스 로그 레벨이 <span class="mono">WARNING</span></td>
+          <td>"로그에 없다"를 근거로 쓰지 말 것</td>
+        </tr>
+        <tr>
+          <td>서버 재기동 직후 첫 화면이 느림</td>
+          <td>오프라인 로봇을 실제로 찔러보느라 대기</td>
+          <td>08-24 패치로 <strong>해결됨</strong></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h4>소프트웨어 — 08-24 에 고친 것</h4>
+  <p class="dim">
+    아래는 <strong>이번 패치에 이미 반영</strong>돼 있습니다. 비슷한 증상이 다시 보이면 패치가 안 올라간 것입니다.
+  </p>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>증상</th><th>원인</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>예약을 걸었는데 <strong>사라지고 충전소로 감</strong></td>
+          <td>이미 떠난 작업지점이 계속 점유로 잡혀 호출이 거부됨</td>
+        </tr>
+        <tr>
+          <td>강제 종료를 눌렀는데 <strong>로봇이 다음 작업을 시작</strong></td>
+          <td>중지 신호를 "랙 없음"으로 잘못 처리 — 신호가 소비됨 <span class="chip bad">안전</span></td>
+        </tr>
+        <tr>
+          <td>로봇은 충전소인데 <strong>화면은 계속 작업 중</strong></td>
+          <td>랙 없이 끝날 때 작업 기록이 안 닫힘 (유령 세션)</td>
+        </tr>
+        <tr>
+          <td>화면이 <strong>20초씩 멈췄다 튐</strong></td>
+          <td>오프라인 로봇 응답을 기다리느라 화면 갱신이 막힘</td>
+        </tr>
+        <tr>
+          <td>버튼이 <strong>눌렀다 되돌아감</strong></td>
+          <td>조작 직전에 떠난 낡은 응답이 뒤늦게 화면을 덮음</td>
+        </tr>
+        <tr>
+          <td>로봇이 바쁜데 <strong>"로봇 호출"이 활성</strong></td>
+          <td>대기 중인 예약을 가용 로봇에서 안 뺌</td>
+        </tr>
+        <tr>
+          <td>[확인]을 눌렀는데 <strong>안 풀림</strong></td>
+          <td>랙 보관 위치 기준으로 부르면 조용히 무동작이었음</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h4>APK 빌드 <span class="dim sm">— 현장에서 다시 만들 일이 생긴다면</span></h4>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>필요한 것</th><th>안 되면 나오는 메시지</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><strong>JDK 17</strong> — 1.8 도 25 도 안 됨</td>
+          <td class="mono sm">Unsupported class file major version 69 (25)<br/>Could not resolve …gradle:8.3.2 (1.8)</td>
+        </tr>
+        <tr>
+          <td><span class="mono">local.properties</span> — Android SDK 경로</td>
+          <td class="mono sm">SDK location not found</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="dim">
+    <span class="mono">TabletApp/APK빌드.bat</span> 이 JDK 를 자동으로 찾고, 없으면 무엇이 문제인지 알려줍니다.
+    <strong>현장에서 APK 를 다시 만들 일은 거의 없습니다</strong> — 화면은 서버에서 내려오니까요.
+  </p>
+</section>
+
+<hr class="rule"/>
+
+<!-- ══════════ 06 진단 ══════════ -->
+<section>
+  <h2>06 — 안 될 때 보는 순서</h2>
+  <h3>증상마다 봐야 할 곳이 다르다</h3>
+
+  <div class="cols">
+    <div class="card">
+      <span class="tag">증상 A</span>
+      <h4>태블릿 화면이 안 뜬다</h4>
+      <ol class="tight">
+        <li>서버 PC IP 와 포워딩 대상이 <strong>같은지</strong></li>
+        <li>라우터에 <strong>LG 기존 8002 규칙</strong>이 남아 있는지</li>
+        <li>태블릿 APN 이 <span class="mono">plte-lgit</span> 인지</li>
+        <li>앱 서버 주소가 <span class="mono">10.115.244.11:8002</span> 인지</li>
+      </ol>
+      <p class="dim sm">
+        태블릿 크롬에서 <span class="mono">…:8002/ping</span> 을 열어보면 5초에 갈립니다.
+        <strong>뜨면 네트워크는 정상</strong>이고 앱 설정 문제입니다.
+      </p>
+    </div>
+
+    <div class="card">
+      <span class="tag">증상 B</span>
+      <h4>로봇이 안 움직인다</h4>
+      <ol class="tight">
+        <li>관제에 로봇이 <strong>온라인</strong>인지</li>
+        <li>백엔드 로그에 <span class="mono">배송 모드</span> 줄이 찍혔는지</li>
+        <li>안 찍혔으면 <strong>매핑 미등록</strong></li>
+        <li>찍혔는데 안 가면 <strong>라우터 간 방향 불통</strong>(미해결)</li>
+      </ol>
+      <p class="dim sm">태블릿 화면이 정상이어도 이건 <strong>별개 문제</strong>입니다.</p>
+    </div>
+
+    <div class="card">
+      <span class="tag">증상 C</span>
+      <h4>하차까지 되는데 복귀를 안 한다</h4>
+      <ol class="tight">
+        <li>로봇 관리에서 <strong>충전소</strong>가 지정됐는지</li>
+        <li>로그에 <span class="mono">충전소 POI 없음</span> 이 있는지</li>
+      </ol>
+      <p class="dim sm">거의 항상 <strong>설정 1</strong> 누락입니다.</p>
+    </div>
+
+    <div class="card">
+      <span class="tag">증상 D</span>
+      <h4>호출 버튼이 비활성이다</h4>
+      <ol class="tight">
+        <li>짝 작업지점에 <strong>랙이 남아 있는지</strong></li>
+        <li>치운 뒤 그 <strong>J 태블릿에서 [확인]</strong></li>
+      </ol>
+      <p class="dim sm">
+        랙 감지 센서가 없어 <strong>사람이 눌러주는 것이 유일한 해제 수단</strong>입니다.
+        라이다로 판정하는 것은 실측 결과 불가능했습니다 — 로봇이 자기가 든 랙을 인식해 버립니다.
+      </p>
+    </div>
+  </div>
+</section>
+
+<hr class="rule"/>
+
+<!-- ══════════ 07 미해결 ══════════ -->
+<section>
+  <h2>07 — 아직 안 된 것</h2>
+  <h3>현장에서 마주칠 수 있으니 미리 알아둘 것</h3>
+
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>#</th><th>항목</th><th>현장에서 어떻게 보이나</th></tr></thead>
+      <tbody>
+        <tr>
+          <td class="num">1</td>
+          <td><strong>서버 → 로봇 방향 불통</strong> <span class="chip bad">최우선</span></td>
+          <td>태블릿·화면이 다 정상이어도 <strong>로봇이 안 움직인다.</strong> 라우터·USIM 교체 후 재시험이 예정돼 있음</td>
+        </tr>
+        <tr>
+          <td class="num">2</td>
+          <td>통신이 끊겨도 <strong>화면에 안 드러남</strong></td>
+          <td>끊기면 5초 간격으로 <strong>최대 17분 자동 재시도</strong>한다(복구는 장점). 그동안 화면엔 "이동 중"만 보여 이유를 알 수 없다</td>
+        </tr>
+        <tr>
+          <td class="num">3</td>
+          <td>서버 재시작 복구 <span class="chip warn">미검증</span></td>
+          <td>작업 중 서버가 꺼졌다 켜지면 어떻게 되는지 아직 확인 못 함. <strong>정전 대비 필요</strong></td>
+        </tr>
+        <tr>
+          <td class="num">4</td>
+          <td>복귀 중 호출을 즉시 못 받음</td>
+          <td>충전소로 가기 시작한 뒤 호출하면 <strong>충전소까지 갔다가</strong> 다시 나온다. 동작은 하지만 한 번 헛걸음</td>
+        </tr>
+        <tr>
+          <td class="num">5</td>
+          <td>하차 위치 정밀도</td>
+          <td>목표 근처에서 도착 처리라 오차가 남는다. 현장 대차·바닥 상태에 따라 조정이 필요할 수 있음</td>
+        </tr>
+        <tr>
+          <td class="num">6</td>
+          <td>태블릿 LTE 불안정</td>
+          <td>간헐 끊김. 소프트웨어가 아니라 <strong>단말·회선</strong> 쪽으로 판정됨</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="note">
+    <span class="h">되돌리는 방법은 간단합니다</span>
+    <p>
+      새 방식이 문제를 일으키면 <strong>매핑만 지우면</strong> 예전 동작으로 돌아갑니다.
+      코드를 되돌릴 필요가 없습니다.
+    </p>
+    <p class="mono sm">DELETE /api/dispatch/job-points/J1?area_id=&lt;현장&gt;</p>
+    <p>
+      매핑이 없으면 배송 모드로 진입하지 않고 화면도 예전 것으로 뜹니다.
+      옛 코드를 지우지 않고 남겨둔 이유가 이것입니다.
+    </p>
+  </div>
+</section>
+
+<footer>
+  2026-08-24 작성 · 브랜치 <span class="mono">feature/luke-lg</span> 기준.
+  현장 수치는 08-20 · 08-21 실측 기록에서, 동작 확인은 사무실 S300 실기(5사이클 무중단 순환)에서 인용했습니다.
+  <br/>현장 POI 번호와 영역 번호는 <strong>맵을 새로 만들면 전부 바뀝니다</strong> — 이 문서의 번호를 그대로 쓰지 마세요.
+  <br/>이 파일은 인터넷 없이 열립니다. 함께 있는 <span class="mono">RCS_LG_통신구조도.html</span> 은 망 구조와 포트포워딩을 자세히 다룹니다.
+</footer>
+
+</div>
+
+</body>
+</html>

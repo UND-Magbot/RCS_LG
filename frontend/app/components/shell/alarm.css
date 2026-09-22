@@ -1,0 +1,490 @@
+/* ── Alarm Trigger (bell icon wrapper) ── */
+.alarm-trigger {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.alarm-trigger__btn {
+  width: 36px;
+  height: 36px;
+  font-size: var(--font-size-title);
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+
+.alarm-trigger__icon {
+  width: 20px;
+  height: 20px;
+  object-fit: contain;
+}
+
+/* ── Badge (count) ── */
+.alarm-badge {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 var(--space-1);
+  border-radius: 9px;
+  font-size: var(--font-size-2xs);
+  font-weight: var(--font-weight-bold);
+  color: var(--text-on-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  line-height: 1;
+}
+
+.alarm-badge--info {
+  background: var(--color-info);
+}
+
+.alarm-badge--warning {
+  background: var(--color-warning);
+}
+
+.alarm-badge--error {
+  background: var(--color-error);
+}
+
+/* ── Popover container ── */
+.alarm-popover {
+  position: absolute;
+  top: calc(100% + var(--space-2));
+  right: 0;
+  width: 360px;
+  height: 480px;
+  background: var(--bg-surface-1);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-md);
+  z-index: var(--z-popover);
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Popover toolbar (search + icons) ── */
+.alarm-popover__toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border-panel-header);
+  flex-shrink: 0;
+}
+
+.alarm-popover__toolbar-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.alarm-popover__search-input {
+  flex: 1;
+  height: 32px;
+  padding: 0 var(--space-3);
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  color: var(--text-primary);
+  font-size: var(--font-size-md);
+  outline: none;
+  transition: border-color var(--transition-base) var(--ease-default);
+}
+
+.alarm-popover__search-input:focus {
+  border-color: var(--color-primary);
+}
+
+.alarm-popover__search-input::placeholder {
+  color: var(--text-muted);
+}
+
+.alarm-popover__toolbar-btn {
+  width: 32px;
+  height: 32px;
+  font-size: var(--font-size-base);
+  flex-shrink: 0;
+  border-radius: var(--radius-button);
+  transition: background var(--transition-fast) var(--ease-default);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.alarm-popover__toolbar-btn:hover {
+  background: var(--color-primary);
+}
+
+.alarm-popover__toolbar-btn--disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.alarm-popover__action-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-button);
+  color: var(--text-secondary);
+  font-size: var(--font-size-md);
+  padding: 4px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--transition-fast) var(--ease-default),
+              color var(--transition-fast) var(--ease-default);
+}
+
+.alarm-popover__action-btn:hover {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: var(--text-on-primary);
+}
+
+.alarm-popover__action-btn--disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.alarm-popover__search-icon {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+  filter: brightness(0) invert(1);
+  opacity: 0.85;
+}
+
+.alarm-popover__toolbar-btn:hover .alarm-popover__search-icon {
+  opacity: 1;
+}
+
+.alarm-popover__sound-icon {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+}
+
+/* ── Popover header (legacy, retained) ── */
+.alarm-popover__header {
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border-panel-header);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  flex-shrink: 0;
+}
+
+.alarm-popover__title {
+  margin: 0;
+  font-size: var(--font-size-title);
+  color: var(--text-primary);
+}
+
+.alarm-popover__filters {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.alarm-popover__filter {
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  border-radius: var(--radius-chip);
+  padding: 4px 10px;
+  font-size: var(--font-size-md);
+  cursor: pointer;
+}
+
+.alarm-popover__filter--active {
+  color: var(--text-primary);
+  border-color: var(--color-primary);
+}
+
+/* ── Popover list ── */
+.alarm-popover__list {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+.alarm-popover__list::-webkit-scrollbar {
+  width: var(--scrollbar-width);
+}
+
+.alarm-popover__list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.alarm-popover__list::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: var(--scrollbar-radius);
+}
+
+.alarm-popover__list::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
+.alarm-popover__empty {
+  padding: var(--space-6) var(--space-4);
+  text-align: center;
+  color: var(--text-muted);
+  font-size: var(--font-size-base);
+}
+
+/* ── Alarm list item ── */
+.alarm-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--divider);
+}
+
+.alarm-item__robot {
+  font-size: var(--font-size-md);
+  color: var(--text-muted);
+}
+
+.alarm-item:last-child {
+  border-bottom: none;
+}
+
+.alarm-item__header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.alarm-item__code-severity {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-semibold);
+}
+
+.alarm-item__severity--info {
+  color: var(--color-info);
+}
+
+.alarm-item__severity--warning {
+  color: var(--color-warning);
+}
+
+.alarm-item__severity--error {
+  color: var(--color-error);
+}
+
+.alarm-item__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: var(--space-1);
+}
+
+.alarm-item__footer-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.alarm-item__read-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-button);
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  padding: 2px 8px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--transition-fast) var(--ease-default),
+              color var(--transition-fast) var(--ease-default);
+}
+
+.alarm-item__read-btn:hover {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: var(--text-on-primary);
+}
+
+.alarm-item__timestamp {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+}
+
+.alarm-item__tts-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px;
+  opacity: 0.5;
+  transition: opacity var(--transition-fast) var(--ease-default);
+  display: flex;
+  align-items: center;
+}
+
+.alarm-item__tts-btn:hover {
+  opacity: 1;
+}
+
+.alarm-item__tts-btn--disabled {
+  opacity: 0.25;
+}
+
+.alarm-item__tts-btn--disabled:hover {
+  opacity: 0.25;
+}
+
+.alarm-item__tts-icon {
+  width: 14px;
+  height: 14px;
+  object-fit: contain;
+}
+
+.alarm-item__message {
+  font-size: var(--font-size-base);
+  color: var(--text-secondary);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  line-height: var(--line-height-snug);
+}
+
+/* ── Alarm Detail Modal ── */
+.alarm-detail__overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--overlay-backdrop);
+  z-index: var(--z-modal);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.alarm-detail {
+  background: var(--bg-surface-1);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-md);
+  width: 480px;
+  max-width: 90vw;
+  max-height: 80vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.alarm-detail__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-4);
+  border-bottom: 1px solid var(--border-panel-header);
+}
+
+.alarm-detail__title {
+  margin: 0;
+  font-size: var(--font-size-title);
+  color: var(--text-primary);
+}
+
+.alarm-detail__close {
+  width: 32px;
+  height: 32px;
+  font-size: var(--font-size-lg);
+}
+
+.alarm-detail__body {
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.alarm-detail__row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.alarm-detail__label {
+  font-size: var(--font-size-md);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: var(--letter-spacing-wider);
+}
+
+.alarm-detail__value {
+  font-size: var(--font-size-base);
+  color: var(--text-primary);
+  line-height: var(--line-height-base);
+}
+
+/* Global red neon alert overlay */
+@keyframes alarm-neon-tint-pulse {
+  0%,
+  100% {
+    background: rgba(245, 101, 101, 0.06);
+  }
+  50% {
+    background: rgba(245, 101, 101, 0.16);
+  }
+}
+
+@keyframes alarm-neon-border-pulse {
+  0%,
+  100% {
+    box-shadow:
+      inset 0 0 20px 5px rgba(245, 101, 101, 0.24),
+      inset 0 0 48px 14px rgba(245, 101, 101, 0.12),
+      0 0 14px rgba(245, 101, 101, 0.22);
+  }
+  50% {
+    box-shadow:
+      inset 0 0 40px 10px rgba(245, 101, 101, 0.45),
+      inset 0 0 68px 18px rgba(245, 101, 101, 0.18),
+      0 0 26px rgba(245, 101, 101, 0.4);
+  }
+}
+
+body[data-alarm-neon="true"]::before,
+body[data-alarm-neon="true"]::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 999;
+}
+
+body[data-alarm-neon="true"]::before {
+  animation: alarm-neon-tint-pulse 1.6s var(--ease-in-out) infinite;
+}
+
+body[data-alarm-neon="true"]::after {
+  animation: alarm-neon-border-pulse 1.2s var(--ease-in-out) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body[data-alarm-neon="true"]::before,
+  body[data-alarm-neon="true"]::after {
+    animation: none;
+  }
+
+  body[data-alarm-neon="true"]::before {
+    background: rgba(245, 101, 101, 0.1);
+  }
+
+  body[data-alarm-neon="true"]::after {
+    box-shadow:
+      inset 0 0 24px 6px rgba(245, 101, 101, 0.28),
+      inset 0 0 46px 12px rgba(245, 101, 101, 0.12),
+      0 0 14px rgba(245, 101, 101, 0.22);
+  }
+}

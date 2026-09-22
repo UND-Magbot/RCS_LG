@@ -1,0 +1,95 @@
+/* User Dropdown Trigger */
+.user-dropdown {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.user-dropdown__trigger {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-control);
+  color: var(--text-primary);
+  font-size: var(--font-size-base);
+  font-family: inherit;
+  cursor: pointer;
+  transition: background var(--transition-fast) var(--ease-default);
+}
+
+.user-dropdown__trigger:hover {
+  background: var(--bg-hover);
+}
+
+.user-dropdown__trigger:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+.user-dropdown__icon {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.user-dropdown__icon-img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.user-dropdown__arrow {
+  font-size: var(--font-size-xs);
+  line-height: 1;
+  color: var(--text-muted);
+  transition: transform var(--transition-slow) var(--ease-default);
+}
+
+.user-dropdown__arrow--open {
+  transform: rotate(180deg);
+}
+
+/* Dropdown Menu */
+.user-dropdown__menu {
+  position: absolute;
+  top: calc(100% + var(--space-2));
+  right: 0;
+  min-width: 160px;
+  background: var(--bg-surface-1);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-md);
+  z-index: var(--z-popover);
+  padding: var(--space-1) 0;
+}
+
+.user-dropdown__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-2) var(--space-4);
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  font-size: var(--font-size-base);
+  font-family: inherit;
+  cursor: pointer;
+  transition: background var(--transition-fast) var(--ease-default);
+  text-align: left;
+}
+
+.user-dropdown__item:hover {
+  background: var(--bg-hover);
+}
+
+.user-dropdown__item:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}

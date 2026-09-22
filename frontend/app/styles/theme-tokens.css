@@ -1,0 +1,219 @@
+/* theme-tokens.css */
+/* Global Design Tokens - SSOT (Single Source of Truth) */
+/* 관제시스템 Style Guide v2 */
+
+:root {
+  /* ══════════════════════════════════════════
+     Background / Surfaces
+     progressive elevation: dark → light
+     ══════════════════════════════════════════ */
+  --bg-app: #080e1a;
+  --bg-surface-1: #0f1923;
+  --bg-surface-2: #162538;
+  --bg-surface-3: #1e2d4a;
+  --bg-shell: #0d1520;
+  --bg-table-header: #1a2a42;
+  --bg-panel-header: rgba(255, 255, 255, 0.03);
+
+  /* Interactive States */
+  --bg-hover: rgba(255, 255, 255, 0.05);
+  --bg-active: rgba(255, 255, 255, 0.08);
+  --bg-selected: rgba(255, 255, 255, 0.11);
+  --bg-pressed: rgba(255, 255, 255, 0.12);
+  --bg-row-hover: rgba(90, 143, 245, 0.06);
+  --bg-active-indicator: rgba(90, 143, 245, 0.12);
+
+  /* ══════════════════════════════════════════
+     Border / Divider
+     ══════════════════════════════════════════ */
+  --border: rgba(255, 255, 255, 0.14);
+  --border-strong: rgba(255, 255, 255, 0.22);
+  --divider: rgba(255, 255, 255, 0.08);
+  --border-section: rgba(255, 255, 255, 0.28);
+  --border-panel-header: rgba(255, 255, 255, 0.16);
+  --border-table-header: rgba(255, 255, 255, 0.20);
+  --border-accent: var(--color-primary);
+  --border-success: rgba(61, 224, 164, 0.40);
+  --border-warning: rgba(245, 183, 49, 0.40);
+  --border-error: rgba(245, 101, 101, 0.40);
+  --border-info: rgba(54, 223, 200, 0.40);
+
+  /* ══════════════════════════════════════════
+     Text
+     ══════════════════════════════════════════ */
+  --text-primary: rgba(255, 255, 255, 0.92);
+  --text-secondary: rgba(255, 255, 255, 0.72);
+  --text-muted: rgba(255, 255, 255, 0.52);
+  --text-on-primary: #ffffff;
+
+  /* ══════════════════════════════════════════
+     Semantic Colors
+     ══════════════════════════════════════════ */
+  --color-primary: #5a8ff5;
+  --color-info: #36dfc8;
+  --color-success: #3de0a4;
+  --color-warning: #f5b731;
+  --color-error: #f56565;
+  --color-critical: #e53e3e;
+
+  /* Semantic Subtle Backgrounds */
+  --bg-primary-subtle: rgba(90, 143, 245, 0.15);
+  --bg-info-subtle: rgba(54, 223, 200, 0.14);
+  --bg-success-subtle: rgba(61, 224, 164, 0.14);
+  --bg-warning-subtle: rgba(245, 183, 49, 0.14);
+  --bg-error-subtle: rgba(245, 101, 101, 0.14);
+  --bg-critical-subtle: rgba(229, 62, 62, 0.16);
+
+  /* ══════════════════════════════════════════
+     Overlay / Backdrop
+     ══════════════════════════════════════════ */
+  --overlay-backdrop: rgba(0, 0, 0, 0.55);
+  --overlay-light: rgba(0, 0, 0, 0.40);
+
+  /* ══════════════════════════════════════════
+     Focus
+     ══════════════════════════════════════════ */
+  --focus-ring: rgba(90, 143, 245, 0.35);
+  --focus-ring-error: rgba(245, 101, 101, 0.30);
+
+  /* ══════════════════════════════════════════
+     Scrollbar
+     ══════════════════════════════════════════ */
+  --scrollbar-thumb: rgba(255, 255, 255, 0.18);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.28);
+  --scrollbar-width: 6px;
+  --scrollbar-radius: 3px;
+
+  /* ══════════════════════════════════════════
+     Chart Palette
+     ══════════════════════════════════════════ */
+  --chart-1: var(--color-primary);
+  --chart-2: var(--color-info);
+  --chart-3: var(--color-success);
+  --chart-4: var(--color-warning);
+  --chart-5: var(--color-error);
+
+  /* ══════════════════════════════════════════
+     Radius
+     ══════════════════════════════════════════ */
+  --radius-card: 12px;
+  --radius-control: 10px;
+  --radius-button: 6px;
+  --radius-badge: 5px;
+  --radius-chip: 50%;
+
+  /* ══════════════════════════════════════════
+     Spacing Scale (4px increments)
+     ══════════════════════════════════════════ */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-10: 40px;
+
+  /* ══════════════════════════════════════════
+     Typography
+     ══════════════════════════════════════════ */
+  /* Font Sizes - complete scale */
+  --font-size-2xs: 11px;
+  --font-size-xs: 12px;
+  --font-size-sm: 13px;
+  --font-size-md: 14px;
+  --font-size-base: 16px;
+  --font-size-lg: 18px;
+  --font-size-title: 20px;
+  --font-size-xl: 24px;
+  --font-size-2xl: 28px;
+  --font-size-kpi: 34px;
+  --font-size-display: 48px;
+
+  /* Font Weights */
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+
+  /* Line Heights */
+  --line-height-tight: 1.25;
+  --line-height-snug: 1.4;
+  --line-height-base: 1.5;
+  --line-height-relaxed: 1.6;
+
+  /* Letter Spacing */
+  --letter-spacing-tight: 0.01em;
+  --letter-spacing-normal: 0.02em;
+  --letter-spacing-wide: 0.04em;
+  --letter-spacing-wider: 0.05em;
+  --letter-spacing-widest: 0.12em;
+
+  /* ══════════════════════════════════════════
+     Layout - Shell
+     ══════════════════════════════════════════ */
+  --topbar-height: 60px;
+  --sidenav-width-expanded: 260px;
+  --sidenav-width-collapsed: 72px;
+
+  /* Map */
+  --bg-map: #141e2e;
+
+  /* Map Markers */
+  --marker-poi-size: 20px;
+  --marker-waypoint-size: 10px;
+  --marker-robot-size: 28px;
+  --marker-label-offset: 4px;
+  --z-map-markers: 5;
+
+  /* Layout - Panels */
+  --panel-width-min: 320px;
+  --panel-width-max: 380px;
+
+  /* ══════════════════════════════════════════
+     Elevation / Shadows
+     ══════════════════════════════════════════ */
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.20);
+  --shadow-sm: 0 2px 6px rgba(0, 0, 0, 0.25);
+  --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.30);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.45);
+  --shadow-inset: inset 0 1px 3px rgba(0, 0, 0, 0.30);
+  --shadow-panel-top: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+
+  /* ══════════════════════════════════════════
+     Transitions
+     ══════════════════════════════════════════ */
+  --transition-fast: 120ms;
+  --transition-base: 150ms;
+  --transition-slow: 200ms;
+  --transition-shell: 160ms;
+  --ease-default: ease;
+  --ease-out: ease-out;
+  --ease-in-out: ease-in-out;
+
+  /* ══════════════════════════════════════════
+     Active / Selected Indicators
+     ══════════════════════════════════════════ */
+  --indicator-width: 3px;
+  --indicator-color: var(--color-primary);
+
+  /* ══════════════════════════════════════════
+     Status
+     ══════════════════════════════════════════ */
+  --status-dot-size: 8px;
+  --status-dot-size-lg: 10px;
+
+  /* ══════════════════════════════════════════
+     Z-Index Scale
+     ══════════════════════════════════════════ */
+  --z-base: 1;
+  --z-sticky: 10;
+  --z-dropdown: 15;
+  --z-overlay-panel: 20;
+  --z-overlay-card: 25;
+  --z-sidenav-backdrop: 30;
+  --z-sidenav: 40;
+  --z-popover: 50;
+  --z-modal: 60;
+  --z-toast: 70;
+}

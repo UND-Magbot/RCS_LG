@@ -1,0 +1,958 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>관제 콘솔 화면 설명 — UND ROBOTICS L150 AMR</title>
+<style>
+  *{box-sizing:border-box;}
+  html,body{margin:0;}
+  body{
+    font-family:-apple-system,"Segoe UI",Roboto,"Noto Sans KR",sans-serif;
+    background:#e9ecf1; color:#1b2330; line-height:1.5;
+    padding:26px clamp(10px,2vw,30px) 90px;
+  }
+
+  body{counter-reset:pg;}
+  .slide{
+    max-width:1280px; margin:0 auto 20px; background:#fff; border-radius:10px;
+    box-shadow:0 3px 16px rgba(20,30,50,.13); padding:18px 22px 34px;
+    counter-increment:pg; position:relative;
+  }
+  .slide::after{
+    content:counter(pg); position:absolute; right:24px; bottom:12px;
+    font-size:12.5px; font-weight:800; color:#9aa4b2;
+  }
+  .slide.detail{margin-bottom:34px;}
+  .slide-title{
+    font-size:19px; font-weight:800; color:#1f3864; margin:0 0 14px;
+    padding-bottom:9px; border-bottom:2px solid #1f3864;
+  }
+  .slide-title .en{color:#8b96a8; font-weight:700; margin-right:8px; font-size:16px;}
+  .slide.detail .slide-title{color:#0f7b6c; border-bottom-color:#0f7b6c;}
+
+  /* ══ 화면 ══ */
+  .screen{background:#11151c; border-radius:9px; overflow:hidden; padding:0 0 4px;
+    margin-bottom:30px; color:#e6eaf2;}
+  .k-header{display:flex; align-items:center; gap:14px; padding:11px 16px;
+    background:#161b24; border-bottom:1px solid #232b38;}
+  .k-header .k-t{font-size:17px; font-weight:700; flex:1;}
+  .robots-badge{font-size:13px; background:#1e3a5a; color:#6db5ff; padding:5px 13px;
+    border-radius:999px; font-weight:600; white-space:nowrap;}
+  .robots-badge.zero{background:#4d2a1e; color:#ffa46d;}
+  .btn-ghost-h{background:#2a3343; color:#cfe0ff; border:1px solid #34405a;
+    border-radius:8px; padding:7px 13px; font-size:13px; font-weight:700;}
+  .k-body{display:flex; align-items:stretch;}
+  .k-main{flex:1; padding:14px; min-width:0;}
+  .k-aside{width:212px; flex-shrink:0; background:#131922; border-left:1px solid #232b38;
+    padding:14px 12px;}
+  .zone-col{background:#141a23; border:1px solid #232b38; border-radius:12px;
+    padding:11px; display:flex; flex-direction:column; gap:11px;}
+  .zone-head{display:flex; align-items:baseline; gap:8px; font-size:16px; font-weight:800;
+    color:#cfe0ff; padding:1px 3px 7px; border-bottom:1px solid #232b38;}
+  .zone-head .zc{font-size:12px; font-weight:600; color:#6b7b91;}
+  .zoned{display:grid; grid-template-columns:1fr 1fr; gap:12px; align-items:start;}
+  .tile{border-radius:11px; padding:12px; background:#161c26; border:2px solid #2b323e;
+    display:flex; flex-direction:column; gap:9px;}
+  .tile.reserved{border-color:#6b5320; background:#211d12;}
+  .tile.calling{border-color:#245187; background:#121a26;}
+  .tile-head{display:flex; align-items:center; justify-content:space-between; gap:8px;}
+  .tile-name{font-size:16px; font-weight:700;}
+  .tile-badge{font-size:11px; padding:3px 9px; border-radius:999px; white-space:nowrap;
+    background:#2b323e; color:#8a93a6;}
+  .reserved .tile-badge{background:#4a3a1e; color:#ffd36d;}
+  .calling  .tile-badge{background:#1e3a5a; color:#6db5ff;}
+  .sub{font-size:12px; color:#8a93a6;}
+  .rline{display:flex; justify-content:space-between; gap:8px;}
+  .rname{font-size:14px; font-weight:600;} .rbatt{font-size:12px; color:#9fb0c8;}
+  .btn{border:none; border-radius:9px; padding:12px 8px; font-size:13.5px; font-weight:700;
+    color:#fff; width:100%; text-align:center; display:block;}
+  .btn-call{background:#2f6fff;} .btn-reserve{background:#b9852b;}
+  .btn-cancel{background:#4a5568;} .btn-gh{background:#2a3343;}
+  .btn.dis{opacity:.35;}
+  .side-t{font-size:13px; font-weight:700; color:#9fb0c8; display:flex;
+    justify-content:space-between; margin-bottom:9px;}
+  .side-t span:last-child{color:#6db5ff; font-weight:600; font-size:12px;}
+  .robot-card{background:#1a212c; border:1px solid #232b38; border-radius:10px;
+    padding:11px; display:flex; flex-direction:column; gap:8px;}
+  .rc-head{display:flex; align-items:center; gap:7px;}
+  .rdot{width:8px; height:8px; border-radius:50%; background:#4a5568;}
+  .rdot.on{background:#35d07f; box-shadow:0 0 5px #35d07f88;}
+  .rc-name{font-size:14px; font-weight:700; flex:1;}
+  .rc-batt{font-weight:700; font-size:13px;}
+  .pill{font-size:11px; padding:2px 8px; border-radius:999px; background:#2b323e; color:#8a93a6;}
+  .pill.busy{background:#1e3a5a; color:#6db5ff;}
+  .pill.idle{background:#1e4d33; color:#6dd99b;}
+  .btn-control{background:#2a3343; color:#cfe0ff; border:1px solid #34405a;
+    border-radius:8px; padding:9px; font-size:12.5px; font-weight:700; text-align:center;}
+  .rc-modal{background:#161c26; border:1px solid #2c3543; border-radius:12px;
+    padding:16px; max-width:470px; margin:0 auto;}
+  .rc-tabs{display:flex; gap:5px; background:#141a23; border:1px solid #232b38;
+    border-radius:10px; padding:4px; margin-bottom:12px;}
+  .rc-tab{flex:1; color:#8a93a6; border-radius:7px; padding:9px; font-size:13.5px;
+    font-weight:700; text-align:center;}
+  .rc-tab.active{background:#2a3343; color:#e6eaf2;}
+  .rc-mode{display:flex; gap:7px; margin-bottom:13px;}
+  .rc-mode-btn{flex:1; background:#232b38; color:#9fb0c8; border:1px solid #2c3543;
+    border-radius:8px; padding:10px; font-size:13.5px; font-weight:700; text-align:center;}
+  .rc-mode-btn.active{background:#2f6fff; color:#fff; border-color:#2f6fff;}
+  .rc-h4{font-size:11.5px; color:#9fb0c8; font-weight:600; margin:0 0 7px;}
+  .rc-sec{margin-bottom:13px;}
+  .rc-grid{display:grid; grid-template-columns:1fr 1fr; gap:7px;}
+  .rc-stack{display:flex; flex-direction:column; gap:7px;}
+  .rc-action{background:#1f2733; color:#cfe0ff; border:1px solid #34405a; border-radius:8px;
+    padding:11px 8px; font-size:13px; font-weight:700; text-align:center;}
+  .rc-action.danger{border-color:#7a2b35; color:#ff8a9c;}
+  .rc-action.hard{background:#3a1512; border-color:#b3261e; color:#ffd7d3;}
+  .rc-action.green{border-color:rgba(61,224,164,.5); color:#3de0a4;}
+  .rc-action.up{background:#16351f; border-color:#1e6e44; color:#6dd99b;}
+  .rc-action.down{background:#35211b; border-color:#7a3b2b; color:#ffb08a;}
+  .zone-live{display:flex; justify-content:space-between; background:#141a23;
+    border:1px solid #232b38; border-radius:9px; padding:9px 13px;}
+  .zone-live b{color:#cfe0ff; font-size:12.5px;}
+  .zone-live i{color:#9fb0c8; font-size:12px; font-style:normal;}
+  .dpad{display:flex; flex-direction:column; gap:6px; align-items:center;}
+  .dpad-row{display:flex; gap:6px;}
+  .dpad-btn{width:78px; height:58px; background:#233044; color:#e6eaf2; border:1px solid #34405a;
+    border-radius:10px; font-size:17px; font-weight:700; display:flex; flex-direction:column;
+    align-items:center; justify-content:center; gap:1px;}
+  .dpad-btn span{font-size:10px; color:#9fb0c8;}
+  .dpad-btn.stop{background:#3a2530;}
+  .dpad-sp{width:78px;}
+  .nt-item{background:#3a2a12; border:2px solid #b3801e; color:#ffe6bd; border-radius:9px;
+    padding:12px 15px; font-size:13.5px; font-weight:700; line-height:1.55; white-space:pre-line;
+    display:flex; align-items:center; gap:14px;}
+  .nt-ack{border-radius:9px; background:#2f6fff; color:#fff; font-weight:800;
+    padding:11px 20px; font-size:14px; flex-shrink:0;}
+  .net-alert{background:#3a1512; border:2px solid #ff6b6b; color:#ffd7d3; border-radius:9px;
+    padding:12px 15px; font-size:14px; font-weight:700;}
+  .net-sub{display:block; margin-top:5px; font-weight:500; opacity:.88; font-size:12.5px;}
+  .pl-box{max-width:470px; margin:0 auto; background:#161c26; border:1px solid #2c3543;
+    border-radius:12px; padding:16px;}
+  .pl-box h5{font-size:16px; margin:0 0 4px; font-weight:700;}
+  .pl-t{width:100%; border-collapse:collapse; font-size:12.5px; margin-top:12px;}
+  .pl-t th{background:#1a212c; color:#9fb0c8; border:1px solid #232b38; padding:7px 9px;
+    text-align:left; font-weight:700;}
+  .pl-t td{border:1px solid #232b38; padding:7px 9px; color:#cfe0ff;}
+  .pl-in{background:#1f2733; border:1px solid #34405a; border-radius:5px; padding:4px 8px;
+    display:block;}
+
+  /* ══ 하이라이트 ══ */
+  .hl{position:relative; outline:3px solid var(--hc); outline-offset:4px; z-index:2;}
+  .hl::before{
+    content:attr(data-n); position:absolute; top:-13px; left:-13px; z-index:6;
+    width:25px; height:25px; line-height:25px; text-align:center; border-radius:50%;
+    background:var(--hc); color:#fff; font-weight:800; font-size:13px;
+  }
+  .c1{--hc:#FF0000;} .c2{--hc:#FF6600;} .c3{--hc:#00B050;} .c4{--hc:#CC00CC;}
+
+  /* ══ 번호 표 ══ */
+  .keys{width:100%; border-collapse:separate; border-spacing:0 7px;}
+  .keys td{vertical-align:middle; background:#f5f7fb;}
+  .keys td.n{width:42px; text-align:center; border-radius:8px 0 0 8px;
+    border-left:5px solid var(--hc);}
+  .keys td.n i{display:inline-block; width:23px; height:23px; line-height:23px;
+    border-radius:50%; background:var(--hc); color:#fff; font-weight:800;
+    font-size:12.5px; font-style:normal;}
+  .keys td.k{width:235px; font-size:15px; font-weight:800; color:#0b1220; padding:11px 4px;}
+  .keys td.v{font-size:14.5px; color:#39455a; padding:11px 16px 11px 0;
+    border-radius:0 8px 8px 0;}
+  .keys td.v b{color:#0b1220;}
+  .keys tr.r1 td.n{--hc:#FF0000;} .keys tr.r2 td.n{--hc:#FF6600;}
+  .keys tr.r3 td.n{--hc:#00B050;} .keys tr.r4 td.n{--hc:#CC00CC;}
+  @media(max-width:700px){ .keys td.k{width:auto;} }
+
+  /* ══ 상세 ══ */
+  .drow{display:grid; grid-template-columns:232px 1fr; gap:26px; align-items:start;
+    padding:20px 0; border-bottom:1px solid #e2e7ee;}
+  .drow:last-child{border-bottom:none; padding-bottom:2px;}
+  @media(max-width:760px){ .drow{grid-template-columns:1fr;} }
+  .dpic{background:#11151c; border-radius:10px; padding:13px; color:#e6eaf2;}
+  .dttl{font-size:18px; font-weight:800; color:#0b1220; margin:0 0 12px;}
+
+  .steps{list-style:none; counter-reset:s; margin:0; padding:0;}
+  .steps li{counter-increment:s; position:relative; padding:0 0 9px 34px;
+    font-size:15.5px; color:#1b2330; font-weight:600;}
+  .steps li::before{content:counter(s); position:absolute; left:0; top:2px;
+    width:22px; height:22px; line-height:22px; text-align:center; border-radius:50%;
+    background:#1f3864; color:#fff; font-weight:800; font-size:12px;}
+  .steps li:last-child{padding-bottom:0;}
+  .steps.none li::before{background:#98a2b3;}
+  .steps.danger li::before{background:#b3261e;}
+
+  .nomove{font-size:15.5px; font-weight:700; color:#4b5563; background:#f1f3f6;
+    border-radius:8px; padding:11px 15px; margin:0;}
+  .nomove b{color:#0b1220;}
+
+  .warn{margin-top:12px; font-size:14.5px; font-weight:700; color:#a5281a;
+    background:#fdeeec; border-radius:8px; padding:10px 14px;}
+  .warn.y{color:#8a5608; background:#fdf6ea;}
+  .warn::before{content:"⚠ "; font-weight:800;}
+
+  .mini{width:100%; border-collapse:collapse; font-size:14.5px; margin-top:2px;}
+  .mini td{padding:8px 12px; border-bottom:1px solid #eceff4;}
+  .mini tr:last-child td{border-bottom:none;}
+  .mini td:first-child{width:185px; font-weight:800; color:#1f3864; background:#f7f9fc;}
+
+  .ascii{font-family:Consolas,monospace; font-size:12.5px; line-height:1.95;
+    color:#cfe0ff; white-space:pre; margin:0;}
+
+  .foot{max-width:1280px; margin:0 auto; color:#7c879a; font-size:12px; text-align:right;}
+
+  /* ══ 인쇄 / PDF ══════════════════════════════════════════
+     한 장(.slide) = 한 쪽. 화면의 어두운 배경이 그대로 나오도록
+     색 강제 출력(print-color-adjust)을 켠다 — 안 켜면 흰 종이에
+     검은 글씨로 나와 실제 화면과 전혀 달라 보인다. */
+  @page{ size:A3 landscape; margin:8mm; }
+  @media print{
+    *{ -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+    body{ background:#fff; padding:0; zoom:0.75; }
+    .slide{
+      max-width:none; width:100%; margin:0; border-radius:0;
+      box-shadow:none; padding:10px 6px 22px;
+      break-after:page; page-break-after:always; break-inside:avoid;
+    }
+    .slide:last-of-type{ break-after:auto; page-break-after:auto; }
+    .screen, .keys, .drow, .calls{ break-inside:avoid; }
+    .slide::after{ right:6px; bottom:4px; }
+    .foot{ display:none; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ════════════ 1 ════════════ -->
+<div class="slide">
+  <div class="slide-title"><span class="en">UND ROBOTICS L150 AMR</span>[ 관제 콘솔 · 기본 화면 ]</div>
+
+  <div class="screen">
+    <div class="k-header">
+      <span class="k-t">배차 콘솔</span>
+      <span class="robots-badge hl c1" data-n="1">가용 로봇 1대</span>
+      <span class="btn-ghost-h">작업지점 이름</span>
+    </div>
+    <div class="k-body">
+      <div class="k-main">
+        <div class="zoned">
+          <div class="zone-col hl c2" data-n="2">
+            <div class="zone-head">EOL → 자재실<span class="zc">2곳</span></div>
+            <div class="tile">
+              <div class="tile-head"><span class="tile-name">EOL 출발</span><span class="tile-badge">대기</span></div>
+              <div class="sub">랙을 <b>자재실 도착</b> 로 보냅니다</div>
+              <span class="btn btn-call hl c3" data-n="3">로봇 호출 — 자재실 도착 로 배송</span>
+            </div>
+            <div class="tile">
+              <div class="tile-head"><span class="tile-name">자재실 도착</span><span class="tile-badge">비어있음</span></div>
+              <div class="sub">대기 중<br/>호출은 <b>EOL 출발</b> 에서 합니다</div>
+              <span class="btn btn-call dis">확인 — 랙을 치웠습니다</span>
+            </div>
+          </div>
+          <div class="zone-col">
+            <div class="zone-head">자재실 → EOL<span class="zc">2곳</span></div>
+            <div class="tile">
+              <div class="tile-head"><span class="tile-name">자재실 출발</span><span class="tile-badge">대기</span></div>
+              <div class="sub">랙을 <b>EOL 도착</b> 로 보냅니다</div>
+              <span class="btn btn-call">로봇 호출 — EOL 도착 로 배송</span>
+            </div>
+            <div class="tile">
+              <div class="tile-head"><span class="tile-name">EOL 도착</span><span class="tile-badge">비어있음</span></div>
+              <div class="sub">대기 중<br/>호출은 <b>자재실 출발</b> 에서 합니다</div>
+              <span class="btn btn-call dis">확인 — 랙을 치웠습니다</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="k-aside hl c4" data-n="4">
+        <div class="side-t"><span>로봇</span><span>1/1 온라인</span></div>
+        <div class="robot-card">
+          <div class="rc-head"><span class="rdot on"></span><span class="rc-name">…3516UI</span><span class="rc-batt">88%</span></div>
+          <div><span class="pill idle">대기 (충전소)</span></div>
+          <div class="btn-control">직접 제어</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <table class="keys">
+    <tr class="r1"><td class="n"><i>1</i></td><td class="k">가용 로봇</td>
+      <td class="v">지금 부를 수 있는 로봇 수. <b>0대</b>면 주황색, 호출 버튼이 <b>예약하기</b>로 변경
+        <b style="color:#1f3864">(page 4 설명 참조)</b></td></tr>
+    <tr class="r2"><td class="n"><i>2</i></td><td class="k">화면 2칸 — 배송 흐름</td>
+      <td class="v">왼쪽 <b>EOL → 자재실</b> · 오른쪽 <b>자재실 → EOL</b>.
+        한 칸에 <b>출발</b> 1곳 + 그 <b>도착</b> 1곳</td></tr>
+    <tr class="r3"><td class="n"><i>3</i></td><td class="k">로봇 호출</td>
+      <td class="v"><b>출발</b> 타일에만 있음. 랙을 짝 도착 지점으로 배송</td></tr>
+    <tr class="r4"><td class="n"><i>4</i></td><td class="k">로봇 목록</td>
+      <td class="v">온라인 수 / 전체 대수. <b>직접 제어</b>로 로봇 1대 조작</td></tr>
+  </table>
+</div>
+
+<!-- ════════════ 1-1 ════════════ -->
+<div class="slide detail">
+  <div class="slide-title"><span class="en">1 - 1</span>기본 화면 — 버튼 동작</div>
+
+  <div class="drow">
+    <div class="dpic">
+      <div class="tile">
+        <div class="tile-head"><span class="tile-name">자재실 출발</span><span class="tile-badge">대기</span></div>
+        <div class="sub">랙을 <b>EOL 도착</b> 로 보냅니다</div>
+        <span class="btn btn-call">로봇 호출 — EOL 도착 로 배송</span>
+      </div>
+    </div>
+    <div>
+      <p class="dttl">로봇 호출</p>
+      <ol class="steps">
+        <li>충전소 출발</li>
+        <li>경유지 따라 <b>자재실 출발</b> 로 이동</li>
+        <li>랙 밑 진입 · 각도 정렬</li>
+        <li>리프트 업</li>
+        <li>경유지 따라 <b>EOL 도착</b> 으로 이동</li>
+        <li>리프트 다운</li>
+        <li>충전소 복귀</li>
+      </ol>
+    </div>
+  </div>
+
+  <div class="drow">
+    <div class="dpic">
+      <div class="tile reserved">
+        <div class="tile-head"><span class="tile-name">EOL 도착</span><span class="tile-badge">랙 있음</span></div>
+        <div class="sub">랙이 놓여 있습니다.<br/>치운 후 확인을 눌러주세요.</div>
+        <span class="btn btn-call">확인 — 랙을 치웠습니다</span>
+      </div>
+    </div>
+    <div>
+      <p class="dttl">확인 — 랙을 치웠습니다</p>
+      <p class="nomove">✕ <b>로봇 동작 없음.</b> 짝 출발 타일의 호출 잠금만 해제</p>
+      <div class="warn">랙을 치운 <b>뒤에</b> 누를 것. 먼저 누르면 다음 랙이 그 자리로 배송됨</div>
+    </div>
+  </div>
+
+  <div class="drow">
+    <div class="dpic">
+      <p class="ascii">[ 왼쪽 칸 ]
+ EOL 출발 ──▶ 자재실 도착
+   (R2)          (J2)
+
+[ 오른쪽 칸 ]
+ 자재실 출발 ──▶ EOL 도착
+   (R1)          (J1)</p>
+    </div>
+    <div>
+      <p class="dttl">배송 방향 — 고정</p>
+      <table class="mini">
+        <tr><td>EOL 출발</td><td>→ <b>자재실 도착</b></td></tr>
+        <tr><td>자재실 출발</td><td>→ <b>EOL 도착</b></td></tr>
+        <tr><td>목적지 선택</td><td>없음. 버튼 1개</td></tr>
+      </table>
+    </div>
+  </div>
+</div>
+
+
+<!-- ════════════ 2 ════════════ -->
+<div class="slide">
+  <div class="slide-title"><span class="en">UND ROBOTICS L150 AMR</span>[ 관제 콘솔 · 호출과 예약 ]</div>
+
+  <div class="screen">
+    <div class="k-header">
+      <span class="k-t">배차 콘솔</span>
+      <span class="robots-badge zero hl c1" data-n="1">가용 로봇 0대</span>
+      <span class="btn-ghost-h">작업지점 이름</span>
+    </div>
+    <div class="k-body">
+      <div class="k-main">
+        <div class="zoned">
+          <div class="zone-col">
+            <div class="zone-head">EOL → 자재실<span class="zc">2곳</span></div>
+            <div class="tile">
+              <div class="tile-head"><span class="tile-name">EOL 출발</span><span class="tile-badge">대기</span></div>
+              <div class="sub">랙을 <b>자재실 도착</b> 로 보냅니다</div>
+              <span class="btn btn-reserve hl c2" data-n="2">예약하기</span>
+            </div>
+            <div class="tile">
+              <div class="tile-head"><span class="tile-name">자재실 도착</span><span class="tile-badge">비어있음</span></div>
+              <div class="sub">대기 중<br/>호출은 <b>EOL 출발</b> 에서 합니다</div>
+              <span class="btn btn-call dis">확인 — 랙을 치웠습니다</span>
+            </div>
+          </div>
+          <div class="zone-col">
+            <div class="zone-head">자재실 → EOL<span class="zc">2곳</span></div>
+            <div class="tile reserved hl c3" data-n="3">
+              <div class="tile-head"><span class="tile-name">자재실 출발</span><span class="tile-badge">예약됨</span></div>
+              <div class="sub">예약됨 — 로봇이 생기면<br/>자동으로 EOL 도착 배송을 시작합니다</div>
+              <span class="btn btn-cancel">예약 취소</span>
+            </div>
+            <div class="tile reserved hl c4" data-n="4">
+              <div class="tile-head"><span class="tile-name">EOL 도착</span><span class="tile-badge">예약됨</span></div>
+              <div class="sub">예약됨 — 로봇이 생기면<br/>자재실 출발 에서 랙을 싣고 옵니다</div>
+              <span class="btn btn-call dis">확인 — 랙을 치웠습니다</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="k-aside">
+        <div class="side-t"><span>로봇</span><span>1/1 온라인</span></div>
+        <div class="robot-card">
+          <div class="rc-head"><span class="rdot on"></span><span class="rc-name">…3516UI</span><span class="rc-batt">86%</span></div>
+          <div><span class="pill busy">복귀</span></div>
+          <div class="btn-control">직접 제어</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <table class="keys">
+    <tr class="r1"><td class="n"><i>1</i></td><td class="k">가용 로봇 0대</td>
+      <td class="v">부를 수 있는 로봇 없음. 호출 버튼이 전부 <b>예약하기</b>로 변경</td></tr>
+    <tr class="r2"><td class="n"><i>2</i></td><td class="k">예약하기</td>
+      <td class="v">로봇이 비면 <b>자동 시작</b>. 다시 누를 필요 없음</td></tr>
+    <tr class="r3"><td class="n"><i>3</i></td><td class="k">예약됨 · 예약 취소</td>
+      <td class="v">배지 <b>예약됨</b>, 버튼 <b>예약 취소</b>로 변경</td></tr>
+    <tr class="r4"><td class="n"><i>4</i></td><td class="k">도착 타일도 예약됨</td>
+      <td class="v">같은 칸의 <b>출발 · 도착</b> 이 함께 예약됨으로 표시</td></tr>
+  </table>
+</div>
+
+<!-- ════════════ 2-1 ════════════ -->
+<div class="slide detail">
+  <div class="slide-title"><span class="en">2 - 1</span>호출과 예약 — 버튼 동작</div>
+
+  <div class="drow">
+    <div class="dpic">
+      <div class="tile">
+        <div class="tile-head"><span class="tile-name">자재실 출발</span><span class="tile-badge">대기</span></div>
+        <div class="sub">랙을 <b>EOL 도착</b> 로 보냅니다</div>
+        <span class="btn btn-reserve">예약하기</span>
+      </div>
+    </div>
+    <div>
+      <p class="dttl">예약하기</p>
+      <ol class="steps">
+        <li>즉시 이동 <b>없음</b></li>
+        <li>로봇이 작업을 끝내면 <b>자동 배차</b></li>
+        <li>이후 <b>로봇 호출</b> 과 동일하게 진행</li>
+      </ol>
+    </div>
+  </div>
+
+  <div class="drow">
+    <div class="dpic">
+      <div class="tile reserved">
+        <div class="tile-head"><span class="tile-name">자재실 출발</span><span class="tile-badge">예약됨</span></div>
+        <div class="sub">예약됨 — 로봇이 생기면<br/>자동으로 EOL 도착 배송을 시작합니다</div>
+        <span class="btn btn-cancel">예약 취소</span>
+      </div>
+    </div>
+    <div>
+      <p class="dttl">예약 취소</p>
+      <p class="nomove">✕ <b>로봇 동작 없음.</b> 예약만 삭제</p>
+      <div class="warn y">로봇이 <b>이미 출발</b>했으면 이 버튼 없음 → <b>직접 제어 → 현재 JOB 강제 종료</b></div>
+    </div>
+  </div>
+
+  <div class="drow">
+    <div class="dpic">
+      <div class="tile calling">
+        <div class="tile-head"><span class="tile-name">자재실 출발</span><span class="tile-badge">작업 중</span></div>
+        <div class="rline"><span class="rname">B682406903516UI</span><span class="rbatt">88%</span></div>
+        <div class="sub">랙을 가지러 오는 중…</div>
+        <span class="btn btn-call dis">로봇 호출 — 작업 중</span>
+      </div>
+    </div>
+    <div>
+      <p class="dttl">작업 중 — 문구로 위치 확인</p>
+      <table class="mini">
+        <tr><td>랙을 가지러 오는 중</td><td>출발 지점으로 이동 중</td></tr>
+        <tr><td>○○ 로 배송 중</td><td>랙 적재 후 도착 지점으로 이동 중</td></tr>
+        <tr><td>랙을 싣고 오는 중</td><td>도착 타일 표시. 곧 도착</td></tr>
+        <tr><td>도착 — 내려놓는 중</td><td>리프트 다운 진행 중</td></tr>
+      </table>
+    </div>
+  </div>
+</div>
+
+
+<!-- ════════════ 3 ════════════ -->
+<div class="slide">
+  <div class="slide-title"><span class="en">UND ROBOTICS L150 AMR</span>[ 관제 콘솔 · 랙 하차 후 정리 확인 ]</div>
+
+  <div class="screen">
+    <div class="k-header">
+      <span class="k-t">배차 콘솔</span>
+      <span class="robots-badge">가용 로봇 1대</span>
+      <span class="btn-ghost-h">작업지점 이름</span>
+    </div>
+    <div class="k-body">
+      <div class="k-main">
+        <div class="zoned">
+          <div class="zone-col">
+            <div class="zone-head">EOL → 자재실<span class="zc">2곳</span></div>
+            <div class="tile reserved">
+              <div class="tile-head"><span class="tile-name">EOL 출발</span>
+                <span class="tile-badge hl c1" data-n="1">자재실 도착 정리 대기</span></div>
+              <div class="sub"><b>자재실 도착</b> 에 랙이 있습니다.<br/>
+                자재실 도착 에서 치우고 <b>[확인]</b> 을 눌러야 호출됩니다.<br/>
+                <span class="hl c2" data-n="2" style="display:inline-block">(14:32 하차)</span></div>
+              <span class="btn btn-call dis">로봇 호출 — 자재실 도착 정리 필요</span>
+            </div>
+            <div class="tile reserved hl c3" data-n="3">
+              <div class="tile-head"><span class="tile-name">자재실 도착</span><span class="tile-badge">랙 있음</span></div>
+              <div class="sub">랙이 놓여 있습니다.<br/>치운 후 확인을 눌러주세요.<br/>(14:32 하차)</div>
+              <span class="btn btn-call hl c4" data-n="4">확인 — 랙을 치웠습니다</span>
+            </div>
+          </div>
+          <div class="zone-col">
+            <div class="zone-head">자재실 → EOL<span class="zc">2곳</span></div>
+            <div class="tile">
+              <div class="tile-head"><span class="tile-name">자재실 출발</span><span class="tile-badge">대기</span></div>
+              <div class="sub">랙을 <b>EOL 도착</b> 로 보냅니다</div>
+              <span class="btn btn-call">로봇 호출 — EOL 도착 로 배송</span>
+            </div>
+            <div class="tile">
+              <div class="tile-head"><span class="tile-name">EOL 도착</span><span class="tile-badge">비어있음</span></div>
+              <div class="sub">대기 중<br/>호출은 <b>자재실 출발</b> 에서 합니다</div>
+              <span class="btn btn-call dis">확인 — 랙을 치웠습니다</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="k-aside">
+        <div class="side-t"><span>로봇</span><span>1/1 온라인</span></div>
+        <div class="robot-card">
+          <div class="rc-head"><span class="rdot on"></span><span class="rc-name">…3516UI</span><span class="rc-batt">85%</span></div>
+          <div><span class="pill idle">대기 (충전소)</span></div>
+          <div class="btn-control">직접 제어</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <table class="keys">
+    <tr class="r1"><td class="n"><i>1</i></td><td class="k">정리 대기 — 호출 잠김</td>
+      <td class="v">보낼 곳에 랙이 남아 있으면 호출 차단. 버튼은 <b>비활성으로 유지</b></td></tr>
+    <tr class="r2"><td class="n"><i>2</i></td><td class="k">( 14:32 하차 )</td>
+      <td class="v">랙이 내려진 <b>시각</b></td></tr>
+    <tr class="r3"><td class="n"><i>3</i></td><td class="k">랙 있음</td>
+      <td class="v"><b>이때만</b> 확인 버튼 활성</td></tr>
+    <tr class="r4"><td class="n"><i>4</i></td><td class="k">확인 — 랙을 치웠습니다</td>
+      <td class="v">짝 출발 타일의 호출 잠금 해제</td></tr>
+  </table>
+</div>
+
+<!-- ════════════ 3-1 ════════════ -->
+<div class="slide detail">
+  <div class="slide-title"><span class="en">3 - 1</span>호출 버튼이 회색일 때 — 해제 방법</div>
+
+  <div class="drow">
+    <div class="dpic">
+      <div class="tile reserved">
+        <div class="tile-head"><span class="tile-name">EOL 출발</span><span class="tile-badge">자재실 도착 정리 대기</span></div>
+        <div class="sub"><b>자재실 도착</b> 에 랙이 있습니다.</div>
+        <span class="btn btn-call dis">로봇 호출 — 자재실 도착 정리 필요</span>
+      </div>
+    </div>
+    <div>
+      <p class="dttl">해제 순서</p>
+      <ol class="steps">
+        <li><b>자재실 도착</b> 에서 랙 치움</li>
+        <li><b>확인 — 랙을 치웠습니다</b> 누름</li>
+        <li>호출 버튼 <b>즉시 활성</b></li>
+      </ol>
+      <div class="warn y">보낼 곳에 랙이 있으면 <b>내려놓을 자리가 없어</b> 차단</div>
+    </div>
+  </div>
+
+  <div class="drow">
+    <div class="dpic">
+      <p class="ascii">랙 하차
+   ↓
+도착 : 랙 있음
+출발 : 호출 잠김
+   ↓
+[ 확인 ] 누름
+   ↓
+도착 : 비어있음
+출발 : 호출 가능</p>
+    </div>
+    <div>
+      <p class="dttl">1 사이클 종료 지점</p>
+      <table class="mini">
+        <tr><td>로봇</td><td>랙 하차 후 <b>즉시 충전소 복귀</b>. 확인을 기다리지 않음</td></tr>
+        <tr><td>확인이 늦으면</td><td><b>다음 호출만</b> 지연</td></tr>
+        <tr><td>반대쪽 칸</td><td>영향 없음. 그대로 호출 가능</td></tr>
+        <tr><td>자동 감지</td><td>불가. 랙 센서 없음 — <b>확인이 유일한 신호</b></td></tr>
+      </table>
+    </div>
+  </div>
+</div>
+
+
+<!-- ════════════ 4 ════════════ -->
+<div class="slide">
+  <div class="slide-title"><span class="en">UND ROBOTICS L150 AMR</span>[ 직접 제어 · 자동 운전 ]</div>
+
+  <div class="screen">
+    <div class="k-header"><span class="k-t">원격 제어 — B682406903516UI</span><span class="btn-ghost-h">✕</span></div>
+    <div style="padding:16px">
+      <div class="rc-modal">
+        <div class="rc-tabs"><div class="rc-tab active">제어</div><div class="rc-tab">설정</div></div>
+        <div class="rc-mode hl c1" data-n="1">
+          <div class="rc-mode-btn active">자동 운전</div>
+          <div class="rc-mode-btn">수동 조작</div>
+        </div>
+        <div class="rc-sec hl c2" data-n="2">
+          <p class="rc-h4">이동 제어</p>
+          <div class="rc-grid">
+            <div class="rc-action danger">작업 정지 (일시정지)</div>
+            <div class="rc-action">충전소 복귀</div>
+            <div class="rc-action">시스템 재시작</div>
+          </div>
+        </div>
+        <div class="rc-sec hl c3" data-n="3">
+          <p class="rc-h4">배차 작업 — 이 로봇만</p>
+          <div class="rc-stack">
+            <div class="rc-action danger">현재 JOB 강제 종료</div>
+            <div class="rc-action danger hard">전체 강제 종료</div>
+          </div>
+        </div>
+        <div class="zone-live hl c4" data-n="4"><i>전방 장애물</i><b>안전</b></div>
+      </div>
+    </div>
+  </div>
+
+  <table class="keys">
+    <tr class="r1"><td class="n"><i>1</i></td><td class="k">자동 운전 / 수동 조작</td>
+      <td class="v"><b>자동</b> — 배차 시스템이 제어 (평소) · <b>수동</b> — 방향 버튼으로 직접 조작</td></tr>
+    <tr class="r2"><td class="n"><i>2</i></td><td class="k">이동 제어</td>
+      <td class="v">작업 정지 · 충전소 복귀 · 시스템 재시작</td></tr>
+    <tr class="r3"><td class="n"><i>3</i></td><td class="k">강제 종료</td>
+      <td class="v">작업 폐기. <b>복구 불가</b> — 먼저 <b>작업 정지</b> 사용</td></tr>
+    <tr class="r4"><td class="n"><i>4</i></td><td class="k">전방 장애물</td>
+      <td class="v">주행 중 실시간 표시. <b>안전 → 서행 → 정지</b></td></tr>
+  </table>
+</div>
+
+<!-- ════════════ 4-1 ════════════ -->
+<div class="slide detail">
+  <div class="slide-title"><span class="en">4 - 1</span>자동 운전 — 이동 제어</div>
+
+  <div class="drow">
+    <div class="dpic">
+      <div class="rc-stack">
+        <div class="rc-action danger">작업 정지 (일시정지)</div>
+        <div class="rc-action green">재개 (이어서 진행)</div>
+      </div>
+    </div>
+    <div>
+      <p class="dttl">작업 정지 / 재개</p>
+      <ol class="steps">
+        <li>그 자리 <b>정지</b></li>
+        <li>랙은 <b>든 채로 유지</b> — 하차 없음</li>
+        <li>작업 <b>유지</b> → <b>재개</b> 로 이어서 진행</li>
+      </ol>
+      <div class="warn">사람이 다칠 상황이면 로봇 본체의 <b>비상정지 버튼</b> 이 우선</div>
+    </div>
+  </div>
+
+  <div class="drow">
+    <div class="dpic"><div class="rc-action">충전소 복귀</div></div>
+    <div>
+      <p class="dttl">충전소 복귀</p>
+      <ol class="steps">
+        <li>경유지 따라 충전소 앞까지 이동</li>
+        <li>진입점에서 <b>각도 정렬</b></li>
+        <li>후진 <b>도킹</b></li>
+      </ol>
+    </div>
+  </div>
+
+  <div class="drow">
+    <div class="dpic"><div class="rc-action">시스템 재시작</div></div>
+    <div>
+      <p class="dttl">시스템 재시작</p>
+      <ol class="steps danger">
+        <li>그 자리에서 <b>전원 차단</b></li>
+        <li>수 분간 <b>오프라인</b> — 모든 버튼 무효</li>
+        <li>재기동 후 <b>위치 재탐색</b></li>
+      </ol>
+      <div class="warn y">랙을 든 상태면 든 채로 정지</div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ════════════ 4-2 ════════════ -->
+<div class="slide detail">
+  <div class="slide-title"><span class="en">4 - 2</span>자동 운전 — 강제 종료 · 전방 장애물</div>
+
+  <div class="drow">
+    <div class="dpic">
+      <div class="rc-stack">
+        <div class="rc-action danger">현재 JOB 강제 종료</div>
+        <div class="rc-action danger hard">전체 강제 종료</div>
+      </div>
+    </div>
+    <div>
+      <p class="dttl">강제 종료</p>
+      <ol class="steps danger">
+        <li>그 자리 <b>정지</b></li>
+        <li>랙 <b>하차</b> — 통로여도 내려놓음</li>
+        <li>안내 표시 — <b>콘솔 + 태블릿 4대</b></li>
+        <li>경유지 따라 <b>다음 목적지로 이동</b></li>
+      </ol>
+      <table class="mini" style="margin-top:12px">
+        <tr><td>현재 JOB</td><td>작업 1건 폐기 → <b>예약지</b>, 없으면 <b>충전소</b></td></tr>
+        <tr><td>전체</td><td><b>이 로봇이 잡고 있던 예약</b> 까지 취소 → 무조건 <b>충전소</b>
+          <br/>다른 로봇의 작업 · 예약은 그대로</td></tr>
+      </table>
+      <div class="warn">내려놓은 대차 <b>즉시 제거</b>. 통로가 막히면 다음 작업 불가</div>
+    </div>
+  </div>
+
+  <div class="drow">
+    <div class="dpic">
+      <div class="zone-live" style="margin-bottom:6px"><i>전방 장애물</i><b>안전</b></div>
+      <div class="zone-live" style="margin-bottom:6px"><i>전방 장애물</i><b style="color:#ffd36d">서행</b></div>
+      <div class="zone-live" style="margin-bottom:6px"><i>전방 장애물</i><b style="color:#ff8a9c">정지</b></div>
+      <div class="zone-live"><i>전방 장애물</i><b style="color:#9aa4b2">작업지점(해제)</b></div>
+    </div>
+    <div>
+      <p class="dttl">전방 장애물</p>
+      <table class="mini">
+        <tr><td>안전</td><td>장애물 없음 — 정상 속도</td></tr>
+        <tr><td>서행</td><td>설정 거리 내 장애물 — 감속</td></tr>
+        <tr><td>정지</td><td>근접 — 정지. <b>치우면 자동 재개</b></td></tr>
+        <tr><td>작업지점(해제)</td><td>작업지점 반경 <b>1.9 m</b> 내. 랙 오인 방지용 해제</td></tr>
+        <tr><td>수동 조작 중</td><td><b>표시 자체가 사라짐</b> — 판정이 돌지 않음</td></tr>
+      </table>
+    </div>
+  </div>
+</div>
+
+
+<!-- ════════════ 5 ════════════ -->
+<div class="slide">
+  <div class="slide-title"><span class="en">UND ROBOTICS L150 AMR</span>[ 직접 제어 · 수동 조작 ]</div>
+
+  <div class="screen">
+    <div class="k-header"><span class="k-t">원격 제어 — B682406903516UI</span><span class="btn-ghost-h">✕</span></div>
+    <div style="padding:16px">
+      <div class="rc-modal">
+        <div class="rc-tabs"><div class="rc-tab active">제어</div><div class="rc-tab">설정</div></div>
+        <div class="rc-mode hl c1" data-n="1">
+          <div class="rc-mode-btn">자동 운전</div>
+          <div class="rc-mode-btn active">수동 조작</div>
+        </div>
+        <div class="rc-sec hl c2" data-n="2">
+          <p class="rc-h4">방향 제어 (누르는 동안 이동)</p>
+          <div class="dpad">
+            <div class="dpad-row"><div class="dpad-sp"></div><div class="dpad-btn">▲<span>전진</span></div><div class="dpad-sp"></div></div>
+            <div class="dpad-row"><div class="dpad-btn">◀<span>좌회전</span></div><div class="dpad-btn stop">■<span>정지</span></div><div class="dpad-btn">▶<span>우회전</span></div></div>
+            <div class="dpad-row"><div class="dpad-sp"></div><div class="dpad-btn">▼<span>후진</span></div><div class="dpad-sp"></div></div>
+          </div>
+        </div>
+        <div class="rc-sec hl c3" data-n="3">
+          <p class="rc-h4">리프트 제어</p>
+          <div class="rc-grid">
+            <div class="rc-action up">리프트 업</div>
+            <div class="rc-action down">리프트 다운</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <table class="keys">
+    <tr class="r1"><td class="n"><i>1</i></td><td class="k">수동 조작 전환</td>
+      <td class="v">이동 제어 · 강제 종료 대신 <b>방향 버튼</b> 표시. <b>배차 중지</b></td></tr>
+    <tr class="r2"><td class="n"><i>2</i></td><td class="k">방향 제어</td>
+      <td class="v">전진 · 후진 · 좌회전 · 우회전 · 정지. <b>누르는 동안만</b> 이동</td></tr>
+    <tr class="r3"><td class="n"><i>3</i></td><td class="k">리프트 업 / 다운</td>
+      <td class="v">제자리에서 리프트만 동작. <b>이동 없음</b></td></tr>
+  </table>
+  <div class="warn">수동 조작 중에는 <b>안전거리 감속 · 정지 판정이 돌지 않습니다.</b>
+    앞에 사람이 있어도 정지하지 않음 — <b>로봇이 보이는 자리에서만</b> 사용</div>
+</div>
+
+<!-- ════════════ 5-1 ════════════ -->
+<div class="slide detail">
+  <div class="slide-title"><span class="en">5 - 1</span>수동 조작 — 버튼 동작</div>
+
+  <div class="drow">
+    <div class="dpic">
+      <div class="dpad">
+        <div class="dpad-row"><div class="dpad-sp"></div><div class="dpad-btn">▲<span>전진</span></div><div class="dpad-sp"></div></div>
+        <div class="dpad-row"><div class="dpad-btn">◀<span>좌회전</span></div><div class="dpad-btn stop">■<span>정지</span></div><div class="dpad-btn">▶<span>우회전</span></div></div>
+        <div class="dpad-row"><div class="dpad-sp"></div><div class="dpad-btn">▼<span>후진</span></div><div class="dpad-sp"></div></div>
+      </div>
+    </div>
+    <div>
+      <p class="dttl">방향 제어</p>
+      <ol class="steps">
+        <li>누르고 있는 동안만 <b>해당 방향 이동</b></li>
+        <li>손을 떼면 <b>즉시 정지</b></li>
+      </ol>
+      <div class="warn">수동 조작 중 <b>안전거리 해제</b>. 앞에 사람이 있어도 정지하지 않음.
+        <b>로봇이 보이는 자리에서만</b> 사용</div>
+    </div>
+  </div>
+
+  <div class="drow">
+    <div class="dpic">
+      <div class="rc-grid">
+        <div class="rc-action up">리프트 업</div>
+        <div class="rc-action down">리프트 다운</div>
+      </div>
+    </div>
+    <div>
+      <p class="dttl">리프트 업 / 다운</p>
+      <ol class="steps">
+        <li>제자리에서 <b>리프트만</b> 상승 · 하강</li>
+        <li><b>이동 없음</b></li>
+      </ol>
+    </div>
+  </div>
+</div>
+
+
+<!-- ════════════ 6 ════════════ -->
+<div class="slide">
+  <div class="slide-title"><span class="en">UND ROBOTICS L150 AMR</span>[ 관제 콘솔 · 알림 배너 ]</div>
+
+  <div class="screen">
+    <div class="k-header">
+      <span class="k-t">배차 콘솔</span>
+      <span class="robots-badge">가용 로봇 1대</span>
+      <span class="btn-ghost-h">작업지점 이름</span>
+    </div>
+    <div style="padding:14px; display:flex; flex-direction:column; gap:16px">
+      <div class="net-alert hl c1" data-n="1">⚠ 서버와 연결이 끊겼습니다
+        <span class="net-sub">화면의 내용은 마지막으로 받은 상태입니다. 조작 버튼이 잠겼습니다.</span></div>
+      <div class="nt-item hl c2" data-n="2">
+        <span style="flex:1">⚠ [B682406903516UI] 현재 작업을 중지했습니다.
+대차를 내리고 자재실 출발로 이동합니다.
+내려놓은 대차를 치워 주세요.</span>
+        <span class="nt-ack hl c3" data-n="3">확인</span>
+      </div>
+      <div class="zoned hl c4" data-n="4" style="opacity:.45">
+        <div class="zone-col">
+          <div class="zone-head">EOL → 자재실<span class="zc">2곳</span></div>
+          <div class="tile">
+            <div class="tile-head"><span class="tile-name">EOL 출발</span><span class="tile-badge">대기</span></div>
+            <span class="btn btn-call dis">로봇 호출 — 자재실 도착 로 배송</span>
+          </div>
+        </div>
+        <div class="zone-col">
+          <div class="zone-head">자재실 → EOL<span class="zc">2곳</span></div>
+          <div class="tile">
+            <div class="tile-head"><span class="tile-name">자재실 출발</span><span class="tile-badge">대기</span></div>
+            <span class="btn btn-call dis">로봇 호출 — EOL 도착 로 배송</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <table class="keys">
+    <tr class="r1"><td class="n"><i>1</i></td><td class="k">서버 연결 끊김</td>
+      <td class="v">표시 내용은 <b>끊기기 직전 상태</b></td></tr>
+    <tr class="r2"><td class="n"><i>2</i></td><td class="k">관제 알림</td>
+      <td class="v">강제 종료 · 도킹 실패 시 <b>콘솔 + 태블릿 4대</b> 동시 표시</td></tr>
+    <tr class="r3"><td class="n"><i>3</i></td><td class="k">확인</td>
+      <td class="v">누를 때까지 <b>유지</b>. 한 곳에서 누르면 <b>전 화면 해제</b></td></tr>
+    <tr class="r4"><td class="n"><i>4</i></td><td class="k">버튼 잠김</td>
+      <td class="v">연결 끊김 동안 <b>모든 조작 버튼 자동 잠금</b></td></tr>
+  </table>
+</div>
+
+<!-- ════════════ 6-1 ════════════ -->
+<div class="slide detail">
+  <div class="slide-title"><span class="en">6 - 1</span>알림 — 조치 방법</div>
+
+  <div class="drow">
+    <div class="dpic">
+      <div class="net-alert" style="font-size:12.5px">⚠ 서버와 연결이 끊겼습니다
+        <span class="net-sub">조작 버튼이 잠겼습니다.</span></div>
+    </div>
+    <div>
+      <p class="dttl">서버 연결 끊김</p>
+      <ol class="steps none">
+        <li>로봇은 <b>작업 계속</b> — 로봇 정지 아님</li>
+        <li>표시 내용은 <b>끊기기 직전 상태</b></li>
+        <li>복구되면 배너 <b>자동 해제</b></li>
+      </ol>
+      <table class="mini" style="margin-top:12px">
+        <tr><td>조치</td><td>네트워크(LTE 라우터) 확인</td></tr>
+        <tr><td>버튼 잠금 이유</td><td>실패할 조작을 막기 위한 <b>의도된 동작</b></td></tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="drow">
+    <div class="dpic">
+      <div class="nt-item">
+        <span style="flex:1;font-size:12px">⚠ 작업을 전부 중지했습니다.
+대차를 내리고 충전소로 이동합니다.
+내려놓은 대차를 치워 주세요.</span>
+        <span class="nt-ack" style="padding:8px 14px;font-size:12px">확인</span>
+      </div>
+    </div>
+    <div>
+      <p class="dttl">관제 알림 · 확인</p>
+      <ol class="steps">
+        <li>안내대로 <b>내려놓은 대차 제거</b></li>
+        <li><b>확인</b> 눌러 알림 해제</li>
+      </ol>
+      <div class="warn y">치우기 <b>전에</b> 확인을 누르면 알림만 사라지고 통로는 막힌 채 유지</div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ════════════ 7 ════════════ -->
+<div class="slide">
+  <div class="slide-title"><span class="en">UND ROBOTICS L150 AMR</span>[ 관제 콘솔 · 작업지점 이름 ]</div>
+
+  <div class="screen">
+    <div class="k-header">
+      <span class="k-t">배차 콘솔</span>
+      <span class="robots-badge">가용 로봇 1대</span>
+      <span class="btn-ghost-h hl c1" data-n="1">작업지점 이름</span>
+    </div>
+    <div style="padding:18px">
+      <div class="pl-box">
+        <h5>작업지점 이름</h5>
+        <div class="sub">화면에 보일 이름과 구역을 정합니다.</div>
+        <table class="pl-t">
+          <tr><th style="width:56px">지점</th><th>표시 이름</th><th style="width:108px">구역</th></tr>
+          <tr><td><b>R2</b></td><td class="hl c2" data-n="2"><span class="pl-in">EOL 출발</span></td>
+              <td class="hl c3" data-n="3"><span class="pl-in">EOL → 자재실</span></td></tr>
+          <tr><td><b>J2</b></td><td><span class="pl-in">자재실 도착</span></td><td><span class="pl-in">EOL → 자재실</span></td></tr>
+          <tr><td><b>R1</b></td><td><span class="pl-in">자재실 출발</span></td><td><span class="pl-in">자재실 → EOL</span></td></tr>
+          <tr><td><b>J1</b></td><td><span class="pl-in">EOL 도착</span></td><td><span class="pl-in">자재실 → EOL</span></td></tr>
+        </table>
+        <div style="display:flex; gap:8px; margin-top:14px">
+          <span class="btn btn-call hl c4" data-n="4" style="width:auto; padding:10px 18px">확인 — 적용</span>
+          <span class="btn btn-gh" style="width:auto; padding:10px 18px">취소</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <table class="keys">
+    <tr class="r1"><td class="n"><i>1</i></td><td class="k">작업지점 이름</td>
+      <td class="v">머리줄 버튼. <b>R1 · J1 · R2 · J2</b> 4곳 표시</td></tr>
+    <tr class="r2"><td class="n"><i>2</i></td><td class="k">표시 이름</td>
+      <td class="v">화면에 보일 이름. <b>비우면</b> 원래 이름(R1) 표시</td></tr>
+    <tr class="r3"><td class="n"><i>3</i></td><td class="k">구역</td>
+      <td class="v"><b>같은 글자</b>를 쓴 지점끼리 한 칸에 묶임 — 출발과 그 도착을 같은 글자로</td></tr>
+    <tr class="r4"><td class="n"><i>4</i></td><td class="k">확인 — 적용</td>
+      <td class="v">누른 <b>즉시</b> 모든 화면에 반영</td></tr>
+  </table>
+</div>
+
+<div class="foot">UND ROBOTICS · RCS_LG 관제 콘솔 화면 설명 · 2026-09-21</div>
+
+</body>
+</html>

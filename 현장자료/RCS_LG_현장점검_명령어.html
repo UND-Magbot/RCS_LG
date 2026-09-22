@@ -1,0 +1,939 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>현장 점검 명령어</title>
+<style>
+:root { color-scheme: light dark; }
+html, body { margin: 0; padding: 0; }
+img { max-width: 100%; }
+
+  :root {
+    --bg:#EEF1F2; --surface:#FFFFFF; --surface-2:#E4E9EA;
+    --ink:#141A1D; --ink-2:#3F4B50; --muted:#6B7A80;
+    --line:#C6D0D3; --line-2:#9FADB2;
+    --server:#0E6E72; --robot:#A8541A;
+    --ok:#12735A; --blocked:#B0242C; --warn:#8A6A08;
+    --chip-bg:#DCE3E5; --codebg:#F5F7F8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg:#101618; --surface:#182023; --surface-2:#1F292C;
+      --ink:#E6EDEF; --ink-2:#B4C2C6; --muted:#84969C;
+      --line:#2E3B3F; --line-2:#4A5C61;
+      --server:#4FC3C7; --robot:#E8A166;
+      --ok:#4FC59A; --blocked:#F0787F; --warn:#D9B23F;
+      --chip-bg:#243034; --codebg:#12191B;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg:#101618; --surface:#182023; --surface-2:#1F292C;
+    --ink:#E6EDEF; --ink-2:#B4C2C6; --muted:#84969C;
+    --line:#2E3B3F; --line-2:#4A5C61;
+    --server:#4FC3C7; --robot:#E8A166;
+    --ok:#4FC59A; --blocked:#F0787F; --warn:#D9B23F;
+    --chip-bg:#243034; --codebg:#12191B;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg); color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Malgun Gothic",
+                 "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+    font-size: 16px; line-height: 1.7; margin: 0; padding: 0 20px 96px;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; }
+  code, .mono, td.mono, pre { font-family: ui-monospace, "Cascadia Mono", Consolas,
+      "SFMono-Regular", "D2Coding", monospace; font-variant-numeric: tabular-nums; }
+  code { background: var(--chip-bg); padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+
+  header { padding: 64px 0 40px; border-bottom: 2px solid var(--ink); margin-bottom: 48px; }
+  .eyebrow { font-size: 12px; letter-spacing: .16em; text-transform: uppercase;
+             color: var(--muted); font-weight: 600; margin: 0 0 14px; }
+  h1 { font-size: clamp(30px,5vw,46px); line-height: 1.15; letter-spacing: -.025em;
+       font-weight: 800; margin: 0 0 18px; text-wrap: balance; }
+  .lede { font-size: 17px; color: var(--ink-2); max-width: 62ch; margin: 0; }
+  .meta-row { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-top: 26px;
+              font-size: 13px; color: var(--muted); }
+  .meta-row span { display: inline-flex; gap: 7px; align-items: baseline; }
+  .meta-row b { color: var(--ink-2); font-weight: 600; }
+
+  section { margin: 0 0 64px; }
+  h2 { font-size: 13px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted);
+       font-weight: 700; margin: 0 0 10px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+  h3 { font-size: 22px; letter-spacing: -.015em; font-weight: 700; margin: 0 0 12px; text-wrap: balance; }
+  h4 { font-size: 16px; font-weight: 700; margin: 28px 0 8px; }
+  p { margin: 0 0 14px; max-width: 68ch; }
+  .dim { color: var(--ink-2); }
+  ul { margin: 0 0 14px; padding-left: 20px; max-width: 68ch; }
+  li { margin-bottom: 6px; }
+  ol.tight { margin: 10px 0 14px; padding-left: 22px; max-width: 68ch; }
+  ol.tight li { margin-bottom: 5px; }
+  .sm { font-size: 12.5px; }
+  .rule { height: 1px; background: var(--line); border: 0; margin: 44px 0; }
+
+  figure { margin: 26px 0 8px; padding: 22px 20px 16px; background: var(--surface);
+           border: 1px solid var(--line); border-radius: 4px; overflow-x: auto; }
+  figure svg { display: block; width: 100%; min-width: 660px; height: auto; }
+  figcaption { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line);
+               font-size: 13px; color: var(--muted); min-width: 660px; }
+
+  .tablewrap { overflow-x: auto; margin: 20px 0; }
+  table { border-collapse: collapse; width: 100%; min-width: 560px; font-size: 14px; }
+  th { text-align: left; font-size: 11px; letter-spacing: .1em; text-transform: uppercase;
+       color: var(--muted); font-weight: 700; padding: 0 14px 8px 0;
+       border-bottom: 1.5px solid var(--line-2); white-space: nowrap; }
+  td { padding: 11px 14px 11px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+  tbody tr:last-child td { border-bottom: none; }
+  td.mono { font-size: 13px; }
+
+  pre { background: var(--codebg); border: 1px solid var(--line); border-radius: 4px;
+        padding: 14px 16px; overflow-x: auto; font-size: 13px; line-height: 1.65;
+        margin: 12px 0; white-space: pre; }
+  pre .c { color: var(--muted); }
+  pre .k { color: var(--server); font-weight: 600; }
+
+  .chip { display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .04em;
+          padding: 2px 8px; border-radius: 3px; background: var(--chip-bg); color: var(--ink-2); white-space: nowrap; }
+  .chip.ok   { background: transparent; color: var(--ok);      box-shadow: inset 0 0 0 1.2px currentColor; }
+  .chip.bad  { background: transparent; color: var(--blocked); box-shadow: inset 0 0 0 1.2px currentColor; }
+  .chip.warn { background: transparent; color: var(--warn);    box-shadow: inset 0 0 0 1.2px currentColor; }
+
+  .note { background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--line-2);
+          border-radius: 3px; padding: 16px 20px; margin: 20px 0; }
+  .note.alert { border-left-color: var(--blocked); }
+  .note.good  { border-left-color: var(--ok); }
+  .note.warnb { border-left-color: var(--warn); }
+  .note p:last-child { margin-bottom: 0; }
+  .note .h { font-weight: 700; font-size: 14px; margin: 0 0 6px; display: block; }
+
+  .chk { background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--ok);
+         border-radius: 3px; padding: 10px 14px; margin: 14px 0 0; font-size: 13.5px; }
+  .chk b { color: var(--ok); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; margin-right: 8px; }
+  .fail { background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--blocked);
+          border-radius: 3px; padding: 10px 14px; margin: 8px 0 0; font-size: 13.5px; }
+  .fail b { color: var(--blocked); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; margin-right: 8px; }
+
+  .step { display: grid; grid-template-columns: 92px 1fr; gap: 20px; padding: 26px 0;
+          border-top: 1px solid var(--line); }
+  .step:first-of-type { border-top: 1.5px solid var(--line-2); }
+  .step-n { font-size: 11px; letter-spacing: .12em; font-weight: 800; color: var(--server);
+            padding-top: 5px; white-space: nowrap; }
+  .step-b h4 { margin: 0 0 8px; font-size: 18px; }
+  .step-b > :last-child { margin-bottom: 0; }
+
+  footer { margin-top: 72px; padding-top: 24px; border-top: 2px solid var(--ink);
+           font-size: 13px; color: var(--muted); }
+  @media (max-width: 640px) {
+    header { padding-top: 40px; }
+    body { padding: 0 16px 64px; }
+    .step { grid-template-columns: 1fr; gap: 6px; }
+    .step-n { padding-top: 0; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <p class="eyebrow">RCS LG · LGIT L150 · 현장 점검</p>
+  <h1>명령어로 하나씩 잘라서 확인하기</h1>
+  <p class="lede">
+    <strong>ping 은 되는데 로봇이 온라인으로 안 뜨는</strong> 상황을 계층별로 잘라 원인을 한 곳으로
+    좁히는 순서입니다. 각 명령마다 <strong>무엇이 나와야 통과인지</strong>와, 실패했을 때 어디를 봐야 하는지를
+    같이 적었습니다. 인터넷 없이 브라우저로 그냥 열립니다.
+  </p>
+  <div class="meta-row">
+    <span><b>작성</b> 2026-08-28</span>
+    <span><b>대상</b> 서버 노트북 · 로봇 · 태블릿</span>
+    <span><b>동봉</b> <code>RCS_LG_0828.zip</code></span>
+    <span><b>브랜치</b> <code>feature/luke-lg</code></span>
+  </div>
+</header>
+
+<!-- ══════════ 00 ══════════ -->
+<section>
+  <h2>00 — 시작 전</h2>
+  <h3>PowerShell 창 하나를 열고, 이 여섯 줄부터 붙여넣습니다</h3>
+  <p class="dim">
+    이후의 모든 명령이 이 변수를 그대로 씁니다. 창을 닫으면 변수도 사라지니
+    <strong>같은 창에서 계속</strong> 작업하세요.
+  </p>
+
+<pre><span class="c"># 현장에서 실측한 값으로 바꿔 넣을 것 (라우터를 바꾸면 달라집니다)</span>
+$ROBOT  = "10.115.244.12"                        <span class="c"># 로봇 라우터 WAN 고정 IP</span>
+$SRV    = "10.115.244.11"                        <span class="c"># 서버 라우터 WAN 고정 IP</span>
+$API    = "http://127.0.0.1:8002"                <span class="c"># 백엔드 (서버 노트북 자기 자신)</span>
+$SECRET = "19a11878aaab420fba94577ce3620dce"     <span class="c"># 로봇 API Secret 헤더</span>
+$MYSQL  = "C:\Program Files\MariaDB 12.3\bin\mysql.exe"
+$DB     = @("-uroot", "-p1234", "-D", "rcs_lg_db")</pre>
+
+  <div class="note alert">
+    <span class="h">PowerShell 의 <code>curl</code> 은 curl 이 아닙니다</span>
+    <p class="sm"><code>curl</code> 은 <code>Invoke-WebRequest</code> 의 별칭이라 옵션이 전혀 다릅니다.
+    이 문서의 curl 명령은 <strong>전부 <code>curl.exe</code></strong> 로 적었습니다. 그대로 쓰세요.</p>
+    <p class="sm">주소를 만들 때도 <code>"http://$ROBOT:8090"</code> 은 오류가 납니다
+    (<code>$ROBOT:</code> 를 드라이브 지정으로 읽음). 반드시 <code>"http://${ROBOT}:8090"</code> 형태로 씁니다.</p>
+  </div>
+
+  <div class="note warnb">
+    <span class="h">MariaDB 경로는 버전마다 다릅니다</span>
+    <p class="sm">위 <code>$MYSQL</code> 이 없다고 나오면 실제 경로를 찾으세요.</p>
+<pre>Get-ChildItem "C:\Program Files\MariaDB*\bin\mysql.exe" | Select-Object FullName</pre>
+  </div>
+
+  <h4>스크립트로 한 번에 훑는 방법 (동봉된 tools 폴더)</h4>
+  <p class="dim">아래 두 개가 이 문서의 STEP 1~3 을 자동으로 훑고 결과를 txt 로 남깁니다.
+  <strong>먼저 이걸 돌리고, 막힌 지점만 이 문서에서 손으로 파는 것</strong>이 빠릅니다.</p>
+<pre><span class="c"># 종합 진단 — 원인을 (A)IP·(B)포워딩·(C)MTU·(D)통신사차단 중 하나로 좁혀준다</span>
+cd C:\RCS_LG\tools
+.\field_diag.ps1 -Mode Robot     <span class="c"># 1단계: 노트북을 로봇 라우터에 붙인 상태에서</span>
+.\field_diag.ps1 -Mode Server    <span class="c"># 2단계: 노트북을 서버 라우터에 붙인 상태에서</span>
+
+<span class="c"># 로봇 통신 3종만 빠르게</span>
+.\check_robot.bat 10.115.244.12</pre>
+</section>
+
+<!-- ══════════ 01 ══════════ -->
+<section>
+  <h2>01 — 확인 순서</h2>
+  <h3>아래 층이 안 되면 위층은 볼 필요가 없습니다</h3>
+  <p class="dim">
+    "온라인이 안 뜬다" 는 증상 하나에 원인이 일곱 군데 있습니다. 아래에서 위로 한 층씩 올라가면서
+    <strong>처음 실패하는 층</strong>이 곧 원인입니다. 순서를 건너뛰면 엉뚱한 곳을 고치게 됩니다.
+  </p>
+
+  <figure>
+    <svg viewBox="0 0 700 330" role="img" aria-label="7계층 확인 순서 사다리">
+      <g font-family="ui-monospace, Consolas, monospace" font-size="12.5">
+        <g fill="none" stroke="currentColor" stroke-opacity=".22">
+          <rect x="8" y="8"   width="684" height="38"/>
+          <rect x="8" y="52"  width="684" height="38"/>
+          <rect x="8" y="96"  width="684" height="38"/>
+          <rect x="8" y="140" width="684" height="38"/>
+          <rect x="8" y="184" width="684" height="38"/>
+          <rect x="8" y="228" width="684" height="38"/>
+          <rect x="8" y="272" width="684" height="38"/>
+        </g>
+        <g fill="currentColor">
+          <text x="24" y="32"  font-weight="700">7</text><text x="56" y="32">화면 · 태블릿</text>
+          <text x="300" y="32" fill-opacity=".62">콘솔 타일 · 호출 버튼 · 서버주소</text>
+          <text x="24" y="76"  font-weight="700">6</text><text x="56" y="76">매핑 · 설정</text>
+          <text x="300" y="76" fill-opacity=".62">job_points · charging_id · POI · 랙</text>
+          <text x="24" y="120" font-weight="700">5</text><text x="56" y="120">DB 값</text>
+          <text x="300" y="120" fill-opacity=".62">robots.ip_address 가 실제 IP 인가</text>
+          <text x="24" y="164" font-weight="700">4</text><text x="56" y="164">백엔드</text>
+          <text x="300" y="164" fill-opacity=".62">/ping · 8002 LISTEN · 온라인 캐시 60초</text>
+          <text x="24" y="208" font-weight="700">3</text><text x="56" y="208">로봇 HTTP (L7)</text>
+          <text x="300" y="208" fill-opacity=".62">chassis/current-map 응답 = 온라인 판정</text>
+          <text x="24" y="252" font-weight="700">2</text><text x="56" y="252">TCP 포트 (L4)</text>
+          <text x="300" y="252" fill-opacity=".62">8090 · 8002 포트포워딩</text>
+          <text x="24" y="296" font-weight="700">1</text><text x="56" y="296">IP 도달 (L3)</text>
+          <text x="300" y="296" fill-opacity=".62">ping · 내 PC 고정 IP · 게이트웨이</text>
+        </g>
+        <g stroke="currentColor" stroke-opacity=".45" fill="none" stroke-width="1.3">
+          <path d="M 668 300 L 668 22"/>
+          <path d="M 662 32 L 668 18 L 674 32"/>
+        </g>
+      </g>
+    </svg>
+    <figcaption>아래(1)부터 위(7)로. 3층에서 막히면 4~7층은 반드시 실패하므로, 그 상태에서 4층 이상을 손대는 것은 시간 낭비입니다.</figcaption>
+  </figure>
+</section>
+
+<!-- ══════════ 02 STEP 1 ══════════ -->
+<section>
+  <h2>02 — STEP 1 · IP 도달</h2>
+  <h3>내가 지금 어느 망에 붙어 있는지부터 확정합니다</h3>
+
+  <div class="step">
+    <div class="step-n">1-1</div>
+    <div class="step-b">
+      <h4>내 PC 의 IP · 게이트웨이 · 어댑터</h4>
+<pre>Get-NetIPAddress -AddressFamily IPv4 |
+  Where-Object InterfaceAlias -notlike "*Loopback*" |
+  Format-Table InterfaceAlias, IPAddress, PrefixLength, PrefixOrigin
+
+Get-NetRoute -DestinationPrefix "0.0.0.0/0" |
+  Sort-Object RouteMetric | Select-Object -First 1 InterfaceAlias, NextHop
+
+Get-NetAdapter | Where-Object Status -eq "Up" | Format-Table Name, InterfaceDescription</pre>
+      <div class="chk"><b>통과</b>
+        서버 PC IP = <code>192.168.39.110</code> · <code>PrefixOrigin</code> 이 <b>Manual</b> ·
+        게이트웨이 <code>192.168.39.1</code> · 활성 어댑터 <b>1개</b>
+      </div>
+      <div class="fail"><b>실패</b>
+        <code>PrefixOrigin = Dhcp</code> 면 고정 IP 가 <b>적용되지 않은 것</b>입니다.
+        이 상태로 포트포워딩을 <code>.110</code> 으로 걸어두면 태블릿이 서버에 못 붙습니다.
+        (2026-08-21 실측값은 DHCP <code>192.168.39.44</code> 였습니다)
+      </div>
+      <div class="fail"><b>실패</b>
+        활성 어댑터가 <b>2개 이상</b>이면 유선·WiFi 가 동시에 붙어 라우팅이 갈립니다.
+        "됐다 안 됐다" 하는 증상의 단골 원인 — <b>WiFi 를 끄고</b> 다시 하세요.
+      </div>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-n">1-2</div>
+    <div class="step-b">
+      <h4>ping — 라우터끼리 닿는가</h4>
+<pre>ping -n 10 $ROBOT
+ping -n 10 $SRV
+
+<span class="c"># 손실률까지 숫자로 보고 싶으면</span>
+Test-Connection $ROBOT -Count 10 | Measure-Object -Property ResponseTime -Average</pre>
+      <div class="chk"><b>통과</b> 10회 중 <b>10회</b> 응답. 응답시간이 들쭉날쭉하지 않을 것</div>
+      <div class="fail"><b>주의</b>
+        10회 중 1~2회만 오면 <b>무선 구간 품질</b> 문제입니다 (2026-08-21 현장과 같은 증상).
+        라우터 위치를 옮겨 신호세기를 확인하세요. LGIT 정상 장비 기준값은 <b>−71 dBm</b> 입니다.
+      </div>
+
+      <div class="note alert">
+        <span class="h">ping 결과를 과신하지 마세요 — 두 방향 다 틀릴 수 있습니다</span>
+        <p class="sm"><b>ping 이 돼도</b> 로봇과는 무관합니다. ping 은 <b>라우터 자신</b>이 답하는 것이고,
+        포트포워딩은 거치지도 않습니다. 로봇이 꺼져 있어도 ping 은 성공합니다.</p>
+        <p class="sm"><b>ping 이 안 돼도</b> 통신 불가로 단정하면 안 됩니다. 포워딩 규칙에 ICMP 가 없으면
+        ping 만 막힙니다. <b>ping 실패 → 그래도 STEP 2 의 TCP 를 반드시 해볼 것.</b></p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ 03 STEP 2 ══════════ -->
+<section>
+  <h2>03 — STEP 2 · TCP 포트</h2>
+  <h3>포트포워딩이 실제로 뚫려 있는지</h3>
+
+  <div class="step">
+    <div class="step-n">2-1</div>
+    <div class="step-b">
+      <h4>포트가 열려 있는가</h4>
+<pre>Test-NetConnection $ROBOT -Port 8090 -InformationLevel Detailed
+Test-NetConnection $SRV   -Port 8002</pre>
+      <div class="chk"><b>통과</b> <code>TcpTestSucceeded : True</code></div>
+      <div class="fail"><b>실패</b>
+        <code>False</code> → 라우터 포트포워딩을 확인합니다. 관리 페이지는
+        <code>http://192.168.39.1:8090</code> (<code>admin</code> / <code>uned123456</code>).
+        <b>지금 붙어 있는 WiFi 에 따라 다른 라우터에 접속됩니다</b> — 두 라우터의 LAN 주소가 둘 다 <code>192.168.39.1</code> 입니다.
+      </div>
+
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>라우터</th><th>SSID</th><th>WAN 고정 IP</th><th>포워딩 규칙</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>로봇용</td><td class="mono">TC700_5170086</td><td class="mono">10.115.244.12</td>
+              <td class="mono">8090 → 192.168.39.100:8090</td>
+            </tr>
+            <tr>
+              <td>서버용</td><td class="mono">TC700_5168495</td><td class="mono">10.115.244.11</td>
+              <td class="mono">8002 → 192.168.39.110:8002</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="sm dim">초기 PPT 자료와 <b>반대</b>입니다. 위 표가 2026-08-21 현장 실측 기준입니다.
+      규칙은 <b>TCP · ICMP 두 줄씩</b> 넣으세요 (LGIT 정상 장비 캡처 기준).</p>
+
+      <div class="note alert">
+        <span class="h">포트 번호를 바꾸면 안 됩니다</span>
+        <p class="sm">로봇 포트 <b>8090 은 코드에 하드코딩</b>되어 있습니다
+        (<code>robot_api/*.py</code> 의 <code>PORT = 8090</code>, <code>routers/map.py</code> 다수).
+        DB 에는 IP 만 넣으므로, WAN 을 8090 이외로 포워딩하면 <b>IP 를 아무리 고쳐도 안 붙습니다.</b></p>
+      </div>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-n">2-2</div>
+    <div class="step-b">
+      <h4>서버 쪽 방화벽 — 태블릿이 못 들어올 때</h4>
+<pre>Get-NetFirewallRule -DisplayName "RCS*" | Select-Object DisplayName, Enabled, Direction
+
+<span class="c"># 없으면 (관리자 PowerShell)</span>
+New-NetFirewallRule -DisplayName "RCS Backend 8002" -Direction Inbound -Protocol TCP -LocalPort 8002 -Action Allow -Profile Any
+New-NetFirewallRule -DisplayName "RCS Frontend 3000" -Direction Inbound -Protocol TCP -LocalPort 3000 -Action Allow -Profile Any</pre>
+      <div class="note warnb">
+        <span class="h">"규칙이 안 보인다 = 막혀 있다" 가 아닙니다</span>
+        <p class="sm">프로그램 기준 규칙(<code>python.exe</code> 등)으로 이미 열려 있을 수 있습니다.
+        조회가 비어 있는 것은 <b>없다는 증거가 아닙니다.</b> 가장 확실한 확인은
+        <b>실제로 다른 기기에서 접속해보는 것</b>입니다.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ 04 STEP 3 ══════════ -->
+<section>
+  <h2>04 — STEP 3 · 로봇 HTTP</h2>
+  <h3>★ "ping 은 되는데 온라인이 안 뜬다" 의 90%가 여기서 갈립니다</h3>
+
+  <div class="note good">
+    <span class="h">먼저 알아야 할 원리 — 관제의 온라인 판정은 딱 하나입니다</span>
+    <p class="sm">
+      <code>GET http://&lt;로봇IP&gt;:8090/chassis/current-map</code> 에 <b>응답이 오기만 하면 online</b> 입니다.
+      상태코드는 보지 않습니다 — <b>맵이 설정 안 된 404 도 online</b> 으로 칩니다.
+      (<code>robot_api/robot_live_service.py</code> 의 <code>fetch_robot_live()</code>)
+    </p>
+    <p class="sm">
+      <code>/device/info</code> 는 <b>판정에 쓰지 않습니다.</b> LTE 에서 응답이 커서 막히는 사례가 있어
+      일부러 뺐습니다. 그래서 <b>device/info 가 실패해도 온라인은 뜰 수 있습니다.</b>
+    </p>
+  </div>
+
+  <div class="step">
+    <div class="step-n">3-1</div>
+    <div class="step-b">
+      <h4>온라인 판정과 완전히 똑같은 프로브 (작은 응답)</h4>
+<pre>curl.exe -s -i --max-time 10 -H "Secret: $SECRET" "http://${ROBOT}:8090/chassis/current-map" |
+  Select-Object -First 1</pre>
+      <div class="chk"><b>통과</b> <code>HTTP/1.1 200</code> 또는 <code>404</code> — <b>줄이 하나라도 나오면 online 판정은 통과</b></div>
+      <div class="fail"><b>실패</b> 아무것도 안 나오거나 타임아웃 → 관제에서도 반드시 오프라인으로 뜹니다. 3-3 으로</div>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-n">3-2</div>
+    <div class="step-b">
+      <h4>로봇이 실제로 살아 있는가</h4>
+<pre>curl.exe -s --max-time 10 -H "Secret: $SECRET" "http://${ROBOT}:8090/chassis/status"</pre>
+      <div class="chk"><b>통과</b> JSON 이 나오고 <code>emergency_stop_pressed</code> 가 <code>false</code></div>
+      <div class="fail"><b>확인</b> <code>true</code> 면 <b>비상정지 버튼이 눌린 상태</b>입니다. 통신 문제가 아니라 물리 버튼을 푸세요.</div>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-n">3-3</div>
+    <div class="step-b">
+      <h4>큰 응답도 통과하는가 — MTU 블랙홀 판별</h4>
+      <p class="dim">작은 요청은 되는데 큰 응답만 잘리는 현상입니다. LTE 구간에서 자주 나옵니다.</p>
+<pre>curl.exe -s -o NUL -w "code=%{http_code} size=%{size_download} time=%{time_total}\n" `
+  --max-time 15 -H "Secret: $SECRET" "http://${ROBOT}:8090/device/info"</pre>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>3-1 (작은 응답)</th><th>3-3 (큰 응답)</th><th>해석 · 다음 할 일</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><span class="chip ok">OK</span></td><td><span class="chip ok">OK</span></td>
+              <td><b>로봇·네트워크 정상.</b> 원인은 서버 쪽 → STEP 4 로 올라가세요</td>
+            </tr>
+            <tr>
+              <td><span class="chip ok">OK</span></td><td><span class="chip warn">size=0 / 타임아웃</span></td>
+              <td><b>MTU 블랙홀.</b> 라우터 MTU 를 1400 정도로 낮추세요.<br>
+                  <span class="sm">단 <b>관제 온라인은 정상적으로 뜹니다</b> — 판정은 작은 프로브만 쓰므로.
+                  대신 맵 동기화·장비정보 조회가 실패합니다</span></td>
+            </tr>
+            <tr>
+              <td><span class="chip bad">FAIL</span></td><td><span class="chip bad">FAIL</span></td>
+              <td>TCP 는 열렸는데 HTTP 응답이 없음 → 포워딩 대상 IP 가 <b>로봇이 아닐</b> 가능성.
+                  로봇 라우터에 직접 붙어 <code>192.168.39.100</code> 으로 같은 명령을 해보세요</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-n">3-4</div>
+    <div class="step-b">
+      <h4>WebSocket — 배터리·주행상태가 안 보일 때</h4>
+<pre>curl.exe -s -i -N --max-time 6 `
+  -H "Connection: Upgrade" -H "Upgrade: websocket" `
+  -H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" `
+  "http://${ROBOT}:8090/ws/v2/topics" | Select-Object -First 1</pre>
+      <div class="chk"><b>통과</b> <code>HTTP/1.1 101 Switching Protocols</code></div>
+      <div class="fail"><b>실패</b> 온라인은 떠도 배터리·<code>RUNSTATE</code> 가 <code>N/A</code> 로 남습니다.
+        라우터가 WebSocket 업그레이드를 막는 경우 — 배차 자체는 동작합니다</div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ 05 STEP 4 ══════════ -->
+<section>
+  <h2>05 — STEP 4 · 백엔드</h2>
+  <h3>서버가 떠 있고, 밖에서 들어올 수 있는 상태인지</h3>
+
+  <div class="step">
+    <div class="step-n">4-1</div>
+    <div class="step-b">
+      <h4>서버 기동</h4>
+<pre><span class="c"># 동봉된 배치파일 (백엔드 8002 + 프론트 3000 을 한 번에)</span>
+C:\RCS_LG\서버시작_0828.bat</pre>
+      <p class="sm dim">현장 노트북에 이미 <code>서버시작.bat</code> 이 있고 잘 돌고 있으면 <b>그걸 그대로 쓰세요.</b>
+      동봉한 <code>서버시작_0828.bat</code> 은 기존 파일을 덮어쓰지 않도록 이름을 다르게 한 것입니다.
+      기존 것과의 차이는 ①경로를 자기 위치 기준으로 잡음 ②MariaDB·venv·<code>.next</code> 유무를 먼저 확인해
+      원인을 알려주고 멈춤 ③백엔드를 <code>run_server.ps1</code>(<b><code>--reload</code> 없음</b>)로 띄움 세 가지입니다.</p>
+      <h4>관제 화면 서빙 방식이 두 가지입니다 — 런처가 알아서 갈라집니다</h4>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>조건</th><th>동작</th><th>관제 화면 주소</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><code>BackEnd\web</code> <b>있음</b></td>
+              <td><b>8002 단독 모드</b> — 백엔드가 관제 화면까지 서빙.<br>프론트(3000)·Node.js 불필요</td>
+              <td class="mono">http://&lt;서버&gt;:8002</td>
+            </tr>
+            <tr>
+              <td><code>BackEnd\web</code> <b>없음</b></td>
+              <td><code>frontend</code> 를 <code>npm run start</code> 로 별도 기동</td>
+              <td class="mono">http://&lt;서버&gt;:3000</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="sm dim">판정 근거는 <code>BackEnd/app/main.py</code> 의 <code>_web_dir</code> 마운트 로직과 같습니다.
+      현장이 8002 단독으로 돌고 있으면 <code>.next</code> 가 없어도 <b>런처가 멈추지 않고 그대로 진행</b>합니다.</p>
+
+      <div class="note warnb">
+        <span class="h">배치파일에 한글을 넣지 않은 이유</span>
+        <p class="sm"><code>cmd.exe</code> 는 배치파일 안에 한글(멀티바이트)이 있으면 <b>읽는 위치가 어긋나</b>
+        <code>goto</code> 로 건너뛴 뒤 엉뚱한 줄을 실행합니다. 실제로 재현됐습니다.
+        그래서 <code>서버시작_0828.bat</code> 은 <b>영문 6줄짜리 껍데기</b>이고,
+        판단과 안내 문구는 전부 <code>start_server.ps1</code> 에 들어 있습니다.
+        <b>배치파일을 편집할 때 한글을 넣지 마세요.</b></p>
+      </div>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-n">4-2</div>
+    <div class="step-b">
+      <h4>살아 있는가 · 밖에서 들어올 수 있는가</h4>
+<pre>Invoke-RestMethod "$API/ping"
+
+Get-NetTCPConnection -LocalPort 8002,3000 -State Listen |
+  Format-Table LocalAddress, LocalPort, OwningProcess</pre>
+      <div class="chk"><b>통과</b> <code>/ping</code> 응답이 오고, <code>LocalAddress</code> 가 <b><code>0.0.0.0</code></b></div>
+      <div class="fail"><b>실패</b> <code>LocalAddress</code> 가 <code>127.0.0.1</code> 이면 <b>자기 자신에서만</b> 접속됩니다.
+        태블릿·다른 PC 는 절대 못 붙습니다. <code>uvicorn ... --host 0.0.0.0</code> 인지 확인하세요</div>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-n">4-3</div>
+    <div class="step-b">
+      <h4>백엔드 로그 실시간으로 보기</h4>
+<pre>Get-Content C:\RCS_LG\BackEnd\_logs\backend.log -Tail 50 -Wait
+
+<span class="c"># 중요한 줄만 골라 보기</span>
+Get-Content C:\RCS_LG\BackEnd\_logs\backend.log -Tail 300 |
+  Select-String "배송 모드|calculation_failed|jack|506|501|boot_recovery|relocalize"</pre>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ 06 STEP 5 ══════════ -->
+<section>
+  <h2>06 — STEP 5 · DB 값</h2>
+  <h3>서버가 로봇의 <em>어느 주소</em>를 찌르고 있는지</h3>
+  <p class="dim">
+    STEP 3 에서 손으로 찌른 IP 와 DB 에 든 IP 가 <b>다르면</b>, 손으로는 되는데 관제는 오프라인으로 뜹니다.
+    이 항목이 <b>"ping 은 되는데 온라인 안 뜬다" 의 두 번째로 흔한 원인</b>입니다.
+  </p>
+
+  <div class="step">
+    <div class="step-n">5-1</div>
+    <div class="step-b">
+      <h4>현재 등록된 값 보기</h4>
+<pre>&amp; $MYSQL @DB -e "SELECT id,name,ip_address,charging_id,standby_id,area_id,is_active FROM robots;"</pre>
+      <div class="chk"><b>통과</b> <code>ip_address</code> 가 STEP 3 에서 성공한 그 IP 와 <b>글자 그대로 같을 것</b></div>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-n">5-2</div>
+    <div class="step-b">
+      <h4>IP 수정 — <code>UPDATE</code> 로만</h4>
+<pre>&amp; $MYSQL @DB -e "UPDATE robots SET ip_address='10.115.244.12' WHERE id=12;"
+
+<span class="c"># 반드시 다시 확인 — charging_id / standby_id 가 살아 있어야 한다</span>
+&amp; $MYSQL @DB -e "SELECT id,name,ip_address,charging_id,standby_id FROM robots;"</pre>
+      <div class="note alert">
+        <span class="h">로봇 관리 화면의 "IP로 등록" 을 쓰지 마세요</span>
+        <p class="sm"><code>register-by-ip</code> 는 <b><code>charging_id</code>·<code>standby_id</code> 를 채우지 않습니다.</b>
+        배차는 정상으로 보이는데 <b>복귀만 조용히 멈춥니다</b> — 원인 찾기가 대단히 어렵습니다.
+        IP 만 바꿀 때는 위의 <code>UPDATE</code> 를 쓰고, 수정 뒤 두 값이 <code>NULL</code> 이 아닌지 반드시 확인하세요.</p>
+      </div>
+      <div class="note warnb">
+        <span class="h">쓰지 않는 로봇이 <code>is_active=1</code> 로 남아 있지 않은지</span>
+        <p class="sm">현장에 없는 로봇이 등록돼 있으면 계속 오프라인으로 뜨고 조회가 느려집니다.
+        가용 로봇 수 계산에는 영향이 없지만, 화면이 지저분해집니다.</p>
+<pre>&amp; $MYSQL @DB -e "UPDATE robots SET is_active=0 WHERE id=13;"</pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ 07 STEP 6 ══════════ -->
+<section>
+  <h2>07 — STEP 6 · 백엔드가 내리는 결론</h2>
+  <h3>서버 스스로는 로봇을 어떻게 보고 있는가</h3>
+
+  <div class="step">
+    <div class="step-n">6-1</div>
+    <div class="step-b">
+      <h4>백엔드가 직접 조회한 결과</h4>
+<pre>Invoke-RestMethod "$API/api/robots/live" | ConvertTo-Json -Depth 4
+
+<span class="c"># 콘솔 화면이 쓰는 것과 같은 데이터</span>
+(Invoke-RestMethod "$API/api/dispatch/console/status").robots |
+  Format-Table id, name, ip_address, online, battery</pre>
+      <div class="chk"><b>통과</b> <code>ONLINE : Online</code> · <code>online : True</code></div>
+      <div class="fail"><b>실패</b> 응답의 <code>errors</code> 항목을 보세요. 어느 엔드포인트에서 막혔는지 그대로 나옵니다</div>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-n">6-2</div>
+    <div class="step-b">
+      <h4>★ 고쳤는데도 한동안 오프라인으로 보이는 이유 — 캐시</h4>
+      <div class="note alert">
+        <span class="h">온라인 판정은 TTL 캐시를 탑니다</span>
+        <p class="sm">
+          온라인이면 <b>15초</b>, <b>오프라인이면 60초</b> 동안 이전 결과를 재사용합니다
+          (<code>dispatch_service.py</code> 의 <code>LIVE_CACHE_TTL</code> / <code>LIVE_CACHE_TTL_OFFLINE</code>).
+          게다가 화면 폴링은 <b>비블로킹</b>이라, 캐시가 만료돼도 <b>기다리지 않고 직전 값을 즉시</b> 돌려줍니다.
+          (오프라인 로봇 때문에 콘솔이 20초씩 멈추던 것을 고친 결과입니다)
+        </p>
+        <p class="sm">
+          → IP 를 고치거나 통신을 살린 뒤 <b>최대 60초 + 폴링 한 주기</b>는 오프라인으로 보이는 게 정상입니다.
+          <b>2분이 지나도 안 바뀌면</b> 그때 진짜 문제입니다. 백엔드를 재시작하면 캐시가 즉시 비워집니다.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ 08 매핑 ══════════ -->
+<section>
+  <h2>08 — STEP 7 · J ↔ R 매핑</h2>
+  <h3>이게 없으면 배송 모드로 진입하지 않습니다</h3>
+  <p class="dim">
+    매핑은 <b>코드가 아니라 DB <code>job_points</code> 테이블의 데이터 2줄</b>입니다.
+    DB 가 노트북마다 따로 있으므로 <b>서버 노트북에서 다시 넣어야 합니다.</b>
+    테이블 자체는 서버 기동 시 <code>create_all</code> 이 자동으로 만들어 주므로 수동 SQL 은 필요 없습니다 —
+    <b>없는 건 데이터 2줄뿐</b>입니다.
+  </p>
+
+  <div class="step">
+    <div class="step-n">7-1</div>
+    <div class="step-b">
+      <h4>먼저 조회 — 이미 있으면 다시 넣을 필요 없습니다</h4>
+<pre>Invoke-RestMethod "$API/api/dispatch/job-points" |
+  Format-Table area_id, j_poi_name, r_poi_name, occupied</pre>
+      <div class="chk"><b>통과</b> <code>J1→R1</code>, <code>J2→R2</code> 두 줄. <b><code>area_id</code> 가 현재 맵의 area 와 같을 것</b></div>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-n">7-2</div>
+    <div class="step-b">
+      <h4>현재 area_id 와 POI id 확인</h4>
+<pre>&amp; $MYSQL @DB -e "SELECT id, area_id, mapping_id FROM robot_maps ORDER BY id DESC LIMIT 3;"
+
+(Invoke-RestMethod "$API/api/dispatch/console/status").pois |
+  Format-Table poi_id, poi_name, poi_type, paired_poi_name, rack_occupied</pre>
+      <p class="sm dim">여기서 나온 <code>poi_id</code> 가 <b>태블릿 설정에 넣을 POI ID</b> 이기도 합니다.</p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-n">7-3</div>
+    <div class="step-b">
+      <h4>등록</h4>
+<pre>$u = "$API/api/dispatch/job-points"
+$h = @{ "Content-Type" = "application/json" }
+
+Invoke-RestMethod $u -Method Post -Headers $h -Body '{"area_id":29,"j_poi_name":"J1","r_poi_name":"R1"}'
+Invoke-RestMethod $u -Method Post -Headers $h -Body '{"area_id":29,"j_poi_name":"J2","r_poi_name":"R2"}'
+
+<span class="c"># 확인</span>
+Invoke-RestMethod $u | Format-Table area_id, j_poi_name, r_poi_name, occupied</pre>
+      <p class="sm dim"><code>29</code> 자리에 7-2 에서 확인한 실제 area_id 를 넣으세요.</p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-n">7-4</div>
+    <div class="step-b">
+      <h4>함정 세 가지</h4>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>함정</th><th>왜 위험한가</th><th>대처</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><b>area_id 가 틀려도<br>"되는 것처럼" 보인다</b></td>
+              <td>매핑 조회는 area 로 못 찾으면 <b>이름만으로 폴백</b>합니다. 옛 area 줄이 남아 있으면
+                  그게 잡혀서 동작은 하지만, 의도한 설정이 아닙니다</td>
+              <td>7-1 의 GET 으로 <code>area_id</code> 를 <b>눈으로</b> 확인</td>
+            </tr>
+            <tr>
+              <td><b>등록해도 옛 줄이 안 사라진다</b></td>
+              <td><code>upsert</code> 는 <code>(area_id, j_poi_name)</code> 이 <b>정확히 일치</b>할 때만 갱신합니다.
+                  area 가 다르면 <b>새 줄이 추가</b>되고 옛 줄은 그대로 남습니다</td>
+              <td>옛 줄 삭제:<br><code class="sm">Invoke-RestMethod "$API/api/dispatch/job-points/J1?area_id=26" -Method Delete</code></td>
+            </tr>
+            <tr>
+              <td><b>occupied=1 이면<br>호출 버튼이 안 나온다</b></td>
+              <td>J 에 랙이 놓였다는 표시입니다. <b>랙 감지 센서가 없어</b> 시스템이 스스로 못 풉니다.
+                  라이다로도 판정 불가가 확정됐습니다(로봇이 자기가 든 랙을 인식)</td>
+              <td>태블릿 [확인] 또는<br><code class="sm">Invoke-RestMethod "$API/api/dispatch/poi/&lt;POI id&gt;/rack-cleared" -Method Post</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="note good">
+        <span class="h">롤백은 매핑 삭제 한 줄</span>
+        <p class="sm">매핑이 없으면 <b>종전 인터랙티브 화면</b>으로 그대로 돌아갑니다. 코드를 되돌릴 필요가 없습니다.</p>
+<pre>Invoke-RestMethod "$API/api/dispatch/job-points/J1?area_id=29" -Method Delete
+Invoke-RestMethod "$API/api/dispatch/job-points/J2?area_id=29" -Method Delete</pre>
+      </div>
+      <div class="chk"><b>최종 통과</b>
+        R1 호출 후 백엔드 로그에 <code>[dispatch] 배송 모드 — robot=NN R1 → J1</code> 이 찍힐 것.
+        <b>이 줄이 없으면 매핑을 못 찾아 기존 모드로 빠진 것</b>입니다 — area_id 를 다시 보세요
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ 09 맵 ══════════ -->
+<section>
+  <h2>09 — STEP 8 · 맵 · POI · 랙</h2>
+  <h3>현장에서 맵을 새로 딴 뒤 반드시 다시 볼 것들</h3>
+
+  <div class="step">
+    <div class="step-n">8-1</div>
+    <div class="step-b">
+      <h4>로봇이 어느 맵을 물고 있나</h4>
+<pre>curl.exe -s -H "Secret: $SECRET" "http://${ROBOT}:8090/chassis/current-map"
+
+&amp; $MYSQL @DB -e "SELECT id,area_id,mapping_id,image_url FROM robot_maps ORDER BY id DESC LIMIT 5;"</pre>
+      <div class="fail"><b>실패</b> 로봇 쪽 맵과 DB 쪽 맵이 다르면 관제 화면에 로봇이 엉뚱한 곳에 찍힙니다</div>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-n">8-2</div>
+    <div class="step-b">
+      <h4>POI 와 랙 규격</h4>
+<pre>&amp; $MYSQL @DB -e "SELECT id,name,poi_type,rack_size FROM map_pois WHERE is_active=1 ORDER BY name;"</pre>
+      <div class="chk"><b>통과</b> <code>R1</code>·<code>R2</code> 가 <code>standby</code> 이고 <code>rack_size</code> 가 채워져 있을 것</div>
+      <div class="note warnb">
+        <span class="h">rack_size 는 두 종류입니다</span>
+        <p class="sm"><code>LG</code> = LG 에서 받은 초록 대차 · <code>LG2</code> = 우리가 커스터마이징한 대차.
+        틀리면 정렬 단계에서 <b>Wrong rack size</b> 로 실패합니다.
+        규격값은 도면 치수가 아니라 <b>라이다가 재는 다리 중심 간격</b>에 맞춘 값입니다.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-n">8-3</div>
+    <div class="step-b">
+      <h4>맵을 새로 딸 때 놓치기 쉬운 것</h4>
+      <ol class="tight">
+        <li><b>맵 뜰 때 R 자리에 랙을 두지 말 것.</b> 랙 다리 4개가 지도에 <b>영구 장애물</b>로 박혀,
+            나중에 출발점이 팽창영역에 걸려 <code>calculation_failed</code> 가 납니다 (2026-08-11 실제 사례)</li>
+        <li>맵을 다시 만들면 <b>area_id 와 POI id 가 전부 바뀝니다</b> →
+            <b>job_points 매핑(STEP 7)과 태블릿 POI ID(STEP 9)를 다시</b> 넣어야 합니다</li>
+        <li><code>charging_id</code>·<code>standby_id</code> 가 <code>NULL</code> 이 되지 않았는지 확인 (STEP 5-2)</li>
+        <li>충전독에 도킹한 상태로 맵핑하면 <b>조용히 실패</b>합니다. 도킹을 풀고 시작하세요</li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ 10 태블릿 ══════════ -->
+<section>
+  <h2>10 — STEP 9 · 태블릿</h2>
+  <h3>서버 라우터를 바꿨다면 태블릿은 전부 다시 설정해야 합니다</h3>
+
+  <div class="note alert">
+    <span class="h">서버 주소는 코드도 DB 도 아닌 <b>기기 안</b>에 저장됩니다</span>
+    <p class="sm">APK 는 서버 주소를 각 태블릿의 <code>SharedPreferences("config")</code> 에 넣습니다.
+    <b>서버 라우터 WAN IP 가 바뀌면 태블릿 대수만큼 손으로 다시 넣어야 합니다.</b>
+    APK 재빌드는 필요 없습니다.</p>
+  </div>
+
+  <div class="step">
+    <div class="step-n">9-1</div>
+    <div class="step-b">
+      <h4>태블릿에 넣을 값</h4>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>APK</th><th>서버 주소</th><th>ID 칸</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">app-console-release</td><td class="mono">http://&lt;서버라우터WAN&gt;:8002</td><td>없음 (콘솔은 주소만)</td></tr>
+            <tr><td class="mono">app-poi-release</td><td class="mono">http://&lt;서버라우터WAN&gt;:8002</td><td>그 자리의 <b>POI id</b> (7-2 에서 확인)</td></tr>
+            <tr><td class="mono">app-robot-release</td><td class="mono">http://&lt;서버라우터WAN&gt;:8002</td><td>로봇 <b>robot id</b></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-n">9-2</div>
+    <div class="step-b">
+      <h4>APK 설치 전에 브라우저로 먼저 검증하세요</h4>
+      <p class="dim">태블릿 크롬에서 아래 주소가 열리면 네트워크·서버는 정상입니다.
+      APK 문제인지 통신 문제인지 <b>가장 빠르게 갈라주는 방법</b>입니다.</p>
+<pre>http://&lt;서버라우터WAN&gt;:8002/api/dispatch/console          <span class="c"># 배차 콘솔</span>
+http://&lt;서버라우터WAN&gt;:8002/api/dispatch/tablet/poi/1033   <span class="c"># 위치 태블릿</span>
+http://&lt;서버라우터WAN&gt;:8002/api/dispatch/robot-tablet/12   <span class="c"># 로봇 태블릿</span></pre>
+      <div class="note good">
+        <span class="h">콘솔 화면은 APK 가 아니라 서버가 그립니다</span>
+        <p class="sm">APK 는 위 주소를 WebView 로 띄우는 껍데기입니다. 화면 내용은
+        서버의 <code>dispatch_console.html</code> 버전이 결정하므로,
+        <b>화면을 고치려면 APK 가 아니라 서버 파일을 바꿔야 합니다.</b></p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ 11 시운전 ══════════ -->
+<section>
+  <h2>11 — STEP 10 · 시운전</h2>
+  <h3>한 바퀴를 순서대로</h3>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>#</th><th>확인</th><th>방법</th><th>기대</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td>백엔드</td><td class="mono">Invoke-RestMethod "$API/ping"</td><td>응답</td></tr>
+        <tr><td>2</td><td>로봇 온라인</td><td class="mono">console/status 의 online</td><td>true</td></tr>
+        <tr><td>3</td><td>매핑</td><td class="mono">GET /api/dispatch/job-points</td><td>J1→R1, J2→R2</td></tr>
+        <tr><td>4</td><td>콘솔 타일</td><td>콘솔 화면</td><td>R1·R2·J1·J2 가 짝으로</td></tr>
+        <tr><td>5</td><td>폴링</td><td>콘솔을 1분 지켜보기</td><td>수십 초 멈추는 구간 없음</td></tr>
+        <tr><td>6</td><td>복귀 지정</td><td>로봇 관리 화면</td><td>충전소·대기장소 채워짐</td></tr>
+        <tr><td>7</td><td>배송 진입</td><td>R1 호출 → 백엔드 로그</td><td class="mono">배송 모드 — robot=NN R1 → J1</td></tr>
+        <tr><td>8</td><td>하차 · 점유</td><td>J1 타일</td><td>[확인] 활성 · R1 호출 비활성</td></tr>
+        <tr><td>9</td><td>해제</td><td>J1 [확인]</td><td>2초 뒤 R1 호출 살아남</td></tr>
+        <tr><td>10</td><td>복귀</td><td>큐 비우고 대기</td><td>충전소 도킹 · 세션 completed</td></tr>
+        <tr><td>11</td><td>재부팅 복구</td><td>서버·로봇 재부팅</td><td>자동 기동 · 위치 재조정</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="note warnb">
+    <span class="h">11번(재부팅)은 꼭 하세요</span>
+    <p class="sm">현장에서 정전 한 번이면 바로 겪습니다.
+    작업 중 백엔드가 재기동됐을 때의 동작은 <b>아직 검증되지 않은 항목</b>입니다.</p>
+  </div>
+</section>
+
+<!-- ══════════ 12 역인덱스 ══════════ -->
+<section>
+  <h2>12 — 증상에서 거꾸로 찾기</h2>
+  <h3>이 증상이면 여기부터</h3>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>증상</th><th>가장 먼저 볼 것</th><th>단계</th></tr></thead>
+      <tbody>
+        <tr><td><b>ping 은 되는데 로봇이 오프라인</b></td>
+            <td><code>curl.exe</code> 로 <code>chassis/current-map</code> → DB ip_address → 캐시 60초</td>
+            <td>3-1 → 5-1 → 6-2</td></tr>
+        <tr><td>ping 이 10회 중 1~2회만</td><td>무선 품질. 라우터 위치·신호세기(−71dBm 기준)</td><td>1-2</td></tr>
+        <tr><td>ping 완전 실패</td><td>ICMP 규칙 없을 수 있음 → <b>TCP 로 재확인</b></td><td>2-1</td></tr>
+        <tr><td>포트는 열렸는데 HTTP 무응답</td><td>포워딩 대상 IP 가 로봇이 아닐 수 있음</td><td>3-3</td></tr>
+        <tr><td>온라인은 뜨는데 맵·장비정보가 안 옴</td><td>MTU 블랙홀 (작은 응답만 통과)</td><td>3-3</td></tr>
+        <tr><td>배터리·주행상태가 N/A</td><td>WebSocket 업그레이드 차단</td><td>3-4</td></tr>
+        <tr><td>태블릿이 서버에 못 붙음</td><td>서버 PC 고정 IP · 포워딩 대상 · 방화벽 · 태블릿 서버주소</td><td>1-1 → 2-2 → 9-1</td></tr>
+        <tr><td>다른 PC 브라우저에서만 안 됨</td><td><code>LocalAddress 0.0.0.0</code> · <code>NEXT_PUBLIC_API_URL</code></td><td>4-2</td></tr>
+        <tr><td>전부 <b>예약하기</b> 버튼으로 보임</td><td>가용 로봇 0대 = 온라인 로봇 없음. <b>버그 아님</b></td><td>6-1</td></tr>
+        <tr><td>호출 버튼이 아예 안 보임</td><td><code>occupied=1</code> (랙 있음) 또는 매핑 없음</td><td>7-1 · 7-4</td></tr>
+        <tr><td>배송 모드로 안 들어감</td><td><code>area_id</code> 불일치</td><td>7-2</td></tr>
+        <tr><td>배차는 되는데 복귀만 안 됨</td><td><code>charging_id</code>·<code>standby_id</code> 가 <code>NULL</code></td><td>5-2</td></tr>
+        <tr><td><code>calculation_failed</code> 반복</td><td>맵에 랙 다리가 장애물로 박힘 → 맵 재작성</td><td>8-3</td></tr>
+        <tr><td>랙 정렬 실패 (Wrong rack size)</td><td><code>rack_size</code> 가 LG / LG2 중 맞는지</td><td>8-2</td></tr>
+        <tr><td>맵을 새로 딴 뒤 전부 이상</td><td>area_id·POI id 가 바뀜 → 매핑·태블릿 재설정</td><td>8-3</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ══════════ 13 부록 ══════════ -->
+<section>
+  <h2>13 — 부록</h2>
+  <h3>한 장으로 붙여넣는 점검 세트</h3>
+  <p class="dim">STEP 1~6 을 순서대로 한 번에 훑습니다. 어디서 멈추는지만 보면 됩니다.</p>
+<pre><span class="c"># ── 0. 변수 ──</span>
+$ROBOT="10.115.244.12"; $SRV="10.115.244.11"; $API="http://127.0.0.1:8002"
+$SECRET="19a11878aaab420fba94577ce3620dce"
+$MYSQL="C:\Program Files\MariaDB 12.3\bin\mysql.exe"; $DB=@("-uroot","-p1234","-D","rcs_lg_db")
+
+<span class="c"># ── 1. 내 위치 ──</span>
+Get-NetIPAddress -AddressFamily IPv4 | Where-Object InterfaceAlias -notlike "*Loopback*" |
+  Format-Table InterfaceAlias, IPAddress, PrefixOrigin
+
+<span class="c"># ── 2. 도달 ──</span>
+Test-NetConnection $ROBOT -Port 8090 | Select-Object ComputerName, TcpTestSucceeded
+
+<span class="c"># ── 3. 로봇 (온라인 판정과 동일) ──</span>
+curl.exe -s -i --max-time 10 -H "Secret: $SECRET" "http://${ROBOT}:8090/chassis/current-map" |
+  Select-Object -First 1
+
+<span class="c"># ── 4. 백엔드 ──</span>
+Invoke-RestMethod "$API/ping"
+Get-NetTCPConnection -LocalPort 8002 -State Listen | Format-Table LocalAddress, LocalPort
+
+<span class="c"># ── 5. DB ──</span>
+&amp; $MYSQL @DB -e "SELECT id,name,ip_address,charging_id,standby_id,area_id FROM robots;"
+
+<span class="c"># ── 6. 백엔드의 결론 + 매핑 ──</span>
+(Invoke-RestMethod "$API/api/dispatch/console/status").robots |
+  Format-Table id, name, ip_address, online, battery
+Invoke-RestMethod "$API/api/dispatch/job-points" |
+  Format-Table area_id, j_poi_name, r_poi_name, occupied</pre>
+
+  <h4>같이 가져간 파일</h4>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>파일</th><th>용도</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">서버시작_0828.bat</td><td>더블클릭하는 진입점. 영문 6줄 껍데기 — 기존 <code>서버시작.bat</code> 을 덮어쓰지 않음</td></tr>
+        <tr><td class="mono">start_server.ps1</td><td>실제 기동 로직 — DB·venv·빌드 확인 후 백엔드·프론트를 순서대로 띄움</td></tr>
+        <tr><td class="mono">BackEnd\run_server.ps1</td><td>운영용 백엔드 실행 — <code>--reload</code> 없음</td></tr>
+        <tr><td class="mono">BackEnd\run_local.ps1</td><td>개발용 (reload 있음). 현장에서는 쓰지 않는 편이 낫습니다</td></tr>
+        <tr><td class="mono">tools\field_diag.ps1</td><td>종합 진단 — 원인을 IP·포워딩·MTU·통신사 중 하나로 좁힘</td></tr>
+        <tr><td class="mono">tools\check_robot.bat</td><td>로봇 통신 3종 빠른 확인</td></tr>
+        <tr><td class="mono">frontend\.env.local.예시.txt</td><td>현장 값을 덮어쓰지 않으려고 <b>실제 <code>.env.local</code> 은 뺐습니다</b></td></tr>
+        <tr><td class="mono">현장자료\*.html</td><td>이 문서 · 현장 세팅 가이드 · 통신 구조도 (오프라인)</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="note alert">
+    <span class="h">압축을 풀 때 — 반드시 덮어쓰기</span>
+    <p class="sm">폴더를 지우고 새로 풀면 현장에만 있는 <code>venv</code>·<code>node_modules</code>·
+    <code>.next</code>·<code>BackEnd\web</code>·기존 맵 파일이 전부 날아갑니다.
+    zip 안의 맵은 <b>예시 1세트만</b> 넣었습니다(용량 절감) — 현장 맵은 새로 뜰 것이므로 문제 없습니다.</p>
+    <p class="sm"><b><code>frontend\.env.local</code> 은 zip 에 넣지 않았습니다</b> — 현장 값을 덮어쓰지 않기 위해서입니다.
+    대신 <b>없으면 런처가 자동으로 만들어 줍니다</b>(<code>http://localhost:8002</code>). 있으면 손대지 않고 현재 값만 보여줍니다.</p>
+  </div>
+
+  <div class="note alert">
+    <span class="h">그래도 <code>.env.local</code> 은 반드시 있어야 합니다</span>
+    <p class="sm">이 파일이 없으면 프론트가 <b>조용히 깨지지 않고 눈에 띄게 깨집니다.</b>
+    <code>app/map/page.tsx</code>·<code>MonitoringClient.tsx</code> 등 <b>20군데 넘게</b>
+    <code>${'{'}process.env.NEXT_PUBLIC_API_URL{'}'}</code> 를 <b>폴백 없이</b> 쓰기 때문에,
+    값이 없으면 주소가 문자 그대로 <code>undefined/api/map/default-area</code> 가 됩니다.
+    <code>next.config.ts</code> 에 프록시(rewrite)도 없어 상대경로로 대체되지도 않습니다.</p>
+    <p class="sm"><b>값 정하는 기준</b> —
+    관제 화면을 <b>서버 노트북에서만</b> 보면 <code>localhost</code> 로 충분합니다.
+    <b>다른 PC 브라우저에서도</b> 열 거면 <b>서버 PC 고정 IP</b> 로 바꾸고
+    <code>npm run build</code> 를 다시 하세요(빌드 시점에 박히는 값이라 재빌드 필수).
+    태블릿은 <code>:3000</code> 을 쓰지 않으므로 이 값과 무관합니다 — 태블릿은 <code>:8002</code> 로 직접 붙습니다.</p>
+  </div>
+</section>
+
+<footer>
+  RCS LG · LGIT L150 현장 점검 명령어 · 2026-08-28 작성 · 브랜치 <code>feature/luke-lg</code><br>
+  인터넷 없이 열립니다. 값(<code>$ROBOT</code>·<code>$SRV</code>·<code>area_id</code>)은 현장 실측 후 채워 쓰세요.
+</footer>
+
+</div>
+</body>
+</html>
