@@ -1316,12 +1316,13 @@
           <div class="sub">${here ? "랙을 가지러 오는 중…" : jName + " 로 배송 중…"}</div>
           <button class="btn btn-call" disabled>로봇 호출 — 작업 중</button>`;
       } else {
-        const canCall = data.available_robot_count > 0;
-        const label = canCall ? `로봇 호출 — ${jName} 로 배송` : "예약하기";
-        const bcls = canCall ? "btn-call" : "btn-reserve";
+        const blk = callBlock();                     // null 이면 지금 부를 수 있다
+        const label = blk ? blk.label : `로봇 호출 — ${jName} 로 배송`;
+        const bcls = blk ? blk.cls : "btn-call";
+        const sub = (blk && blk.sub) ? blk.sub : `랙을 <b>${jName}</b> 로 보냅니다`;
         body = `
-          <div class="sub">랙을 <b>${jName}</b> 로 보냅니다</div>
-          <button class="btn ${bcls}" data-action="call" data-poi="${p.poi_id}">${label}</button>`;
+          <div class="sub">${sub}</div>
+          <button class="btn ${bcls}"${(blk && blk.disabled) ? " disabled" : ""} data-action="call" data-poi="${p.poi_id}">${label}</button>`;
       }
       return `
         <div class="tile state-${cls}">
@@ -1382,6 +1383,31 @@
         </div>`;
     }
 
+    // ── 호출 불가 사유 (2026-09-23 현장 지적) ────────────────
+    //   종전에는 가용 0대면 무조건 [예약하기] 였다. 왜 못 부르는지가 안 보여서
+    //   "로봇 노는데 왜 예약?" 이 됐다. 상황을 버튼에 그대로 쓴다.
+    //
+    //   정리 중   강제 종료 직후 수 초. 곧 끝나므로 **누르지 못하게** 한다
+    //   복귀 중   충전소로 가는 중. 수 분 걸리므로 **예약이 맞다** — 다만
+    //             왜 예약인지를 알려준다. 예약해 두면 도착 후 자동 출발한다
+    //   그 외     다른 로봇이 작업 중 — 종전대로
+    //
+    //   null 을 돌려주면 "지금 부를 수 있다" 는 뜻이다.
+    function callBlock() {
+      if ((data && data.available_robot_count) > 0) return null;
+      if ((data && data.clearing_robot_count) > 0) {
+        return { label: "⏳ 정리 중", cls: "btn-call", disabled: true,
+                 sub: "작업을 정리하고 있습니다 — 잠시 후 호출됩니다" };
+      }
+      const returning = (data && data.robots || []).some(
+        (r) => r.online && r.busy && r.session_status === "returning");
+      if (returning) {
+        return { label: "예약하기 — 복귀 후 자동 출발", cls: "btn-reserve", disabled: false,
+                 sub: "로봇이 충전소로 복귀 중입니다" };
+      }
+      return { label: "예약하기", cls: "btn-reserve", disabled: false, sub: null };
+    }
+
     function tileHtml(p) {
       // 배송 모드(job_points 매핑 있음) — R 타일/J 타일로 갈라 그린다.
       //
@@ -1410,9 +1436,11 @@
         badgeOverride = "경유지 예약";
         body = `<div class="sub">로봇의 다음 경유지로<br/>예약된 위치입니다</div>`;
       } else if (p.state === "empty") {
-        const label = canCall ? "로봇 호출" : "예약하기";
-        const cls = canCall ? "btn-call" : "btn-reserve";
-        body = `<button class="btn ${cls}" data-action="call" data-poi="${p.poi_id}">${label}</button>`;
+        const blk = callBlock();
+        const label = blk ? blk.label : "로봇 호출";
+        const cls = blk ? blk.cls : "btn-call";
+        body = (blk && blk.sub ? `<div class="sub">${blk.sub}</div>` : "")
+             + `<button class="btn ${cls}"${(blk && blk.disabled) ? " disabled" : ""} data-action="call" data-poi="${p.poi_id}">${label}</button>`;
       } else if (p.state === "reserved") {
         const mode = p.reserved_with_rack === false ? "렉 없이" : "렉 포함";
         body = `
