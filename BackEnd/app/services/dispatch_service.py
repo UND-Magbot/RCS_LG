@@ -339,6 +339,21 @@ def clearing_robot_ids() -> set[int]:
 
       가용으로 세는 건 틀렸다 — 그 순간 로봇은 정말 바쁘다.
       대신 화면이 **"정리 중 — 잠시 후 호출 가능"** 을 보여주게 한다.
+
+    ★ 무엇을 보는가 — `abort_flag` 다.
+
+      처음에는 `jack_service` 의 중지 플래그를 봤는데 **틀렸다.**
+      `_check_stop()` 이 그 플래그를 **pop 하면서** 예외를 던진다. 그래서
+      워커가 첫 체크(약 0.5초)에서 가져가 버리고, 정작 덮어야 할
+      나머지 수 초가 비었다.
+
+      `force_clear` 가 세우는 `worker.abort_flag` 는 **워커가 사라질 때까지**
+      살아 있다. 이게 "강제 종료를 눌렀고 아직 정리 중" 과 정확히 같다.
+
+    ★ `end_flag` 는 보지 않는다.
+      정상 [작업 종료] 도 그걸 세우는데, 그때는 복귀·도킹까지 수 분이 걸린다.
+      "잠시 후 호출" 이라고 하면 거짓말이 된다. 그 경우는 종전대로
+      [예약하기] 가 맞다 — 실제로 예약해 두는 게 작업자에게 이득이다.
     """
     out: set[int] = set()
     with _workers_lock:
@@ -348,6 +363,11 @@ def clearing_robot_ids() -> set[int]:
             continue
         if w.thread is not None and not w.thread.is_alive():
             continue
+        if getattr(w, "abort_flag", False):
+            out.add(rid)
+            continue
+        # 단일 이동 중지·[모든 작업 정지] 처럼 abort_flag 를 안 세우는 경로 보완.
+        # 플래그가 곧 소비되므로 이것만으로는 부족하다 — 위 abort_flag 가 본체다.
         try:
             if jack_service.is_stopping(w.robot_ip):
                 out.add(rid)
