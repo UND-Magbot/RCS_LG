@@ -40,3 +40,5 @@ TabletApp/local.properties
 현장작업/사용폴더경로.txt
 현장작업/차이_*.txt
 현장작업/현장수정분_*.patch
+
+_logs/bags/
