@@ -133,6 +133,19 @@
     /* 세로로 쌓는 버튼 묶음 (배차 작업) */
     .rc-stack { display: flex; flex-direction: column; gap: 8px; }
     .rc-stack .rc-action { width: 100%; }
+    /* 단일 이동 (연구용, 2026-09-23) */
+    .gt-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+    .gt-row label { width: 48px; color: #9fb0c8; font-size: 13px; flex: none; }
+    .gt-row select { flex: 1; min-width: 0; background: #232b38; color: #e6edf7;
+                     border: 1px solid #2c3543; border-radius: 8px; padding: 10px; font-size: 14px; }
+    .gt-row select:disabled { opacity: .5; }
+    .gt-modes { flex: 1; display: flex; gap: 6px; }
+    .gt-mode { flex: 1; background: #232b38; color: #9fb0c8; border: 1px solid #2c3543;
+               border-radius: 8px; padding: 10px; font-size: 13.5px; font-weight: 600; cursor: pointer; }
+    .gt-mode.active { background: #2f6fff; color: #fff; border-color: #2f6fff; }
+    .gt-mode:disabled { opacity: .5; cursor: not-allowed; }
+    .gt-info { margin-top: 8px; font-size: 13px; color: #9fb0c8; line-height: 1.55; }
+    .gt-info b { color: #e6edf7; }
     .rc-mode-btns { display: flex; gap: 8px; }
     .rc-mode-btn { flex: 1; background: #232b38; color: #9fb0c8; border: 1px solid #2c3543; border-radius: 9px; padding: 12px; font-size: 15px; font-weight: 700; cursor: pointer; }
     .rc-mode-btn.active { background: #2f6fff; color: #fff; border-color: #2f6fff; }
@@ -504,6 +517,42 @@
           <!-- 배차 작업 — 이 로봇 하나만 끊는다 (2026-09-17 콘솔 상단에서 이사)
                2026-09-18 자동 운전 패널 안으로 이동 — 수동 조작 중에는 배차 자체가
                멈춰 있으므로 여기 버튼이 보일 이유가 없다(현장 요청). -->
+          <!-- 단일 이동 (연구용, 2026-09-23)
+               콘솔이 배차 시나리오(호출→적재→배송)에 묶여 있어 "저 POI 로 한 번
+               가봐" 를 못 시켰다. 주행을 한 번 보려고 배송 사이클을 통째로 태워야 했다.
+               같은 구간을 방식만 바꿔가며 반복하려고 만든 것이다. -->
+          <div class="rc-section">
+            <h4>단일 이동 <span style="font-weight:400;color:#6f7c92">— 연구용</span></h4>
+            <div class="gt-row">
+              <label for="gt-poi">목적지</label>
+              <select id="gt-poi"></select>
+            </div>
+            <div class="gt-row">
+              <label>방식</label>
+              <div class="gt-modes">
+                <button class="gt-mode active" data-mode="route">경유지 경유</button>
+                <button class="gt-mode" data-mode="direct">직행</button>
+              </div>
+            </div>
+            <div class="rc-stack">
+              <button class="rc-action" id="gt-go">이동</button>
+              <button class="rc-action danger" id="gt-stop" style="display:none">정지</button>
+            </div>
+            <div class="gt-info" id="gt-info"></div>
+            <details class="hint">
+              <summary><span class="qmark">?</span>두 방식이 무엇이 다른가</summary>
+            <div class="vc-hint">
+              <b>경유지 경유</b> — 맵에 찍은 <span class="mono">W1·W2…</span> 를 거쳐 지정한 길로만 갑니다.
+              경유지가 없으면 자동으로 직행이 됩니다.<br>
+              <b>직행</b> — 경유지를 쓰지 않고 로봇이 스스로 길을 찾아 갑니다.<br><br>
+              <b>왜 나눠 뒀나</b> — 2026-09-22 현장에서 비이상적 정지 10건이
+              <b>전부 경유지 주행에서만</b> 났습니다(직행 80m·랙정렬 11m 구간은 0건).
+              같은 목적지를 두 방식으로 번갈아 가보면 그 차이가 재현되는지 알 수 있습니다.<br><br>
+              배차가 진행 중이면 이동이 거부됩니다. 서버 안전거리 판정은 이 이동에도 그대로 걸립니다.
+            </div>
+            </details>
+          </div>
+
           <div class="rc-section">
             <h4>배차 작업 — 이 로봇만</h4>
             <div class="rc-stack">
@@ -2022,6 +2071,8 @@
       szLoad();             // 안전거리 설정
       dtLoad();             // 경로 이탈 허용치
       szStartPoll();        // 현재 존 표시 시작
+      gtLoadPois();         // 단일 이동 목적지 목록
+      gtStartPoll();        // 단일 이동 진행 상황
     }
     async function closeRemoteModal() {
       if (rcRemote) { stopMove(); await changeControlMode("auto"); }
@@ -2029,6 +2080,7 @@
       document.getElementById("remote-modal").classList.remove("show");
       rcStopPausePoll();
       szStopPoll();
+      gtStopPoll();
       rcIp = null; rcRobotId = null; rcName = null;
     }
     document.getElementById("remote-close").onclick = closeRemoteModal;
@@ -2112,6 +2164,93 @@
     function rcStopPausePoll() {
       if (rcPausePoll) { clearInterval(rcPausePoll); rcPausePoll = null; }
     }
+
+    // ── 단일 이동 (연구용, 2026-09-23) ───────────────────
+    //   배차를 안 태우고 POI 하나로 바로 보낸다.
+    //   같은 목적지를 [경유지 경유] / [직행] 으로 번갈아 가보며 비교한다.
+    let gtMode = "route", gtPoll = null;
+
+    async function gtLoadPois() {
+      const sel = document.getElementById("gt-poi");
+      if (!sel || !rcRobotId) return;
+      try {
+        const res = await fetch(`/api/dispatch/goto/pois?robot_id=${rcRobotId}`);
+        if (!res.ok) return;
+        const items = (await res.json()).items || [];
+        if (!items.length) { sel.innerHTML = '<option>맵에 POI 가 없습니다</option>'; return; }
+        sel.innerHTML = items.map(p =>
+          `<option value="${p.poi_id}">${p.name} — ${p.poi_type}</option>`).join("");
+      } catch (e) {}
+    }
+
+    function gtRender(s) {
+      const info = document.getElementById("gt-info");
+      const go = document.getElementById("gt-go");
+      const st = document.getElementById("gt-stop");
+      if (!info || !go || !st) return;
+      const run = !!(s && s.running);
+      go.style.display = run ? "none" : "";
+      st.style.display = run ? "" : "none";
+      document.getElementById("gt-poi").disabled = run;
+      document.querySelectorAll(".gt-mode").forEach(b => b.disabled = run);
+      if (!run) { info.innerHTML = ""; return; }
+      const m = Math.floor((s.elapsed_sec || 0) / 60), sec = (s.elapsed_sec || 0) % 60;
+      let t = `<b>${s.poi_name}</b> 로 이동 중 · ${m}분 ${sec}초`;
+      if (s.move_type) t += `<br><span class="mono" style="color:#6f7c92">${s.move_type}</span>`;
+      if (s.waypoints != null) t += ` · 경유지 ${s.waypoints}개`;
+      if (s.phase) t += `<br>${s.phase}`;
+      info.innerHTML = t;
+    }
+
+    async function gtRefresh() {
+      if (!rcRobotId) return;
+      try {
+        const res = await fetch(`/api/dispatch/goto/status?robot_id=${rcRobotId}`);
+        if (res.ok) gtRender(await res.json());
+      } catch (e) {}
+    }
+    function gtStartPoll() { gtStopPoll(); gtRefresh(); gtPoll = setInterval(gtRefresh, 2000); }
+    function gtStopPoll() { if (gtPoll) { clearInterval(gtPoll); gtPoll = null; } }
+
+    document.querySelectorAll(".gt-mode").forEach(b => {
+      b.onclick = () => {
+        gtMode = b.dataset.mode;
+        document.querySelectorAll(".gt-mode").forEach(x =>
+          x.classList.toggle("active", x === b));
+      };
+    });
+
+    document.getElementById("gt-go").onclick = async () => {
+      if (!rcRobotId) { toast("로봇을 먼저 선택하세요"); return; }
+      const sel = document.getElementById("gt-poi");
+      const pid = parseInt(sel.value, 10);
+      if (!pid) { toast("목적지를 고르세요"); return; }
+      const nm = sel.selectedOptions[0].textContent.split(" — ")[0];
+      const how = gtMode === "route" ? "경유지를 거쳐" : "직행으로";
+      if (!await ask(`${nm} 까지 ${how} 이동합니다.`, "이동")) return;
+      try {
+        const res = await fetch("/api/dispatch/goto", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ robot_id: rcRobotId, poi_id: pid, mode: gtMode }),
+        });
+        const b = await res.json().catch(() => ({}));
+        if (!res.ok) { rcStatus(b.detail || "이동 실패"); return; }
+        rcStatus("이동 시작");
+        gtRender(b);
+      } catch (e) { rcStatus("이동 실패 — 통신 오류"); }
+    };
+
+    document.getElementById("gt-stop").onclick = async () => {
+      if (!rcRobotId) return;
+      try {
+        const res = await fetch("/api/dispatch/goto/stop", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ robot_id: rcRobotId }),
+        });
+        rcStatus(res.ok ? "정지 요청됨" : "정지 실패");
+        gtRefresh();
+      } catch (e) { rcStatus("정지 실패 — 통신 오류"); }
+    };
 
     // 배차 작업 — 이 로봇만 (2026-09-17 콘솔 상단에서 이사)
     document.getElementById("rc-gc-current").onclick = () => openGcModal("current");

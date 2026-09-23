@@ -29,6 +29,7 @@ from app.schemas.dispatch import (
     POIConsoleItem, ConsoleRobotItem, ConsoleStatusOut,
     DispatchRouteRequest, WaypointBrief, RobotTabletStatus,
     JobPointIn, JobPointOut,
+    GotoIn, GotoStopIn,
 )
 from app.crud import dispatch as dispatch_crud
 from app.services import dispatch_service
@@ -1389,6 +1390,18 @@ def force_clear_one_robot(robot_id: int, scope: str, db: Session = Depends(get_d
     if not robot:
         raise HTTPException(status_code=404, detail="등록되지 않은 로봇입니다")
 
+    # 2026-09-21 — 대차를 **안 들고 있으면** "대차를 내리고" 를 뺀다(현장 요청).
+    #   ★ `force_clear_robot()` **앞에서** 읽는다. 그 뒤에는 후속 동작 스레드가
+    #     이미 제자리 잭다운을 시작해 "없음" 으로 보일 수 있다.
+    #   ★ 모르면(통신 실패) **들고 있다고 본다** — 후속 동작이 쓰는 기준과 같다
+    #     ("안 들고 있는데 잭다운은 해가 없지만, 들고 있는데 건너뛰면 랙을 든 채
+    #       충전소로 가버린다").
+    from app.services import jack_service as _js
+    try:
+        had_rack = _js.is_rack_loaded(robot.ip_address) is not False
+    except Exception:
+        had_rack = True
+
     result = dispatch_service.force_clear_robot(robot_id, scope)
     # 2026-09-19 — Robot 모델의 컬럼 이름은 `name` 이다. `robot_name` 은 없다.
     #   이 줄이 AttributeError 를 내서 현장에서 "강제 종료 실패 / Internal Server
@@ -1401,15 +1414,20 @@ def force_clear_one_robot(robot_id: int, scope: str, db: Session = Depends(get_d
         # 2026-09-19 — 문구 정리(현장 요청). "(다른 로봇은 그대로 진행합니다)" 삭제,
         #   용어를 '랙' → '대차' 로 통일. 이 알림은 목적지가 정해지면
         #   dispatch_service._push_followup_notice 가 같은 key 로 덮어쓴다.
-        msg = (f"⚠ [{name}] 현재 작업을 중지했습니다.\n"
-               "대차를 내리고 이동합니다.\n"
-               "내려놓은 대차를 치워 주세요.")
+        msg = "\n".join([f"⚠ [{name}] 현재 작업을 중지했습니다."]
+                        + (["대차를 내리고 이동합니다.", "내려놓은 대차를 치워 주세요."]
+                           if had_rack else ["곧 이동합니다."]))
         kind = notice_service.KIND_JOB_FORCE_CLEAR
     else:
-        msg = (f"⚠ [{name}] 작업을 전부 중지했습니다.\n"
-               f"이 로봇이 잡고 있던 호출 {result.get('cancelled', 0)}건도 취소되었습니다.\n"
-               "대차를 내리고 충전소로 이동합니다.\n"
-               "내려놓은 대차를 치워 주세요.")
+        # 2026-09-21 — 취소된 호출이 **0건이면 그 줄을 뺀다**(현장 요청).
+        #   종전에는 "호출 0건도 취소되었습니다" 가 그대로 떴다.
+        cancelled = int(result.get("cancelled", 0) or 0)
+        msg = "\n".join(
+            [f"⚠ [{name}] 작업을 전부 중지했습니다."]
+            + ([f"이 로봇이 잡고 있던 호출 {cancelled}건도 취소되었습니다."]
+               if cancelled else [])
+            + (["대차를 내리고 충전소로 이동합니다.", "내려놓은 대차를 치워 주세요."]
+               if had_rack else ["충전소로 이동합니다."]))
         kind = notice_service.KIND_JOB_FORCE_CLEAR_ALL
 
     notice_service.push(
@@ -1439,3 +1457,42 @@ def force_clear_all():
         key="force_clear",
     )
     return {"ok": True, **result}
+
+
+# ── 단일 이동 (연구용, 2026-09-23) ───────────────────────────────
+# 콘솔이 배차 시나리오에 묶여 있어 "저 POI 로 한 번 가봐" 를 못 시켰다.
+# 같은 구간을 방식만 바꿔가며(경유지 경유 vs 직행) 반복 시험하기 위한 것.
+# 배차 코드는 건드리지 않았다 — 진행 중인 배차가 있으면 거부한다.
+
+
+@router.get("/goto/pois")
+def goto_pois(robot_id: int):
+    """그 로봇의 활성 맵에 있는 **모든** POI (경유지 W·진입점 포함).
+
+    콘솔의 기존 목록은 jack/standby 만 준다. 여기서는 전부 필요하다.
+    """
+    return {"items": dispatch_service.all_pois_for_robot(robot_id)}
+
+
+@router.post("/goto")
+def goto(body: GotoIn):
+    """POI 하나로 이동. mode=route(경유지 경유) | direct(직행)"""
+    if body.mode not in ("route", "direct"):
+        raise HTTPException(400, "mode 는 route 또는 direct")
+    ok, msg = dispatch_service.goto_poi(body.robot_id, body.poi_id, body.mode)
+    if not ok:
+        raise HTTPException(409, msg)
+    return {"ok": True, **dispatch_service.goto_status(body.robot_id)}
+
+
+@router.post("/goto/stop")
+def goto_stop(body: GotoStopIn):
+    ok, msg = dispatch_service.goto_stop(body.robot_id)
+    if not ok:
+        raise HTTPException(409, msg)
+    return {"ok": True}
+
+
+@router.get("/goto/status")
+def goto_status(robot_id: int):
+    return dispatch_service.goto_status(robot_id)

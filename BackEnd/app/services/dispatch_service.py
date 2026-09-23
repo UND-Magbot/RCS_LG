@@ -410,39 +410,55 @@ def _find_entry_poi(area_id: Optional[int], poi_name: str,
                         "y": float(poi.world_y), "ori": float(poi.angle or 0)}
             logger.info(f"[entry] map {map_id} 에 '{poi_name}-1' 이 없다 "
                         f"— area 활성 맵에서 다시 찾는다")
-        active_map = None
+        # 2026-09-21 — **활성 맵을 하나만 보던 것**을 고쳤다.
+        #   현장은 맵이 27·30 둘로 쪼개져 있다. 진입점 `C1-1` 은 map 27 에만,
+        #   경유지와 `C1-2` 는 map 30 에만 있다. 그런데 여기는 'id 가 가장 큰
+        #   활성 맵' **하나**만 뒤지고 없으면 None 을 돌려줬다.
+        #   `_park_at_charger` 는 진입점이 없으면 **경유지 이동을 통째로 건너뛰고**
+        #   `charge` 한 방으로 충전소까지 자유주행한다 — 현장에서 관찰된
+        #   "복귀할 때 경유지 안 쓰고 회피주행" 이 이것이다(2026-09-21 보고).
+        #
+        #   이제 **활성 맵 전체를 id 큰 것부터** 훑는다. 이름(`<POI>-1`)이
+        #   유일해서 맵을 섞어도 엉키지 않는다.
+        maps = []
         if area_id is not None:
-            active_map = (
+            maps = (
                 db.query(RobotMap)
                 .filter(RobotMap.area_id == area_id, RobotMap.is_active == True)
                 .order_by(RobotMap.id.desc())
-                .first()
+                .all()
             )
-        if active_map is None:
-            active_map = (
+        if not maps:
+            maps = (
                 db.query(RobotMap)
                 .filter(RobotMap.is_active == True)
                 .order_by(RobotMap.id.desc())
-                .first()
+                .all()
             )
-        if not active_map:
+        if not maps:
             return None
         poi = (
             db.query(MapPOI)
             .filter(
-                MapPOI.map_id == active_map.id,
+                MapPOI.map_id.in_([m.id for m in maps]),
                 MapPOI.name == f"{poi_name}-1",
                 MapPOI.is_active == True,
             )
+            .order_by(MapPOI.map_id.desc())
             .first()
         )
         if poi and poi.world_x is not None:
+            if map_id is not None and poi.map_id != map_id:
+                logger.info(f"[entry] '{poi_name}-1' 을 map {poi.map_id} 에서 찾았다 "
+                            f"(충전소는 map {map_id})")
             return {
                 "name": poi.name,
                 "x": float(poi.world_x),
                 "y": float(poi.world_y),
                 "ori": float(poi.angle if poi.angle is not None else 0),
             }
+        logger.warning(f"[entry] 활성 맵 {len(maps)}개 어디에도 '{poi_name}-1' 이 없다 "
+                       f"— 진입점 없이 진행한다")
         return None
     finally:
         db.close()
@@ -1628,7 +1644,10 @@ def _force_followup(robot_id: int, robot_ip: str, after: str) -> None:
     # ★ 2026-09-19 — 목적지가 정해진 **지금** 확정 문구로 알림을 갱신한다.
     #   라우터는 종료 버튼을 누른 즉시 "있으면 …/없으면 …" 조건문으로 띄운다.
     #   어디로 가는지는 여기서야 알 수 있어서, 같은 key 로 덮어쓴다.
-    _push_followup_notice(robot_id, after, dest)
+    #   2026-09-21 — 대차를 안 들고 있었으면 "대차를 내리고" 를 뺀다.
+    #     위에서 이미 읽어둔 `loaded` 를 그대로 쓴다(True/False/None).
+    #     None(통신 실패)이면 들고 있었다고 본다 — 잭다운 판단과 같은 기준.
+    _push_followup_notice(robot_id, after, dest, had_rack=(loaded is not False))
 
     # 경유지 주행에 필요한 area_id — 워커는 이미 사라졌으므로 DB 에서 읽는다.
     #   ※ Robot.area_id 는 문자열 컬럼이고 RobotMap.area_id 는 정수다.
@@ -1709,21 +1728,26 @@ def force_clear_notice_targets() -> list[str]:
     return out
 
 
-def _push_followup_notice(robot_id: int, after: str, dest: Optional[dict]) -> None:
+def _push_followup_notice(robot_id: int, after: str, dest: Optional[dict],
+                          had_rack: bool = True) -> None:
     """강제 종료 뒤 **실제 목적지가 정해진 시점**의 확정 문구 알림.
 
     라우터가 먼저 띄운 조건형 문구를 같은 `key` 로 덮어쓴다.
+
+    `had_rack` — 멈출 때 **대차를 들고 있었는가**. 2026-09-21 현장 요청으로,
+      안 들고 있었으면 "대차를 내리고" 와 "내려놓은 대차를 치워 주세요" 를 뺀다.
+      없는 대차를 치우러 가게 만드는 문구였다. 모르면 True(들고 있다고 본다).
     """
     robot = _load_robot(robot_id)
     name = (robot.name if robot else None) or f"robot {robot_id}"
     # 표시 이름(자재실 출발 …)이 있으면 그걸로. 없으면 원래 이름 그대로.
     where = ((_poi_label(dest["name"]) or dest["name"]) if dest else "충전소")
     head = "현재 작업을 중지했습니다" if after == "reserve" else "작업을 전부 중지했습니다"
-    msg = "\n".join([
-        f"⚠ [{name}] {head}.",
-        f"대차를 내리고 {where}{_josa_ro(where)} 이동합니다.",
-        "내려놓은 대차를 치워 주세요.",
-    ])
+    move = f"{where}{_josa_ro(where)} 이동합니다."
+    msg = "\n".join(
+        [f"⚠ [{name}] {head}."]
+        + ([f"대차를 내리고 {move}", "내려놓은 대차를 치워 주세요."]
+           if had_rack else [move]))
     kind = (notice_service.KIND_JOB_FORCE_CLEAR if after == "reserve"
             else notice_service.KIND_JOB_FORCE_CLEAR_ALL)
     notice_service.push(kind, msg, targets=force_clear_notice_targets(),
@@ -3045,3 +3069,177 @@ def _log_rack_missing(worker: _Worker, r_name: str, j_name: str) -> None:
                      source="dispatch_delivery")
     except Exception:
         logger.warning(f"[delivery] 랙 없음 로그 기록 실패 — {r_name}/{j_name}")
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 단일 이동 (연구용) — 2026-09-23
+# ══════════════════════════════════════════════════════════════════════
+#
+# 왜 있나
+#   지금 콘솔은 배차 시나리오(호출 → 적재 → 배송)에 묶여 있어서
+#   "저 POI 로 한 번 가봐" 를 시킬 수가 없다. 주행을 한 번 시험하려고
+#   배송 사이클을 통째로 태워야 했다.
+#
+#   비이상적 정지(급감속) 원인을 좁히려면 **같은 구간을 방식만 바꿔가며**
+#   반복해야 한다 — 경유지 경유 vs 직행, 로봇 파라미터 변경 전후.
+#   그 비교를 위한 것이다.
+#
+# 배차 코드는 건드리지 않는다
+#   세션을 만들지 않고 jack_service.safe_move 를 직접 부른다.
+#   대신 **진행 중인 배차가 있으면 거부**한다(워커 레지스트리 확인).
+#   서버 안전존은 활성 로봇 전체를 상시 감시하므로 이 이동에도 그대로 걸린다.
+
+_goto: dict[int, dict] = {}
+_goto_lock = threading.Lock()
+
+
+def goto_status(robot_id: int) -> dict:
+    with _goto_lock:
+        st = _goto.get(robot_id)
+        if not st:
+            return {"running": False, "robot_id": robot_id}
+        return {
+            "running": True,
+            "robot_id": robot_id,
+            "poi_name": st.get("poi_name"),
+            "mode": st.get("mode"),
+            "move_type": st.get("move_type"),
+            "phase": st.get("phase"),
+            "elapsed_sec": int(time.time() - st["started"]),
+            "waypoints": st.get("waypoints"),
+        }
+
+
+def goto_stop(robot_id: int) -> tuple[bool, str]:
+    """이동 중지. jack_service 의 중지 플래그를 세우면 safe_move 가 빠져나온다."""
+    with _goto_lock:
+        st = _goto.get(robot_id)
+    if not st:
+        return False, "진행 중인 단일 이동이 없습니다"
+    try:
+        jack_service.stop_robot_job(st["ip"])
+    except Exception as e:
+        return False, f"중지 실패: {e}"
+    return True, "ok"
+
+
+def goto_poi(robot_id: int, poi_id: int, mode: str = "route") -> tuple[bool, str]:
+    """POI 하나로 이동시킨다.
+
+    mode="route"    경유지(W) 를 거쳐 간다. 경유지가 없으면 직행으로 떨어진다
+    mode="direct"   경유지를 쓰지 않고 목표까지 바로 (standard)
+    """
+    robot = _load_robot(robot_id)
+    if not robot or not robot.ip_address:
+        return False, "로봇 정보 없음 또는 IP 미설정"
+    if not robot.is_active:
+        return False, "비활성 로봇"
+
+    poi = _load_poi(poi_id)
+    if not poi:
+        return False, "POI 조회 실패"
+
+    # 배차가 돌고 있으면 건드리지 않는다
+    with _workers_lock:
+        w = _workers.get(robot_id)
+        if w is not None and (w.thread is None or w.thread.is_alive()):
+            return False, "진행 중인 배차가 있습니다. 먼저 종료하세요"
+    with _goto_lock:
+        if robot_id in _goto:
+            return False, "이미 이동 중입니다"
+        _goto[robot_id] = {
+            "ip": robot.ip_address, "poi_name": poi["name"], "mode": mode,
+            "move_type": "-", "phase": "준비", "started": time.time(),
+            "waypoints": None,
+        }
+
+    t = safe_thread(target=_goto_worker, args=(robot_id, robot.ip_address, poi, mode),
+                    name=f"goto-{robot_id}")
+    t.start()
+    return True, "ok"
+
+
+def _goto_worker(robot_id: int, ip: str, poi: dict, mode: str) -> None:
+    def setst(**kw):
+        with _goto_lock:
+            if robot_id in _goto:
+                _goto[robot_id].update(kw)
+
+    try:
+        jack_service._running_robot_id_by_ip[ip] = robot_id
+        jack_service._stop_flags[ip] = False
+        jack_service._paused_flags[ip] = False
+
+        area_id = None
+        try:
+            r = _load_robot(robot_id)
+            area_id = int(r.area_id) if (r and r.area_id) else None
+        except Exception:
+            pass
+
+        if mode == "direct":
+            move_type, extra = "standard", {}
+            setst(move_type="standard", phase="직행 이동 중", waypoints=0)
+            logger.info("[goto] robot=%s → %s 직행(standard)", robot_id, poi["name"])
+        else:
+            xy = _current_xy(ip)
+            if xy is None:
+                move_type, extra = "standard", {}
+                setst(move_type="standard", phase="위치 못 읽음 — 직행", waypoints=0)
+                logger.warning("[goto] %s 현재 위치를 못 읽어 직행으로 간다", ip)
+            else:
+                move_type, extra = waypoint_route.plan(area_id, xy[0], xy[1],
+                                                       poi["x"], poi["y"])
+                n = 0
+                rc = extra.get("route_coordinates")
+                if rc:
+                    n = max(len(rc.split(",")) // 2 - 1, 0)
+                setst(move_type=move_type, waypoints=n,
+                      phase=("경유지 %d개 경유" % n) if move_type == "along_given_route"
+                            else "경유지 없음 — 직행")
+                logger.info("[goto] robot=%s → %s  %s (경유 %d)",
+                            robot_id, poi["name"], move_type, n)
+
+        jack_service.update_job_status(ip, message="단일 이동 — %s" % poi["name"])
+        setst(phase="이동 중")
+        jack_service.safe_move(ip, move_type, poi["x"], poi["y"], poi["ori"],
+                               max_attempts=12, timeout=300, **extra)
+        setst(phase="도착")
+        logger.info("[goto] robot=%s → %s 도착", robot_id, poi["name"])
+
+    except RuntimeError as e:
+        logger.warning("[goto] robot=%s 중지됨: %s", robot_id, e)
+    except Exception as e:
+        logger.exception("[goto] robot=%s 예외", robot_id)
+    finally:
+        jack_service._running_robot_id_by_ip.pop(ip, None)
+        jack_service.clear_job_status(ip)
+        with _goto_lock:
+            _goto.pop(robot_id, None)
+
+
+def all_pois_for_robot(robot_id: int) -> list[dict]:
+    """그 로봇의 활성 맵에 있는 **모든** POI. 단일 이동 목적지 후보.
+
+    콘솔의 기존 목록(_current_area_active_pois)은 jack/standby 만 준다.
+    여기서는 경유지(W)·진입점(<이름>-1)·충전소까지 전부 필요하다.
+    """
+    robot = _load_robot(robot_id)
+    if not robot:
+        return []
+    db = SessionLocal()
+    try:
+        q = db.query(RobotMap).filter(RobotMap.is_active == True)
+        if robot.area_id:
+            q = q.filter(RobotMap.area_id == int(robot.area_id))
+        m = q.order_by(RobotMap.id.desc()).first()
+        if not m:
+            return []
+        rows = (db.query(MapPOI)
+                .filter(MapPOI.map_id == m.id, MapPOI.is_active == True,
+                        MapPOI.world_x.isnot(None))
+                .order_by(MapPOI.name.asc()).all())
+        return [{"poi_id": p.id, "name": p.name, "poi_type": p.poi_type,
+                 "x": float(p.world_x), "y": float(p.world_y)} for p in rows]
+    finally:
+        db.close()
