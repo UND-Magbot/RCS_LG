@@ -96,20 +96,22 @@
     }
     .rc-tab.active { background: #2a3343; color: #e6eaf2; }
 
-    /* ── 로봇 이름 수정 (2026-09-23) ── */
-    .rn-h2   { display: flex; align-items: center; gap: 8px; }
-    .rn-name { flex: 1 1 auto; min-width: 0;          /* ★ 이게 없으면 안 줄어들어 연필을 밀어낸다 */
-               overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .rn-edit { flex: 0 0 auto; background: none; border: 0; cursor: pointer;
-               font-size: 16px; line-height: 1; padding: 4px 6px; border-radius: 6px;
-               opacity: .65; }
-    .rn-edit:hover { opacity: 1; background: #2a3343; }
-    .rn-box  { display: none; gap: 6px; margin: 0 0 12px; }
-    .rn-box.show { display: flex; }
-    .rn-box input { flex: 1 1 auto; min-width: 0; height: 34px; background: #1b2230;
-                    border: 1px solid #2a3343; border-radius: 6px; color: #e6eaf2;
-                    font-size: 14px; padding: 0 10px; }
-    .rn-box .btn { flex: 0 0 auto; }
+    /* ── 로봇 이름 수정 (2026-09-23) ──
+       ★ 여기서 .btn 을 쓰면 안 된다 — .btn 에 width:100% 가 걸려 있어
+         입력칸을 밀어내고 버튼만 거대해진다(2026-09-23 실제로 그랬다).
+         아이콘 버튼은 flex:0 0 auto 로 고정폭, 이름/입력칸만 줄어들게 한다. */
+    .rn-h2    { display: flex; align-items: center; gap: 6px; }
+    .rn-name  { flex: 1 1 auto; min-width: 0;   /* ★ 없으면 긴 이름이 연필을 밀어낸다 */
+                overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .rn-input { flex: 1 1 auto; min-width: 0; width: auto;   /* ★ width:100% 금지 */
+                height: 34px; background: #1b2230; border: 1px solid #3d7bfd;
+                border-radius: 6px; color: #e6eaf2; font-size: 15px;
+                font-weight: 600; padding: 0 10px; font-family: inherit; }
+    .rn-ico   { flex: 0 0 auto; background: none; border: 0; cursor: pointer;
+                color: #8a93a6; font-size: 17px; line-height: 1;
+                padding: 5px 7px; border-radius: 6px; }
+    .rn-ico:hover { background: #2a3343; color: #e6eaf2; }
+    .rn-ok    { color: #3de0a4; }
 
     /* ── [테스트] 탭 (2026-09-23) ── */
     .tn-warn { background: rgba(255,176,32,.10); border: 1px solid rgba(255,176,32,.35);
@@ -516,14 +518,15 @@
              연필  flex:0 0 auto                           ← 절대 안 줄어듦 -->
       <h2 class="rn-h2">
         <span id="remote-title" class="rn-name">원격 제어</span>
-        <button class="rn-edit" id="rn-edit" title="이름 수정">✏️</button>
+        <input type="text" id="rn-input" class="rn-input" maxlength="100"
+               placeholder="로봇 이름" style="display:none">
+        <button class="rn-ico" id="rn-edit" title="이름 수정">✏️</button>
+        <button class="rn-ico rn-ok" id="rn-save" title="저장(Enter)"
+                style="display:none">✔</button>
+        <button class="rn-ico" id="rn-cancel" title="취소(Esc)"
+                style="display:none">↩</button>
         <button class="remote-close" id="remote-close">✕</button>
       </h2>
-      <div class="rn-box" id="rn-box">
-        <input type="text" id="rn-input" maxlength="100" placeholder="로봇 이름">
-        <button class="btn btn-call" id="rn-save">저장</button>
-        <button class="btn btn-ghost" id="rn-cancel">취소</button>
-      </div>
 
       <!-- ── 탭 (2026-09-17) ────────────────────────────────────
            종전에는 9개 섹션이 세로로 한 줄이라, 매번 쓰는 [작업 강제 종료] 를
@@ -2356,16 +2359,25 @@
         "직접 제어 — " + (rcName || "로봇");
       // 로봇을 못 고른 상태면 수정도 못 한다
       document.getElementById("rn-edit").style.display = rcRobotId ? "" : "none";
+      document.getElementById("remote-title").title = rcName || "";   // 잘렸을 때 툴팁
+    }
+    function rnEditing(on) {
+      const set = (id, show) =>
+        document.getElementById(id).style.display = show ? "" : "none";
+      set("remote-title", !on);
+      set("rn-edit", !on && !!rcRobotId);
+      set("rn-input", on);
+      set("rn-save", on);
+      set("rn-cancel", on);
     }
     function rnOpen() {
       if (!rcRobotId) return;
-      const box = document.getElementById("rn-box");
       const inp = document.getElementById("rn-input");
       inp.value = rcName || "";
-      box.classList.add("show");
+      rnEditing(true);
       inp.focus(); inp.select();
     }
-    function rnClose() { document.getElementById("rn-box").classList.remove("show"); }
+    function rnClose() { rnEditing(false); }
     async function rnSave() {
       const v = document.getElementById("rn-input").value.trim();
       if (!v) { rcStatus("이름을 입력하세요"); return; }
