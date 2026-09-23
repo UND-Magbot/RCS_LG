@@ -1650,6 +1650,23 @@ ROTATE_TOL_DEG = 4.0       # 이 안에 들어오면 성공
 ROTATE_PERIOD = 0.15       # twist 재전송 주기(초). 끊기면 로봇이 곧 멈춘다
 
 
+def _set_control_mode(robot_ip: str, mode: str) -> bool:
+    """로봇 바퀴 제어 모드. `/twist` 는 **remote 여야 먹는다.**
+
+    2026-09-23 실측 — 이걸 빼먹고 twist 만 보냈더니 로봇이 통째로 무시해
+    제자리 회전이 40초 타임아웃 났다. 그동안 로봇은 가만히 서 있었고,
+    현장에서는 "취소했는데 아무 동작 없음" 으로 보였다.
+    """
+    try:
+        r = requests.post(
+            robot_url(robot_ip, "/services/wheel_control/set_control_mode"),
+            json={"control_mode": mode}, timeout=5)
+        return r.status_code < 400
+    except Exception as e:
+        logger.warning("[rotate] %s 제어 모드 %s 전환 실패: %s", robot_ip, mode, e)
+        return False
+
+
 def _twist(robot_ip: str, lv: float, av: float) -> None:
     """WS /twist 전송. 라우터가 쓰는 연결 캐시를 그대로 재사용한다."""
     from app.routers.robot import _get_twist_ws, _drop_twist_ws
@@ -1666,7 +1683,7 @@ def _twist(robot_ip: str, lv: float, av: float) -> None:
 
 
 def rotate_in_place(robot_ip: str, target_ori: float,
-                    timeout: float = 25.0,
+                    timeout: float = 12.0,
                     tol_deg: float = ROTATE_TOL_DEG) -> bool:
     """`target_ori`(rad) 를 바라볼 때까지 **제자리에서** 돈다.
 
@@ -1677,6 +1694,12 @@ def rotate_in_place(robot_ip: str, target_ori: float,
     def cur_ori():
         p = _read_tracked_pose(robot_ip, timeout=2.0)
         return None if not p else float(p.get("ori", 0.0))
+
+    # ★ /twist 는 remote 모드에서만 먹는다. 못 바꾸면 회전을 시도조차 하지 않는다
+    #   — 시도하면 로봇이 무시한 채 타임아웃까지 서 있게 된다.
+    if not _set_control_mode(robot_ip, "remote"):
+        logger.warning("[rotate] %s 원격 모드 전환 실패 — 제자리 회전을 건너뛴다", robot_ip)
+        return False
 
     start = time.time()
     last = None
@@ -1691,6 +1714,7 @@ def rotate_in_place(robot_ip: str, target_ori: float,
             last = math.degrees(err)
             if abs(last) <= tol_deg:
                 _twist(robot_ip, 0.0, 0.0)          # 확실히 세운다
+                _set_control_mode(robot_ip, "auto")  # ★ 안 되돌리면 다음 주행이 안 먹는다
                 logger.info("[rotate] %s 제자리 회전 완료 — 남은 오차 %.1f° (%.1f초)",
                             robot_ip, last, time.time() - start)
                 return True
@@ -1703,6 +1727,7 @@ def rotate_in_place(robot_ip: str, target_ori: float,
             _twist(robot_ip, 0.0, 0.0)
         except Exception:
             pass
+        _set_control_mode(robot_ip, "auto")
         raise                                        # 사용자 중지는 그대로 올린다
     except Exception as e:
         logger.warning("[rotate] %s 제자리 회전 실패: %s", robot_ip, e)
@@ -1710,6 +1735,7 @@ def rotate_in_place(robot_ip: str, target_ori: float,
         _twist(robot_ip, 0.0, 0.0)
     except Exception:
         pass
+    _set_control_mode(robot_ip, "auto")              # 어떤 경로로 나가든 되돌린다
     logger.warning("[rotate] %s 제자리 회전 타임아웃 — 남은 오차 %s",
                    robot_ip, ("%.1f°" % last) if last is not None else "알 수 없음")
     return False

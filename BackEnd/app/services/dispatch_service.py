@@ -647,8 +647,9 @@ def _face_route_start(worker: _Worker, route_coords: Optional[str]) -> None:
     #   /twist 는 속도만 주는 명령이라 경로 계획이 없다 — 제자리에서 돈다.
     #   실패하면 종전 방식으로 떨어진다(하위 호환).
     try:
-        if jack_service.rotate_in_place(worker.robot_ip, want,
-                                        timeout=FACE_ROUTE_TIMEOUT):
+        # 타임아웃은 짧게 — 안 먹는 상황이면 빨리 포기하고 종전 방식으로 넘어간다.
+        # (2026-09-23: 40초를 통째로 버리는 바람에 현장에서 '아무 동작 없음' 으로 보였다)
+        if jack_service.rotate_in_place(worker.robot_ip, want, timeout=12.0):
             return
         logger.warning("[route] 제자리 회전이 안 끝났다 — 종전 방식(standard)으로 재시도")
     except RuntimeError:
