@@ -391,6 +391,28 @@ def clearing_robot_ids() -> set[int]:
     return out
 
 
+def is_robot_busy(robot_id: int) -> bool:
+    """이 로봇에게 **새 작업을 줄 수 있나** — 배차 가용 판정의 단일 기준 (2026-09-23).
+
+    `has_active_worker` 만 보면 안 된다. [전체 강제 종료] 뒤에는
+      워커는 이미 사라졌는데 → has_active_worker = False
+      후속 동작(랙 내려놓기 → 충전소)은 30~40초 더 돈다
+    가 되어 **로봇이 움직이는 중인데 가용 1대**로 잡혔다.
+
+    2026-09-23 17:36 실측
+      17:36:25  가용 1 · 정리중 1     ← 두 값이 모순
+      화면은 가용을 먼저 보고 [로봇 호출] 을 활성으로 그렸다.
+      눌러도 로봇은 충전소로 가는 중이라 작업이 진행되지 않았고,
+      새로고침하면 화면만 원래대로 돌아갔다.
+
+    그래서 **워커 + 후속 동작** 둘 다 본다.
+    """
+    if has_active_worker(robot_id):
+        return True
+    with _followup_lock:
+        return robot_id in _followup_robots
+
+
 def has_active_worker(robot_id: int) -> bool:
     w = _get_worker(robot_id)
     if w is None:
@@ -2395,7 +2417,7 @@ def find_available_robot(area_id: Optional[int] = None,
 
     candidates = []
     for robot, stat in rows:
-        if has_active_worker(robot.id):
+        if is_robot_busy(robot.id):      # 워커 + 강제 종료 후속 동작
             continue
         battery_val = stat.battery_level if (stat and stat.battery_level is not None) else None
         if battery_val is not None:

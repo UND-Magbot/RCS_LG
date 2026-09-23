@@ -350,7 +350,7 @@ def _count_available_robots(db: Session) -> int:
               .all())
     # 1) 인메모리 필터 (활성 워커 제외 + 배터리)
     idle_robots = [r for r, st in rows
-                   if not dispatch_service.has_active_worker(r.id)
+                   if not dispatch_service.is_robot_busy(r.id)
                    and _battery_ok(r, st)]
     if not idle_robots:
         return 0
@@ -712,7 +712,7 @@ def _available_robot_counts(db: Session) -> dict:
               .filter(Robot.is_active == True, Robot.ip_address != None)
               .all())
     idle = [r for r, st in rows
-            if not dispatch_service.has_active_worker(r.id) and _battery_ok(r, st)]
+            if not dispatch_service.is_robot_busy(r.id) and _battery_ok(r, st)]
     if not idle:
         return {"total": 0, "lifting": 0, "serving": 0}
     # 라이브 ONLINE 체크 — 화면 폴링이므로 **기다리지 않는다**(block=False).
@@ -960,7 +960,7 @@ def _console_robot_items(db: Session, sessions: list, poi_name_by_id: dict) -> l
             robot_type=r.robot_type or "lifting",
             online=(r.ip_address in online_ips) if r.ip_address else False,
             battery=st.battery_level if st else None,
-            busy=dispatch_service.has_active_worker(r.id),
+            busy=dispatch_service.is_robot_busy(r.id),
             session_status=sess.status if sess else None,
             current_poi_name=cur_name,
         ))
