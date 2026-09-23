@@ -634,6 +634,28 @@ def _face_route_start(worker: _Worker, route_coords: Optional[str]) -> None:
         f"[route] {worker.robot_ip} 경로 진입 전 제자리 회전 {diff:+.1f}° "
         f"(현재 {math.degrees(cur[2]):.1f}° → 첫 경유지 방향 {math.degrees(want):.1f}°)")
     jack_service.update_job_status(worker.robot_ip, message="출발 방향 정렬 중")
+
+    # ★ 2026-09-23 — **제자리 회전으로 먼저 시도한다.**
+    #   종전에는 곧바로 `safe_move("standard", 현재위치, want)` 였다.
+    #   "지금 이 자리로 가라, 방향만 바꿔서" 인데 로봇은 거리 0인 목표를
+    #   주행으로 풀어서 **앞뒤로 왔다갔다 하는 3점 선회**를 한다.
+    #
+    #   18:30:04 실측 — 77.6° 회전에 13초, 그동안
+    #     전진 0.36 → 후진 0.38 → 전진 0.15 → 후진 0.11 → 전진 0.29 → 후진 0.28
+    #   현장 지적 "출발 보내면 앞으로 갔다 불필요한 후진하고 다시 출발" 이 이것이다.
+    #
+    #   /twist 는 속도만 주는 명령이라 경로 계획이 없다 — 제자리에서 돈다.
+    #   실패하면 종전 방식으로 떨어진다(하위 호환).
+    try:
+        if jack_service.rotate_in_place(worker.robot_ip, want,
+                                        timeout=FACE_ROUTE_TIMEOUT):
+            return
+        logger.warning("[route] 제자리 회전이 안 끝났다 — 종전 방식(standard)으로 재시도")
+    except RuntimeError:
+        raise                       # 사용자 중지
+    except Exception as e:
+        logger.warning(f"[route] 제자리 회전 실패({e}) — 종전 방식으로 재시도")
+
     try:
         jack_service.safe_move(worker.robot_ip, "standard", xy[0], xy[1], want,
                                max_attempts=3, timeout=FACE_ROUTE_TIMEOUT,

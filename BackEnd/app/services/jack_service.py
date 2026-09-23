@@ -1622,3 +1622,94 @@ def run_route_job(
                 _zl.release_all_by_robot(robot_id)
             except Exception:
                 pass
+
+
+# ══════════════════════════════════════════════════════════════════
+#  제자리 회전 (2026-09-23)
+#
+#  왜 만들었나 — 실측으로 원인을 잡았다.
+#    종전에는 `safe_move("standard", 현재위치, 새각도)` 로 돌렸다.
+#    "지금 이 자리로 가라, 단 방향만 바꿔서" 인데, 로봇은 **거리 0인 목표를
+#    주행으로 풀어서** 앞뒤로 왔다갔다 하는 3점 선회를 한다.
+#
+#    2026-09-23 18:30:04 실측 — 77.6° 회전에 13초, 그동안
+#      전진 0.36 → 후진 0.38 → 전진 0.15 → 후진 0.11 → 전진 0.29 → 후진 0.28
+#    현장에서 "출발 보내면 앞으로 갔다 불필요한 후진하고 다시 출발" 이 이것이다.
+#
+#  `/twist` 는 속도만 주는 명령이라 경로 계획이 없다. 각속도만 주면 **제자리에서
+#  돈다.** 각도 도달 판정은 우리가 한다.
+#
+#  ⚠️ 안전 — 도는 동안 로봇은 이동하지 않지만 랙 모서리가 돈다.
+#     각속도를 낮게 잡고(ROTATE_MAX_AV), 중지 플래그를 매 주기 확인하고,
+#     타임아웃을 둬서 영영 돌지 않게 한다.
+# ══════════════════════════════════════════════════════════════════
+
+ROTATE_MAX_AV = 0.6        # rad/s. 로봇 상한(1.2)의 절반
+ROTATE_MIN_AV = 0.15       # 이보다 느리면 바퀴가 안 돈다
+ROTATE_TOL_DEG = 4.0       # 이 안에 들어오면 성공
+ROTATE_PERIOD = 0.15       # twist 재전송 주기(초). 끊기면 로봇이 곧 멈춘다
+
+
+def _twist(robot_ip: str, lv: float, av: float) -> None:
+    """WS /twist 전송. 라우터가 쓰는 연결 캐시를 그대로 재사용한다."""
+    from app.routers.robot import _get_twist_ws, _drop_twist_ws
+    payload = _json.dumps({"topic": "/twist", "linear_velocity": lv,
+                           "angular_velocity": av})
+    for attempt in (1, 2):
+        try:
+            _get_twist_ws(robot_ip).send(payload)
+            return
+        except Exception:
+            _drop_twist_ws(robot_ip)
+            if attempt == 2:
+                raise
+
+
+def rotate_in_place(robot_ip: str, target_ori: float,
+                    timeout: float = 25.0,
+                    tol_deg: float = ROTATE_TOL_DEG) -> bool:
+    """`target_ori`(rad) 를 바라볼 때까지 **제자리에서** 돈다.
+
+    반환: 도달했으면 True. 타임아웃·실패면 False (부르는 쪽이 종전 방식으로 폴백).
+    """
+    from app.routers.map import _read_tracked_pose
+
+    def cur_ori():
+        p = _read_tracked_pose(robot_ip, timeout=2.0)
+        return None if not p else float(p.get("ori", 0.0))
+
+    start = time.time()
+    last = None
+    try:
+        while time.time() - start < timeout:
+            _check_stop(robot_ip)
+            o = cur_ori()
+            if o is None:
+                time.sleep(ROTATE_PERIOD)
+                continue
+            err = math.atan2(math.sin(target_ori - o), math.cos(target_ori - o))
+            last = math.degrees(err)
+            if abs(last) <= tol_deg:
+                _twist(robot_ip, 0.0, 0.0)          # 확실히 세운다
+                logger.info("[rotate] %s 제자리 회전 완료 — 남은 오차 %.1f° (%.1f초)",
+                            robot_ip, last, time.time() - start)
+                return True
+            # 목표에 가까울수록 천천히 — 지나쳐서 되돌아오는 것을 막는다
+            av = max(ROTATE_MIN_AV, min(ROTATE_MAX_AV, abs(err) * 1.2))
+            _twist(robot_ip, 0.0, av if err > 0 else -av)
+            time.sleep(ROTATE_PERIOD)
+    except RuntimeError:
+        try:
+            _twist(robot_ip, 0.0, 0.0)
+        except Exception:
+            pass
+        raise                                        # 사용자 중지는 그대로 올린다
+    except Exception as e:
+        logger.warning("[rotate] %s 제자리 회전 실패: %s", robot_ip, e)
+    try:
+        _twist(robot_ip, 0.0, 0.0)
+    except Exception:
+        pass
+    logger.warning("[rotate] %s 제자리 회전 타임아웃 — 남은 오차 %s",
+                   robot_ip, ("%.1f°" % last) if last is not None else "알 수 없음")
+    return False
