@@ -29,6 +29,7 @@ from app.schemas.dispatch import (
     POIConsoleItem, ConsoleRobotItem, ConsoleStatusOut,
     DispatchRouteRequest, WaypointBrief, RobotTabletStatus,
     JobPointIn, JobPointOut,
+    GotoIn, GotoStopIn,
 )
 from app.crud import dispatch as dispatch_crud
 from app.services import dispatch_service
@@ -1456,3 +1457,42 @@ def force_clear_all():
         key="force_clear",
     )
     return {"ok": True, **result}
+
+
+# ── 단일 이동 (연구용, 2026-09-23) ───────────────────────────────
+# 콘솔이 배차 시나리오에 묶여 있어 "저 POI 로 한 번 가봐" 를 못 시켰다.
+# 같은 구간을 방식만 바꿔가며(경유지 경유 vs 직행) 반복 시험하기 위한 것.
+# 배차 코드는 건드리지 않았다 — 진행 중인 배차가 있으면 거부한다.
+
+
+@router.get("/goto/pois")
+def goto_pois(robot_id: int):
+    """그 로봇의 활성 맵에 있는 **모든** POI (경유지 W·진입점 포함).
+
+    콘솔의 기존 목록은 jack/standby 만 준다. 여기서는 전부 필요하다.
+    """
+    return {"items": dispatch_service.all_pois_for_robot(robot_id)}
+
+
+@router.post("/goto")
+def goto(body: GotoIn):
+    """POI 하나로 이동. mode=route(경유지 경유) | direct(직행)"""
+    if body.mode not in ("route", "direct"):
+        raise HTTPException(400, "mode 는 route 또는 direct")
+    ok, msg = dispatch_service.goto_poi(body.robot_id, body.poi_id, body.mode)
+    if not ok:
+        raise HTTPException(409, msg)
+    return {"ok": True, **dispatch_service.goto_status(body.robot_id)}
+
+
+@router.post("/goto/stop")
+def goto_stop(body: GotoStopIn):
+    ok, msg = dispatch_service.goto_stop(body.robot_id)
+    if not ok:
+        raise HTTPException(409, msg)
+    return {"ok": True}
+
+
+@router.get("/goto/status")
+def goto_status(robot_id: int):
+    return dispatch_service.goto_status(robot_id)

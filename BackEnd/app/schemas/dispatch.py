@@ -254,3 +254,18 @@ class JobPointOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# ── 단일 이동 (연구용, 2026-09-23) ───────────────────────────────
+# 배차 시나리오를 안 타고 POI 하나로 바로 보낸다. 주행 비교 시험용.
+
+
+class GotoIn(BaseModel):
+    """POI 하나로 이동."""
+    robot_id: int
+    poi_id: int
+    mode: str = "route"      # route=경유지 경유 · direct=직행(standard)
+
+
+class GotoStopIn(BaseModel):
+    robot_id: int
