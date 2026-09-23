@@ -581,6 +581,7 @@ def _poi_status(db: Session, poi_id: int) -> DispatchPOIStatusOut:
         available_pois=available,
         occupied_poi_ids=occupied,
         available_robot_count=_count_available_robots(db),
+        clearing_robot_count=_count_clearing_robots(db),
         rack_present=rack_present,
         poi_type=poi_type,
         paired_poi_id=paired_id,
@@ -681,6 +682,24 @@ def poi_cancel_reservation(poi_id: int):
 # ══════════════════════════════════════════════════════════
 # 콘솔 (범용 단말 — 모든 POI를 한 화면에서 호출/예약/제어)
 # ══════════════════════════════════════════════════════════
+
+
+def _count_clearing_robots(db: Session) -> int:
+    """**중지 요청을 받았지만 아직 정리가 안 끝난** 로봇 수 (2026-09-23).
+
+    현장 지적 — [전체 작업 종료] 직후 R 태블릿에 **[예약하기]** 가 몇 초 떴다가
+    [로봇 호출] 로 바뀐다. 작업자는 "로봇 노는데 왜 예약?" 이 된다.
+
+    원인은 워커가 빠져나가는 시간이다. 중지 신호를 받아도
+      폴링 0.5초 + LTE 왕복 0.45초 + `safe_move` 재시도 대기 5초
+    만큼 살아 있다. **그동안 로봇은 진짜로 바쁘다** — 가용으로 세면 안 된다.
+
+    그래서 수를 따로 내려주고, 화면이 그 사이에 올바른 문구를 보여주게 한다.
+    """
+    try:
+        return len(dispatch_service.clearing_robot_ids())
+    except Exception:
+        return 0
 
 
 def _available_robot_counts(db: Session) -> dict:
@@ -888,6 +907,7 @@ def _console_status(db: Session) -> ConsoleStatusOut:
         occupied_poi_ids=occupied,
         reserved_poi_ids=sorted(reserved_ids),
         available_robot_count=counts["total"],
+        clearing_robot_count=_count_clearing_robots(db),
         available_lifting_count=counts["lifting"],
         available_serving_count=counts["serving"],
         zones=zones,

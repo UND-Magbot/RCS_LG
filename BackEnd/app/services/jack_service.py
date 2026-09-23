@@ -184,6 +184,17 @@ def get_next_poi(robot_ip: str) -> dict | str | None:
     return _next_poi.pop(robot_ip, None)
 
 
+def is_stopping(robot_ip: str) -> bool:
+    """이 로봇이 **중지 요청을 받고 정리 중**인가.
+
+    `stop_robot_job` 이 세운 플래그를 그대로 읽는다. 워커가 실제로 빠져나가기까지
+    수 초가 걸리는데(폴링 0.5초 + LTE 왕복 0.45초 + safe_move 재시도 대기 5초),
+    그동안 로봇은 **진짜로 바쁘다.** 가용으로 세면 안 된다.
+    다만 화면에는 "곧 비워진다" 고 알려줘야 작업자가 예약을 잘못 걸지 않는다.
+    """
+    return bool(_stop_flags.get(robot_ip))
+
+
 def stop_robot_job(robot_ip: str):
     """특정 로봇의 진행 중인 작업에 중지 플래그 설정 + 상태 제거.
 

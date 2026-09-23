@@ -830,17 +830,26 @@
       }
 
       const canCall = state.available_robot_count > 0;
+      // ★ 2026-09-23 현장 지적 — [전체 작업 종료] 직후 몇 초간 [예약하기] 가 떴다가
+      //   [로봇 호출] 로 바뀌었다. 작업자는 "로봇 노는데 왜 예약?" 이 된다.
+      //   원인은 워커가 빠져나가는 시간(폴링 0.5초 + LTE 왕복 0.45초 +
+      //   safe_move 재시도 대기 5초)이고, 그동안 로봇은 **진짜로 바쁘다.**
+      //   그래서 가용으로 세지 않고, 대신 "곧 된다" 를 정확히 알려준다.
+      const clearing = (state.clearing_robot_count || 0) > 0;
+      const soon = !canCall && clearing;
       main.innerHTML = `
         <div class="call-container">
           <div class="call-info">
             현재 위치 <b>${state.poi_name}</b><br/>
-            가용 로봇: <b>${state.available_robot_count}대</b>
+            ${soon ? "로봇 정리 중…" : `가용 로봇: <b>${state.available_robot_count}대</b>`}
           </div>
-          ${canCall ? "" : `<div class="call-hint">가용 로봇이 없습니다 — 누르면 예약되고, 로봇이 작업을 마치면 먼저 예약한 순서대로 자동 호출됩니다.</div>`}
+          ${canCall ? "" : (soon
+              ? `<div class="call-hint">로봇이 작업을 정리하고 있습니다 — <b>잠시 후 호출할 수 있습니다.</b></div>`
+              : `<div class="call-hint">가용 로봇이 없습니다 — 누르면 예약되고, 로봇이 작업을 마치면 먼저 예약한 순서대로 자동 호출됩니다.</div>`)}
           <div class="call-btn-row">
-            <button class="call-btn call-btn--rack" id="call-with-rack">
-              <span class="big">${canCall ? "🟦 로봇 호출" : "🟦 예약하기"}</span>
-              <span class="small">여기 랙을 <b>${jName}</b> 로 보냅니다</span>
+            <button class="call-btn call-btn--rack" id="call-with-rack"${soon ? " disabled" : ""}>
+              <span class="big">${canCall ? "🟦 로봇 호출" : (soon ? "⏳ 정리 중" : "🟦 예약하기")}</span>
+              <span class="small">${soon ? "잠시만 기다려 주세요" : `여기 랙을 <b>${jName}</b> 로 보냅니다`}</span>
             </button>
           </div>
         </div>`;

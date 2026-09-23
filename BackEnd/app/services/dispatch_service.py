@@ -329,6 +329,33 @@ def _remove_worker(robot_id: int) -> None:
         _workers.pop(robot_id, None)
 
 
+def clearing_robot_ids() -> set[int]:
+    """**중지 요청을 받았지만 아직 워커가 안 빠진** 로봇들 (2026-09-23).
+
+    왜 필요한가 — 현장 지적.
+      [전체 작업 종료] 를 눌러도 워커가 빠져나가는 데 수 초가 걸린다.
+      그동안 가용 로봇이 0대라 R 태블릿에 **[예약하기]** 가 떴다가
+      [로봇 호출] 로 바뀌었다. 작업자는 "로봇 노는데 왜 예약?" 이 된다.
+
+      가용으로 세는 건 틀렸다 — 그 순간 로봇은 정말 바쁘다.
+      대신 화면이 **"정리 중 — 잠시 후 호출 가능"** 을 보여주게 한다.
+    """
+    out: set[int] = set()
+    with _workers_lock:
+        items = list(_workers.items())
+    for rid, w in items:
+        if w is None:
+            continue
+        if w.thread is not None and not w.thread.is_alive():
+            continue
+        try:
+            if jack_service.is_stopping(w.robot_ip):
+                out.add(rid)
+        except Exception:
+            pass
+    return out
+
+
 def has_active_worker(robot_id: int) -> bool:
     w = _get_worker(robot_id)
     if w is None:
