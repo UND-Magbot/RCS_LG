@@ -1917,8 +1917,20 @@ def _force_followup_body(robot_id: int, robot_ip: str, after: str, label: str) -
             #   갈 때 경유지를 안 거친다"는 지적. 통로에 내려놓은 랙은 작업자가
             #   바로 치우기로 합의돼(2026-09-19) 경로가 막힐 위험을 감수한다.
             #   경유지가 없으면 _move_via_waypoints 가 알아서 standard 로 떨어진다.
-            _move_via_waypoints(mini, dest["x"], dest["y"], dest.get("ori") or 0,
-                                max_attempts=8, timeout=180)
+            try:
+                _move_via_waypoints(mini, dest["x"], dest["y"], dest.get("ori") or 0,
+                                    max_attempts=8, timeout=180)
+            except RuntimeError:
+                # ★ 2026-09-23 — 이동 **도중에** 취소가 들어온 경우.
+                #   위의 '이동 직전 확인' 은 이미 지나간 뒤라 여기서 다시 본다.
+                #   종전에는 여기서 그냥 끝나서 로봇이 통로 한가운데 섰다
+                #   (19:03:57 실측 — 예약 취소 → 중단은 됐는데 충전소로 안 갔다).
+                if not _followup_wants_charger(robot_id):
+                    raise
+                logger.warning("[dispatch] %s 후속 이동이 중단됐다 — 충전소로 보낸다", label)
+                _followup_go_charger(robot_id, robot_ip, label)
+                logger.warning(f"[dispatch] ★ {label} 후속 동작 종료 — robot={robot_id}")
+                return
             jack_service.update_job_status(robot_ip, status="idle",
                                            message=f"{dest['name']} 대기 중")
         else:
@@ -1928,7 +1940,38 @@ def _force_followup_body(robot_id: int, robot_ip: str, after: str, label: str) -
             _return_to_charger(robot_ip, [])
     except Exception as e:
         logger.warning(f"[dispatch] {robot_ip} 후속 이동 실패(무시): {e}")
+        # 취소로 끊긴 것이면 세워두지 말고 충전소로 보낸다
+        if _followup_wants_charger(robot_id):
+            logger.warning("[dispatch] %s 후속 이동이 중단됐다 — 충전소로 보낸다", label)
+            _followup_go_charger(robot_id, robot_ip, label)
     logger.warning(f"[dispatch] ★ {label} 후속 동작 종료 — robot={robot_id}")
+
+
+def _followup_wants_charger(robot_id: int) -> bool:
+    with _followup_lock:
+        return robot_id in _followup_to_charger
+
+
+def _followup_go_charger(robot_id: int, robot_ip: str, label: str) -> None:
+    """중단된 후속 동작을 충전소 복귀로 이어붙인다.
+
+    중지 플래그를 먼저 걷어야 새 이동이 첫 확인에서 바로 취소되지 않는다.
+    """
+    with _followup_lock:
+        _followup_cancel.discard(robot_id)
+        _followup_to_charger.discard(robot_id)
+    try:
+        jack_service.clear_stop_flag(robot_ip)
+        jack_service.resume_robot_job(robot_ip)
+    except Exception:
+        pass
+    try:
+        jack_service.update_job_status(robot_ip, status="returning",
+                                       message=f"{label} — 충전소로 복귀합니다")
+        from app.services.scheduler import _return_to_charger
+        _return_to_charger(robot_ip, [])
+    except Exception as e:
+        logger.warning("[dispatch] %s 충전소 복귀 실패(무시): %s", robot_ip, e)
 
 
 def _josa_ro(word: str) -> str:
