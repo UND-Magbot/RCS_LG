@@ -83,6 +83,12 @@ class _Worker:
     confirm_event: threading.Event = field(default_factory=threading.Event)    # 로봇 태블릿 [확인] 신호
     end_flag: bool = False
     abort_flag: bool = False   # 강제 정리 — 복귀 시퀀스 없이 세션만 종료 (로봇 이동/잭 동작 없음)
+    # [전체 강제 종료] 전용 — 이 워커가 죽을 때 **대기 예약을 이어받지 않는다** (2026-09-23).
+    #   현장 정의: 전체 강제 종료 = 현재 작업 + 예약된 작업 **전부** 종료 → 충전소 복귀.
+    #   종전에는 죽는 워커의 finally 가 try_fulfill_reservations() 를 불러
+    #   방금 취소한 작업 대신 **대기 예약을 즉시 새로 시작**했다.
+    #   (2026-09-23 17:04:35 실측 — R2 작업을 끊었더니 0.2초 만에 J1 예약을 물고 출발)
+    no_takeover: bool = False
     pending_route: Optional[list[int]] = None  # 콘솔이 등록한 경유지 큐 (출발 시 워커가 소비)
     # 충전소 복귀 도중 이어받을 작업 (j_poi_id, reservation_id).
     # `_stop_flags` 는 사용자 중지에도 쓰이므로, 이 값이 있을 때만 '예약 이어받기로 인한
@@ -92,6 +98,12 @@ class _Worker:
 
 # 워커 레지스트리 — robot_id 기준
 _workers: dict[int, _Worker] = {}
+
+# 강제 종료 후속 동작(랙 내려놓기 → 충전소)이 도는 로봇 (2026-09-23).
+# 워커가 아니라 별도 스레드라 워커 레지스트리에 안 잡힌다. 그동안 로봇은
+# 바쁜데 화면에는 이유가 안 보여서 24초 동안 [예약하기] 만 떴다.
+_followup_robots: set[int] = set()
+_followup_lock = threading.Lock()
 _workers_lock = threading.Lock()
 
 # 예약 자동 처리 직렬화 — 여러 워커가 동시에 종료해도 예약 배정은 한 번에 하나씩
@@ -356,6 +368,9 @@ def clearing_robot_ids() -> set[int]:
       [예약하기] 가 맞다 — 실제로 예약해 두는 게 작업자에게 이득이다.
     """
     out: set[int] = set()
+    # 강제 종료 후속 동작 중 — 워커는 없지만 로봇은 랙을 내려놓고 충전소로 가는 중이다
+    with _followup_lock:
+        out |= set(_followup_robots)
     with _workers_lock:
         items = list(_workers.items())
     for rid, w in items:
@@ -1288,11 +1303,16 @@ def _worker_loop(worker: _Worker, *, skip_pickup: bool = False) -> None:
         except Exception:
             pass
         _remove_worker(worker.robot_id)
-        # 이 로봇이 가용해졌으니 대기 중 예약이 있으면 FIFO로 자동 호출
-        try:
-            try_fulfill_reservations()
-        except Exception:
-            logger.exception("[dispatch] 종료 후 예약 자동 처리 실패")
+        # 이 로봇이 가용해졌으니 대기 중 예약이 있으면 FIFO로 자동 호출.
+        # ★ 단 [전체 강제 종료] 로 끊긴 것이면 건너뛴다 — 전부 취소가 그 버튼의 뜻이다.
+        if getattr(worker, "no_takeover", False):
+            logger.info("[dispatch] 전체 강제 종료 — robot=%s 예약 이어받기 건너뜀",
+                        worker.robot_id)
+        else:
+            try:
+                try_fulfill_reservations()
+            except Exception:
+                logger.exception("[dispatch] 종료 후 예약 자동 처리 실패")
 
 
 # ── DB 상태 갱신 헬퍼 ─────────────────────────────────────────
@@ -1605,6 +1625,9 @@ def force_clear(robot_id: int, after: str = "hold") -> tuple[bool, str]:
     if worker:
         worker.abort_flag = True
         worker.end_flag = True  # 대기 루프를 깨워 종료로 진입시킴 (abort_flag 로 복귀 스킵)
+        # "charge" = [전체 강제 종료] — 현재 작업과 **예약된 작업 전부** 종료다.
+        # 이 표시가 없으면 워커가 죽으면서 대기 예약을 물어 새 작업을 시작한다.
+        worker.no_takeover = (after == "charge")
         # 이동 중이거나 일시정지 중이면 아래 두 이벤트로는 깨울 수 없다.
         #   - 이동 중      : safe_move 안에서 로봇 응답을 기다리는 중
         #   - 일시정지 중  : _wait_if_paused() 폴링 루프에 갇혀 있음
@@ -1706,6 +1729,19 @@ def _followup_destination(after: str) -> Optional[dict]:
 def _force_followup(robot_id: int, robot_ip: str, after: str) -> None:
     label = {"reserve": "현재 JOB 강제 종료", "charge": "전체 강제 종료"}.get(after, after)
     logger.warning(f"[dispatch] ★ {label} 후속 동작 시작 — robot={robot_id} {robot_ip}")
+    # 이 스레드가 도는 동안 로봇은 랙을 내려놓고 충전소로 간다 — **바쁘다.**
+    # 그런데 워커가 아니라 화면에는 "가용 0대" 인데 이유가 안 보였다.
+    #   2026-09-23 실측 — 그 공백이 24초. 그동안 [예약하기] 만 떴다.
+    with _followup_lock:
+        _followup_robots.add(robot_id)
+    try:
+        _force_followup_body(robot_id, robot_ip, after, label)
+    finally:
+        with _followup_lock:
+            _followup_robots.discard(robot_id)
+
+
+def _force_followup_body(robot_id: int, robot_ip: str, after: str, label: str) -> None:
 
     # 1) 워커가 완전히 빠질 때까지 대기 (안 빠져도 계속 진행한다)
     deadline = time.time() + FOLLOWUP_WORKER_WAIT_SEC
@@ -1971,6 +2007,25 @@ def force_clear_all() -> dict:
 # ══════════════════════════════════════════════════════════
 
 
+def _all_waiting_reservation_pois() -> set[int]:
+    """지금 대기 중인 예약의 POI 전부 (2026-09-23).
+
+    [전체 강제 종료] 는 "현재 작업 + 예약된 작업 전부 종료" 다. 그 로봇이
+    물고 있던 것만이 아니라 **대기열에 남아 있는 예약 전부**를 지워야 한다.
+    """
+    ids: set[int] = set()
+    db = SessionLocal()
+    try:
+        for r in dispatch_crud.list_waiting_reservations(db):
+            if r.poi_id:
+                ids.add(int(r.poi_id))
+    except Exception:
+        logger.exception("[dispatch] 대기 예약 목록 조회 실패")
+    finally:
+        db.close()
+    return ids
+
+
 def _session_poi_ids(robot_id: int) -> set[int]:
     """이 로봇의 활성 세션이 물고 있는 POI id 들.
 
@@ -2010,7 +2065,15 @@ def force_clear_robot(robot_id: int, scope: str = "current") -> dict:
 
     # ★ 순서 주의 — 예약을 지우기 전에 **먼저 어느 POI 인지 기억**해 둔다.
     #   force_clear 가 세션을 failed 로 바꾸면 poi 를 더 못 읽는다.
-    poi_ids = _session_poi_ids(robot_id) if scope == "all" else set()
+    # ★ 2026-09-23 — 범위를 넓혔다.
+    #   종전에는 **그 로봇 세션이 물고 있던 POI** 만 취소했다. 그런데 현장에서
+    #   문제가 된 건 **다른 호출로 만들어진 대기 예약**이었다 (17:04:11 poi=1609).
+    #   그건 세션 POI 가 아니라 한 건도 안 지워졌고("대기 호출 0건 취소"),
+    #   워커가 죽으면서 그 예약을 물고 새 작업을 시작했다.
+    #
+    #   현장 정의 — 전체 강제 종료 = 현재 작업 + **예약된 작업 전부** 종료.
+    #   그래서 대기 중인 예약을 전부 대상으로 한다.
+    poi_ids = (_session_poi_ids(robot_id) | _all_waiting_reservation_pois())         if scope == "all" else set()
 
     ok, msg = force_clear(robot_id, after=("charge" if scope == "all" else "reserve"))
     cleared = 1 if ok else 0
@@ -3157,10 +3220,15 @@ def _worker_loop_delivery(worker: _Worker, *, first_j_poi_id: int) -> None:
         except Exception:
             pass
         _remove_worker(worker.robot_id)
-        try:
-            try_fulfill_reservations()
-        except Exception:
-            logger.exception("[delivery] 종료 후 예약 자동 처리 실패")
+        # ★ [전체 강제 종료] 로 끊긴 것이면 예약을 이어받지 않는다 (위 주석 참조)
+        if getattr(worker, "no_takeover", False):
+            logger.info("[delivery] 전체 강제 종료 — robot=%s 예약 이어받기 건너뜀",
+                        worker.robot_id)
+        else:
+            try:
+                try_fulfill_reservations()
+            except Exception:
+                logger.exception("[delivery] 종료 후 예약 자동 처리 실패")
 
 
 def _log_rack_missing(worker: _Worker, r_name: str, j_name: str) -> None:
