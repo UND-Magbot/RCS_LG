@@ -102,6 +102,25 @@ _workers: dict[int, _Worker] = {}
 # 강제 종료 후속 동작(랙 내려놓기 → 충전소)이 도는 로봇 (2026-09-23).
 # 워커가 아니라 별도 스레드라 워커 레지스트리에 안 잡힌다. 그동안 로봇은
 # 바쁜데 화면에는 이유가 안 보여서 24초 동안 [예약하기] 만 떴다.
+# 라우터가 스레드로 돌리는 수동 이동(충전소 복귀·강제 복귀) (2026-09-23).
+# 워커도 후속 동작도 아니라서 가용 판정에 안 잡혔다 — 그 사이 호출이 들어오면
+# 두 명령이 같은 로봇을 동시에 몰게 된다.
+_manual_move_robots: set[int] = set()
+_manual_move_lock = threading.Lock()
+
+
+def manual_move_begin(robot_id: int, what: str) -> None:
+    with _manual_move_lock:
+        _manual_move_robots.add(robot_id)
+    logger.info("[dispatch] 수동 이동 시작 — robot=%s (%s)", robot_id, what)
+
+
+def manual_move_end(robot_id: int, what: str = "") -> None:
+    with _manual_move_lock:
+        _manual_move_robots.discard(robot_id)
+    logger.info("[dispatch] 수동 이동 종료 — robot=%s %s", robot_id, what)
+
+
 _followup_robots: set[int] = set()
 _followup_cancel: set[int] = set()     # 사용자 명령으로 중단 요청된 후속 동작
 _followup_lock = threading.Lock()
@@ -453,7 +472,15 @@ def is_robot_busy(robot_id: int) -> bool:
     if has_active_worker(robot_id):
         return True
     with _followup_lock:
-        return robot_id in _followup_robots
+        if robot_id in _followup_robots:
+            return True
+    # 단일 이동(연구용) — 워커가 아니라 별도 스레드다
+    with _goto_lock:
+        if robot_id in _goto:
+            return True
+    # 충전소 복귀 · 강제 복귀 — 라우터가 스레드로 돌린다
+    with _manual_move_lock:
+        return robot_id in _manual_move_robots
 
 
 def has_active_worker(robot_id: int) -> bool:
@@ -1828,9 +1855,20 @@ def _force_followup(robot_id: int, robot_ip: str, after: str) -> None:
         _force_followup_body(robot_id, robot_ip, after, label)
     finally:
         with _followup_lock:
+            was_cancelled = robot_id in _followup_cancel
             _followup_robots.discard(robot_id)
             _followup_cancel.discard(robot_id)
             _followup_to_charger.discard(robot_id)
+        # ★ 불변식 — **중지 플래그를 세운 쪽이 반드시 걷는다.**
+        #   cancel_followup() 이 진행 중 이동을 끊으려고 플래그를 세운다.
+        #   안 걷으면 뒤이어 오는 명령(충전소 복귀 등)의 첫 이동이
+        #   _check_stop() 에서 즉시 취소된다 — 2026-09-23 18:39 에 실제로 그랬다.
+        if was_cancelled:
+            try:
+                jack_service.clear_stop_flag(robot_ip)
+                jack_service.resume_robot_job(robot_ip)
+            except Exception:
+                pass
 
 
 def _force_followup_body(robot_id: int, robot_ip: str, after: str, label: str) -> None:
@@ -1873,6 +1911,34 @@ def _force_followup_body(robot_id: int, robot_ip: str, after: str, label: str) -
     if _followup_cancelled(robot_id):
         logger.warning("[dispatch] %s 후속 동작 — 사용자 명령으로 중단 (목적지 결정 전)", label)
         return
+
+    # ★ 2026-09-23 현장 지적 — "취소한 순간 R 로 가는 게 작업인데 예약으로 남는 건 틀렸다."
+    #
+    #   현장 정의: 현재 JOB 강제 종료 = 지금 작업 종료 + **예약된 작업이 있으면 그걸 한다.**
+    #   그런데 종전에는 후속 동작이 R 까지 **자기가 직접** 몰고 가서 세워두고,
+    #   예약은 `waiting` 그대로 남겼다. 그래서
+    #     · 화면에는 [예약 취소] 가 떠 있고 (이미 그 작업을 하는 중인데)
+    #     · 눌러버리면 로봇이 가던 길에 멈춘다
+    #     · 후속 동작이 끝나도 아무도 예약을 소진하지 않아 그대로 남는다
+    #
+    #   그래서 후속 동작이 직접 몰지 않고 **정식 배차로 넘긴다.**
+    #   배송 모드가 R 에서 픽업해 J 로 배송하므로 "R 에서 다시 시작" 합의와도 맞다.
+    #   화면에도 처음부터 '작업 중' 으로 뜬다.
+    if after == "reserve":
+        with _followup_lock:
+            _followup_robots.discard(robot_id)      # 가용으로 풀어야 배차가 붙는다
+        try:
+            try_fulfill_reservations()
+        except Exception:
+            logger.exception("[dispatch] %s 후속 동작 — 예약 인계 실패", label)
+        if has_active_worker(robot_id):
+            logger.warning("[dispatch] ★ %s 후속 동작 종료 — 예약을 정식 작업으로 넘겼다 "
+                           "(robot=%s)", label, robot_id)
+            return
+        logger.info("[dispatch] %s 후속 동작 — 넘길 예약이 없다. 충전소로 간다", label)
+        with _followup_lock:
+            _followup_robots.add(robot_id)          # 충전소 갈 동안 다시 바쁨
+
     dest = _followup_destination(after)
 
     # ★ 2026-09-19 — 목적지가 정해진 **지금** 확정 문구로 알림을 갱신한다.

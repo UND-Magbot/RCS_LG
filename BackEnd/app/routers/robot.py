@@ -631,6 +631,26 @@ def api_get_robot_target(robot_ip: str):
         return {"state": "error", "target_x": None, "target_y": None}
 
 
+def _mark_manual_move(robot_ip: str, begin: bool, what: str) -> None:
+    """라우터가 스레드로 로봇을 움직이는 동안 '바쁨' 으로 잡히게 한다."""
+    try:
+        from app.models.robot import Robot
+        from app.database import SessionLocal
+        from app.services import dispatch_service
+        db = SessionLocal()
+        try:
+            r = db.query(Robot).filter(Robot.ip_address == robot_ip).first()
+        finally:
+            db.close()
+        if r:
+            if begin:
+                dispatch_service.manual_move_begin(r.id, what)
+            else:
+                dispatch_service.manual_move_end(r.id, what)
+    except Exception:
+        pass
+
+
 def _cancel_followup_for(robot_ip: str, why: str) -> None:
     """이 IP 의 로봇에 돌고 있는 강제 종료 후속 동작을 중단시킨다.
 
@@ -647,7 +667,19 @@ def _cancel_followup_for(robot_ip: str, why: str) -> None:
         finally:
             db.close()
         if r:
-            dispatch_service.cancel_followup(r.id, why)
+            if dispatch_service.cancel_followup(r.id, why):
+                # 후속 동작이 실제로 빠져나가야 그쪽이 중지 플래그를 걷는다.
+                # 안 기다리면 이 명령의 첫 이동이 그 플래그에 걸려 취소된다.
+                import time as _t
+                deadline = _t.time() + 3.0
+                while _t.time() < deadline and dispatch_service.is_robot_busy(r.id):
+                    _t.sleep(0.1)
+                try:
+                    from app.services.jack_service import clear_stop_flag, resume_robot_job
+                    clear_stop_flag(robot_ip)
+                    resume_robot_job(robot_ip)
+                except Exception:
+                    pass
     except Exception as e:
         import logging
         logging.getLogger(__name__).warning(
@@ -1068,11 +1100,11 @@ def api_clear_dispatch(robot_ip: str, db: Session = Depends(get_db)):
 
 @router.post("/remote/dock/{robot_ip}")
 def api_dock_to_charger(robot_ip: str, db: Session = Depends(get_db)):
+    """충전소로 복귀"""
     # ★ 강제 종료 후속 동작이 돌고 있으면 먼저 중단시킨다 (2026-09-23).
     #   안 그러면 둘이 싸워서 이 이동이 곧바로 cancelled 되고,
     #   후속 동작이 이겨 엉뚱한 곳(예약의 R 지점)으로 가버린다.
     _cancel_followup_for(robot_ip, "충전소 복귀")
-    """충전소로 복귀"""
     import requests as req
     # 로봇의 현재 영역 맵에서 충전소 POI 찾기
     robot = db.query(Robot).filter(Robot.ip_address == robot_ip).first()
@@ -1130,6 +1162,16 @@ def api_dock_to_charger(robot_ip: str, db: Session = Depends(get_db)):
         def _approach_then_charge():
             import time as _t
             from app.services import jack_service as _js
+            # ★ 이 스레드가 도는 동안 로봇은 움직인다 — 가용으로 잡히면 안 된다.
+            #   워커도 후속 동작도 아니라 종전에는 "가용 1대" 로 보였고,
+            #   그 사이 호출이 들어오면 두 명령이 같은 로봇을 동시에 몬다.
+            _mark_manual_move(robot_ip, True, "충전소 복귀")
+            try:
+                _approach_then_charge_body(_t, _js)
+            finally:
+                _mark_manual_move(robot_ip, False, "충전소 복귀")
+
+        def _approach_then_charge_body(_t, _js):
 
             # 이전 작업이 남긴 중지 플래그가 있으면 폴링이 즉시 죽는다 → 정리하고 시작
             _js._stop_flags.pop(robot_ip, None)
