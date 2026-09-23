@@ -107,7 +107,11 @@ _followup_cancel: set[int] = set()     # 사용자 명령으로 중단 요청된
 _followup_lock = threading.Lock()
 
 
-def cancel_followup(robot_id: int, why: str = "사용자 명령") -> bool:
+_followup_to_charger: set[int] = set()   # 중단 뒤 충전소로 보낼 로봇
+
+
+def cancel_followup(robot_id: int, why: str = "사용자 명령",
+                    then_charge: bool = False) -> bool:
     """**돌고 있는 강제 종료 후속 동작을 중단시킨다** (2026-09-23).
 
     현장 정의 — 후속 동작 중에 사용자가 다른 명령을 내리면 **사용자가 이긴다.**
@@ -125,6 +129,10 @@ def cancel_followup(robot_id: int, why: str = "사용자 명령") -> bool:
         if robot_id not in _followup_robots:
             return False
         _followup_cancel.add(robot_id)
+        # 충전소 복귀처럼 **뒤이어 다른 명령이 로봇을 움직이는** 경우가 아니면
+        # 그냥 중단만 하면 로봇이 통로 한가운데 서 버린다. 그때는 충전소로 보낸다.
+        if then_charge:
+            _followup_to_charger.add(robot_id)
     logger.warning("[dispatch] 후속 동작 중단 요청 — robot=%s (%s)", robot_id, why)
     try:
         r = _load_robot(robot_id)
@@ -1815,12 +1823,14 @@ def _force_followup(robot_id: int, robot_ip: str, after: str) -> None:
     with _followup_lock:
         _followup_robots.add(robot_id)
         _followup_cancel.discard(robot_id)
+        _followup_to_charger.discard(robot_id)
     try:
         _force_followup_body(robot_id, robot_ip, after, label)
     finally:
         with _followup_lock:
             _followup_robots.discard(robot_id)
             _followup_cancel.discard(robot_id)
+            _followup_to_charger.discard(robot_id)
 
 
 def _force_followup_body(robot_id: int, robot_ip: str, after: str, label: str) -> None:
@@ -1884,8 +1894,21 @@ def _force_followup_body(robot_id: int, robot_ip: str, after: str, label: str) -
     mini = _MiniWorker(robot_ip, _area)
     try:
         if _followup_cancelled(robot_id):
-            logger.warning("[dispatch] %s 후속 동작 — 사용자 명령으로 중단 (이동 전)", label)
-            return
+            with _followup_lock:
+                to_charger = robot_id in _followup_to_charger
+            if not to_charger:
+                logger.warning("[dispatch] %s 후속 동작 — 사용자 명령으로 중단 (이동 전)", label)
+                return
+            logger.warning("[dispatch] %s 후속 동작 — 예약이 사라져 충전소로 바꾼다", label)
+            dest = None
+            with _followup_lock:
+                _followup_cancel.discard(robot_id)      # 충전소 이동은 계속해야 한다
+                _followup_to_charger.discard(robot_id)
+            try:
+                jack_service.clear_stop_flag(robot_ip)  # 위에서 세운 중지 플래그를 걷는다
+                jack_service.resume_robot_job(robot_ip)
+            except Exception:
+                pass
         if dest:
             jack_service.update_job_status(
                 robot_ip, status="moving",
@@ -2701,9 +2724,37 @@ def cancel_reservation_at_poi(poi_id: int) -> bool:
         done = dispatch_crud.cancel_reservation(db, poi_id)
         _reserve_log("cancelled" if done else "cancel-시도(대상없음)",
                      None, poi_id, reason="사용자 취소 요청(API)")
-        return done
     finally:
         db.close()
+
+    # ★ 2026-09-23 — 강제 종료 후속 동작이 **이 예약의 R 지점으로 가는 중**일 수 있다.
+    #   대기 예약이 하나도 안 남았으면 그 이동은 갈 이유가 없다.
+    #   종전에는 그대로 가서 **빈 자리에 들어가 섰다**(18:58:05 취소 → 18:58:21 R2 도착).
+    if done:
+        try:
+            _stop_followups_without_reservation()
+        except Exception:
+            logger.exception("[dispatch] 예약 취소 후 후속 동작 정리 실패")
+    return done
+
+
+def _stop_followups_without_reservation() -> None:
+    """대기 예약이 다 없어졌는데 그 예약 때문에 가던 후속 동작이 있으면 충전소로 돌린다."""
+    with _followup_lock:
+        running = list(_followup_robots)
+    if not running:
+        return
+    db = SessionLocal()
+    try:
+        left = dispatch_crud.list_waiting_reservations(db) or []
+    except Exception:
+        return
+    finally:
+        db.close()
+    if left:
+        return                                   # 아직 갈 곳이 남아 있다
+    for rid in running:
+        cancel_followup(rid, "예약이 모두 취소됨", then_charge=True)
 
 
 def _reserve_log(action: str, res_id: Optional[int], poi_id: Optional[int],
