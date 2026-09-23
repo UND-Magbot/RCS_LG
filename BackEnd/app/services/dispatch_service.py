@@ -103,7 +103,42 @@ _workers: dict[int, _Worker] = {}
 # 워커가 아니라 별도 스레드라 워커 레지스트리에 안 잡힌다. 그동안 로봇은
 # 바쁜데 화면에는 이유가 안 보여서 24초 동안 [예약하기] 만 떴다.
 _followup_robots: set[int] = set()
+_followup_cancel: set[int] = set()     # 사용자 명령으로 중단 요청된 후속 동작
 _followup_lock = threading.Lock()
+
+
+def cancel_followup(robot_id: int, why: str = "사용자 명령") -> bool:
+    """**돌고 있는 강제 종료 후속 동작을 중단시킨다** (2026-09-23).
+
+    현장 정의 — 후속 동작 중에 사용자가 다른 명령을 내리면 **사용자가 이긴다.**
+    사람이 개입하는 건 뭔가 잘못됐을 때이므로 그게 우선이다.
+
+    2026-09-23 18:39 실측 — 이게 없어서 이런 일이 났다.
+      18:39:04  후속 동작이 '대기 예약 J2 의 R 지점 R2' 를 목적지로 잡음
+      18:39:31  사용자가 그 예약을 취소  → 후속 동작은 못 본다
+      18:39:35  사용자가 충전소 복귀      → 그 이동이 곧바로 cancelled
+      18:40:29  후속 동작이 이겨서 R2 도착. 랙도 없는데 들어가 섰다
+
+    돌고 있지 않으면 아무 일도 하지 않는다(False).
+    """
+    with _followup_lock:
+        if robot_id not in _followup_robots:
+            return False
+        _followup_cancel.add(robot_id)
+    logger.warning("[dispatch] 후속 동작 중단 요청 — robot=%s (%s)", robot_id, why)
+    try:
+        r = _load_robot(robot_id)
+        if r and r.ip_address:
+            jack_service.cancel_current_move(r.ip_address, timeout=3)
+            jack_service.stop_robot_job(r.ip_address)   # 진행 중 이동에서 빠져나오게
+    except Exception as e:
+        logger.warning("[dispatch] 후속 동작 중단 — 로봇에 전달 실패(무시): %s", e)
+    return True
+
+
+def _followup_cancelled(robot_id: int) -> bool:
+    with _followup_lock:
+        return robot_id in _followup_cancel
 _workers_lock = threading.Lock()
 
 # 예약 자동 처리 직렬화 — 여러 워커가 동시에 종료해도 예약 배정은 한 번에 하나씩
@@ -1779,11 +1814,13 @@ def _force_followup(robot_id: int, robot_ip: str, after: str) -> None:
     #   2026-09-23 실측 — 그 공백이 24초. 그동안 [예약하기] 만 떴다.
     with _followup_lock:
         _followup_robots.add(robot_id)
+        _followup_cancel.discard(robot_id)
     try:
         _force_followup_body(robot_id, robot_ip, after, label)
     finally:
         with _followup_lock:
             _followup_robots.discard(robot_id)
+            _followup_cancel.discard(robot_id)
 
 
 def _force_followup_body(robot_id: int, robot_ip: str, after: str, label: str) -> None:
@@ -1823,6 +1860,9 @@ def _force_followup_body(robot_id: int, robot_ip: str, after: str, label: str) -
             logger.warning(f"[dispatch] 후속 동작 — 잭다운 실패(계속 진행): {e}")
 
     # 4) 목적지로 이동
+    if _followup_cancelled(robot_id):
+        logger.warning("[dispatch] %s 후속 동작 — 사용자 명령으로 중단 (목적지 결정 전)", label)
+        return
     dest = _followup_destination(after)
 
     # ★ 2026-09-19 — 목적지가 정해진 **지금** 확정 문구로 알림을 갱신한다.
@@ -1843,6 +1883,9 @@ def _force_followup_body(robot_id: int, robot_ip: str, after: str, label: str) -
         _area = None
     mini = _MiniWorker(robot_ip, _area)
     try:
+        if _followup_cancelled(robot_id):
+            logger.warning("[dispatch] %s 후속 동작 — 사용자 명령으로 중단 (이동 전)", label)
+            return
         if dest:
             jack_service.update_job_status(
                 robot_ip, status="moving",
@@ -3355,6 +3398,7 @@ def goto_poi(robot_id: int, poi_id: int, mode: str = "route") -> tuple[bool, str
     if not poi:
         return False, "POI 조회 실패"
 
+    cancel_followup(robot_id, "단일 이동")     # 후속 동작이 돌면 사용자가 이긴다
     # 배차가 돌고 있으면 건드리지 않는다
     with _workers_lock:
         w = _workers.get(robot_id)

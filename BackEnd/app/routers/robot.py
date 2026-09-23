@@ -631,6 +631,29 @@ def api_get_robot_target(robot_ip: str):
         return {"state": "error", "target_x": None, "target_y": None}
 
 
+def _cancel_followup_for(robot_ip: str, why: str) -> None:
+    """이 IP 의 로봇에 돌고 있는 강제 종료 후속 동작을 중단시킨다.
+
+    현장 정의 — 후속 동작 중 사용자 명령이 들어오면 **사용자가 이긴다**
+    (2026-09-23). 돌고 있지 않으면 아무 일도 하지 않는다.
+    """
+    try:
+        from app.models.robot import Robot
+        from app.database import SessionLocal
+        from app.services import dispatch_service
+        db = SessionLocal()
+        try:
+            r = db.query(Robot).filter(Robot.ip_address == robot_ip).first()
+        finally:
+            db.close()
+        if r:
+            dispatch_service.cancel_followup(r.id, why)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(
+            "[dispatch] 후속 동작 중단 시도 실패(무시) %s: %s", robot_ip, e)
+
+
 # ── 원격 제어 API ──
 
 @router.post("/remote/control-mode/{robot_ip}")
@@ -868,6 +891,7 @@ def api_stop_all(robot_ip: str):
     """모든 작업 정지 (이동 취소 + 잭 다운 + 작업 중단)"""
     import requests as req
     # 1) 백엔드 스케줄/수동 배차 작업 중단 (먼저 — 새 명령 방지)
+    _cancel_followup_for(robot_ip, "모든 작업 정지")
     from app.services.jack_service import stop_robot_job
     stop_robot_job(robot_ip)
     # 2) 로봇 이동 취소
@@ -918,6 +942,7 @@ def api_is_paused(robot_ip: str):
 
 @router.post("/remote/force-return/{robot_ip}")
 def api_force_return(robot_ip: str, db: Session = Depends(get_db)):
+    _cancel_followup_for(robot_ip, "강제 복귀")
     """강제 종료 — 현재 위치에서 잭 업 → 랙 위치 복귀 → 충전소 도킹.
     별도 thread 로 전체 절차를 수행하며 즉시 응답."""
     from app.services.jack_service import force_return_and_dock
@@ -1043,6 +1068,10 @@ def api_clear_dispatch(robot_ip: str, db: Session = Depends(get_db)):
 
 @router.post("/remote/dock/{robot_ip}")
 def api_dock_to_charger(robot_ip: str, db: Session = Depends(get_db)):
+    # ★ 강제 종료 후속 동작이 돌고 있으면 먼저 중단시킨다 (2026-09-23).
+    #   안 그러면 둘이 싸워서 이 이동이 곧바로 cancelled 되고,
+    #   후속 동작이 이겨 엉뚱한 곳(예약의 R 지점)으로 가버린다.
+    _cancel_followup_for(robot_ip, "충전소 복귀")
     """충전소로 복귀"""
     import requests as req
     # 로봇의 현재 영역 맵에서 충전소 POI 찾기
