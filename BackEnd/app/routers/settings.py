@@ -438,13 +438,15 @@ def put_poi_labels(payload: dict[str, PoiLabelItem]):
 #      사람을 피해 돌아갈 수 없다(= 회피가 아니라 추종 오차 허용).
 #
 # route_move_type — 경유지 경로를 실을 이동 종류
-#   "standard"           제조사 권장. standard 에 route_coordinates 를 같이 보낸다
-#   "along_given_route"  종전 방식. **제조사 문서에서 deprecated** 로 표기돼 있다
+#   "along_given_route"  **이것만 경로를 쓴다.** 제조사 문서에는 deprecated 로 적혀 있다
+#   "standard"           제조사 권장이지만 route_coordinates 를 조용히 버린다
 #
-#   ★ 왜 빼놨나
-#     along_given_route 를 못 쓰게 되는 날이 올 수 있고, 무엇보다
-#     standard + route_coordinates 를 로봇이 받아주는지 **실기로 확인한 적이 없다.**
-#     현장에서 로봇이 거부하면 콘솔에서 한 번 눌러 되돌릴 수 있어야 한다.
+#   ★ 2026-09-23 연구소 실측으로 결론 (상세는 waypoint_route.ROUTE_MOVE_TYPE 주석)
+#     같은 구간을 방식만 바꿔 주행했더니 standard 는 경유지를 1.75 m 떨어져
+#     지나쳤고 along_given_route 는 0.12 m 로 붙었다. standard 는 안 쓴다.
+#
+#   그래도 설정으로 남겨 두는 이유 — 펌웨어가 바뀌면 달라질 수 있고,
+#   현장에서 코드를 못 고치기 때문이다.
 #
 # strict_route — 경유지 경로를 못 만들었을 때 어떻게 할 것인가
 #   True   **이동을 거부한다.** 자율주행으로 나가지 않는다
@@ -460,7 +462,7 @@ def put_poi_labels(payload: dict[str, PoiLabelItem]):
 #      `[route] 경로를 만들 수 없다` 를 보고 경유지를 보강할 것.
 _DEFAULT_DRIVE = {
     "detour_tolerance": 0.0,
-    "route_move_type": "standard",
+    "route_move_type": "along_given_route",
     "strict_route": True,
 }
 
@@ -474,7 +476,7 @@ def get_drive_settings() -> dict:
 
 class DriveSettings(BaseModel):
     detour_tolerance: float = Field(..., ge=0.0, le=1.0)
-    route_move_type: Literal["standard", "along_given_route"] = "standard"
+    route_move_type: Literal["standard", "along_given_route"] = "along_given_route"
     strict_route: bool = True
 
 

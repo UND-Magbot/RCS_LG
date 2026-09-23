@@ -54,10 +54,21 @@ def _detour_tolerance() -> float:
 
 
 # 경유지 경로를 실어 보낼 **이동 종류**.
-#   "standard"           제조사 권장 — standard 에 route_coordinates 를 같이 보낸다
-#   "along_given_route"  종전 — 제조사 문서에서 deprecated 로 표기돼 있다
+#   "along_given_route"  이것만 경로를 쓴다. 제조사 문서에는 deprecated 로 적혀 있다
+#   "standard"           제조사 권장이지만 **route_coordinates 를 조용히 버린다**
+#
+# ★ 2026-09-23 연구소 실측 — 같은 구간(C1 → W2 → W1 → R1-1)을 방식만 바꿔 주행
+#
+#                        W2 최근접   W1 최근접   경로선까지 평균   직선까지 평균
+#   standard               1.75 m      0.80 m       0.31 m          0.27 m
+#   along_given_route      0.12 m      0.04 m       0.26 m          0.87 m
+#
+#   standard 는 직선에 붙고, along_given_route 는 경로선에 붙는다.
+#   detour_tolerance = 0 인데 standard 는 W2 에서 1.5 m 벌어졌다 — 안 쓴 것이다.
+#   (2026-09-07 에 align_with_rack 이 무시한다고 본 것과 같은 현상)
+#
 # 콘솔 설정이 우선이고, 여기 값은 설정을 못 읽을 때의 기본값이다.
-ROUTE_MOVE_TYPE = "standard"
+ROUTE_MOVE_TYPE = "along_given_route"
 
 # 경유지 경로를 못 만들었을 때 자율주행으로 나가지 않는다.
 # 종전에는 경유지를 못 찾거나 위치를 못 읽으면 조용히 standard 로 떨어졌다.

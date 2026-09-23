@@ -1196,3 +1196,96 @@ def api_shutdown_robot(robot_ip: str):
         return {"status": r.status_code, "message": "로봇 종료 명령 전송"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ══════════════════════════════════════════════════════════════════
+#  주행 튜닝 파라미터 (2026-09-23) — 콘솔 [테스트] 탭이 쓴다
+#
+#  왜 밖으로 뺐나
+#    비이상적 정지(급감속)의 원인을 좁히려면 **같은 구간을 값만 바꿔가며**
+#    반복해야 한다. 그런데 현장 안에는 인터넷이 없어 코드를 못 고친다.
+#    한 번 들어가면 안에서 끝내야 하므로, 되돌릴 수단이 화면에 있어야 한다.
+#
+#  안전장치
+#    · 화이트리스트에 있는 키만 쓴다. 범위를 벗어나면 400
+#    · 속도(max_forward_velocity)는 **여기서 다루지 않는다** —
+#      안전존이 실시간으로 덮어쓰는 값이라 충돌한다. 속도는 [설정] 탭에 따로 있다
+#    · 바꾼 값은 기존값과 같이 WARNING 으로 남긴다
+# ══════════════════════════════════════════════════════════════════
+
+# 이름 → (로봇 파라미터 키, 형, 최소, 최대, 공장값)
+_TUNABLE = {
+    "bump_tolerance": ("/control/bump_tolerance", "float", 0.05, 1.5, 0.5),
+    "bump_speed_limit": ("/control/bump_based_speed_limit/enable", "bool", None, None, True),
+    "max_forward_acc": ("/wheel_control/max_forward_acc", "float", 0.1, 1.0, 0.3),
+    "max_forward_decel": ("/wheel_control/max_forward_decel", "float", -3.0, -0.3, -2.0),
+    "auto_hold": ("/planning/auto_hold", "bool", None, None, True),
+}
+
+
+@router.get("/tuning/{robot_ip}")
+def api_get_tuning(robot_ip: str):
+    """로봇에 **지금 들어 있는** 주행 튜닝 값. 공장값도 같이 준다."""
+    import requests as req
+    out = {"ok": True, "values": {}, "factory": {k: v[4] for k, v in _TUNABLE.items()}}
+    try:
+        params = req.get(f"http://{robot_ip}:8090/robot-params", timeout=8).json()
+    except Exception as e:
+        out["ok"] = False
+        out["error"] = f"로봇에 접속할 수 없습니다: {e}"
+        return out
+    for name, (key, typ, _lo, _hi, _fac) in _TUNABLE.items():
+        if key in params:
+            out["values"][name] = params[key]
+    # 참고용 — 여기서 바꾸지는 않는다
+    out["speed"] = params.get("/wheel_control/max_forward_velocity")
+    return out
+
+
+@router.post("/tuning/{robot_ip}")
+def api_set_tuning(robot_ip: str, body: dict):
+    """주행 튜닝 값 변경. 화이트리스트 + 범위 검사 후 로봇에 바로 쓴다."""
+    import logging
+    import requests as req
+
+    logger = logging.getLogger(__name__)
+    if not body:
+        raise HTTPException(status_code=400, detail="바꿀 항목이 없습니다")
+
+    payload, shown = {}, []
+    for name, raw in body.items():
+        spec = _TUNABLE.get(name)
+        if not spec:
+            raise HTTPException(status_code=400, detail=f"다룰 수 없는 항목입니다: {name}")
+        key, typ, lo, hi, _fac = spec
+        if typ == "bool":
+            val = bool(raw)
+        else:
+            try:
+                val = float(raw)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail=f"{name}: 숫자가 아닙니다")
+            if not (lo <= val <= hi):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{name} 는 {lo} ~ {hi} 사이여야 합니다 (받은 값 {val})")
+        payload[key] = val
+        shown.append(f"{name}={val}")
+
+    # 기존값을 먼저 읽어 둔다 — 바뀐 내용을 로그로 남기려는 것
+    before = {}
+    try:
+        cur = req.get(f"http://{robot_ip}:8090/robot-params", timeout=8).json()
+        before = {n: cur.get(_TUNABLE[n][0]) for n in body.keys()}
+    except Exception:
+        pass
+
+    try:
+        r = req.post(f"http://{robot_ip}:8090/robot-params", json=payload, timeout=10)
+        r.raise_for_status()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"로봇에 쓰지 못했습니다: {e}")
+
+    logger.warning("[tuning] %s 주행 파라미터 변경: %s  (이전: %s)",
+                   robot_ip, ", ".join(shown), before)
+    return api_get_tuning(robot_ip)
