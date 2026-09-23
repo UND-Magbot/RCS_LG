@@ -52,6 +52,70 @@ def _detour_tolerance() -> float:
     except Exception:
         return float(DETOUR_TOLERANCE)
 
+
+# 경유지 경로를 실어 보낼 **이동 종류**.
+#   "standard"           제조사 권장 — standard 에 route_coordinates 를 같이 보낸다
+#   "along_given_route"  종전 — 제조사 문서에서 deprecated 로 표기돼 있다
+# 콘솔 설정이 우선이고, 여기 값은 설정을 못 읽을 때의 기본값이다.
+ROUTE_MOVE_TYPE = "standard"
+
+# 경유지 경로를 못 만들었을 때 자율주행으로 나가지 않는다.
+# 종전에는 경유지를 못 찾거나 위치를 못 읽으면 조용히 standard 로 떨어졌다.
+STRICT_ROUTE = True
+
+
+class RouteUnavailable(RuntimeError):
+    """경유지 경로를 만들 수 없다 — `strict_route` 가 켜져 있어 이동을 거부한다.
+
+    자율주행으로 대신 내보내지 않는다. 부르는 쪽은 이 예외를 잡아
+    **작업을 실패시키고 로봇을 세운다.**
+    """
+
+
+def _route_move_type() -> str:
+    try:
+        from app.routers.settings import get_drive_settings
+        v = str(get_drive_settings().get("route_move_type", ROUTE_MOVE_TYPE))
+        return v if v in ("standard", "along_given_route") else ROUTE_MOVE_TYPE
+    except Exception:
+        return ROUTE_MOVE_TYPE
+
+
+def _strict_route() -> bool:
+    try:
+        from app.routers.settings import get_drive_settings
+        return bool(get_drive_settings().get("strict_route", STRICT_ROUTE))
+    except Exception:
+        return bool(STRICT_ROUTE)
+
+
+def strict_route() -> bool:
+    """경로강제(자율주행 금지)가 켜져 있나. 밖에서 쓰는 이름."""
+    return _strict_route()
+
+
+def is_routed(extra: Optional[dict]) -> bool:
+    """`plan()` 이 준 인자가 **경유지 경로**인가.
+
+    ★ 이동 종류 이름(`along_given_route`)으로 판정하면 안 된다.
+      `route_move_type` 설정에 따라 **standard 로도** 경로가 나간다.
+      좌표열이 실려 있느냐가 유일한 기준이다.
+    """
+    return bool(extra and extra.get("route_coordinates"))
+
+
+def _no_route(why: str, sx: float, sy: float, tx: float, ty: float):
+    """경로를 못 만들었다. strict 면 거부, 아니면 종전대로 자율주행."""
+    if _strict_route():
+        logger.error(
+            "[route] 경로를 만들 수 없다 — %s. 출발(%.2f, %.2f) → 목표(%.2f, %.2f). "
+            "경로강제(strict_route)가 켜져 있어 자율주행으로 내보내지 않는다. "
+            "경유지를 보강하거나 콘솔에서 경로강제를 끌 것", why, sx, sy, tx, ty)
+        raise RouteUnavailable("경유지 경로를 만들 수 없어 이동하지 않았다 — " + why)
+    logger.warning("[route] %s → standard(자율주행)로 떨어진다", why)
+    return "standard", {}
+
+
 # 이 거리 안이면 이미 그 경유지에 있다고 본다 (m)
 ARRIVED_EPS = 0.30
 
@@ -425,6 +489,11 @@ def _finish(seg: list[dict], sx: float, sy: float,
     #   로봇이 마지막 경유지 바로 위에 서 있으면 `seg` 가 비는데, 종전에는
     #   그대로 standard 로 나가서 `C1-2`(충전소 진입선)까지 같이 버렸다.
     if not seg and not (lead or tail):
+        # 경유지가 하나도 안 남았다. 코앞이면 그냥 가고, 멀면 거부한다.
+        d_st = math.hypot(tx - sx, ty - sy)
+        if _strict_route() and d_st > DIRECT_MAX_M:
+            return _no_route("경유지가 전부 걸러져 좌표열이 비었다(%.2f m)" % d_st,
+                             sx, sy, tx, ty)
         return "standard", {}
 
     # 충전소 전용 경유지를 앞/뒤에 끼운다. 이미 그 자리면 넣지 않는다.
@@ -441,9 +510,10 @@ def _finish(seg: list[dict], sx: float, sy: float,
     coords += [f"{tx:.4f}", f"{ty:.4f}"]
 
     _tol = _detour_tolerance()
-    logger.info("[route] 경유지 경로 %s → 목표(%.2f, %.2f) · 이탈허용 %.2f m",
-                "→".join(names), tx, ty, _tol)
-    return "along_given_route", {
+    _mv = _route_move_type()
+    logger.info("[route] 경유지 경로 %s → 목표(%.2f, %.2f) · %s · 이탈허용 %.2f m",
+                "→".join(names), tx, ty, _mv, _tol)
+    return _mv, {
         "route_coordinates": ",".join(coords),
         "detour_tolerance": _tol,
     }
@@ -460,18 +530,26 @@ def plan(area_id: Optional[int], sx: float, sy: float,
         # 여기가 무로그였다 — 경유지를 찍었는데 안 쓰이면 이유를 알 수가 없었다.
         # 흔한 원인: 이름이 W1 형식이 아니거나(^W\d+$), 로봇 area 와 맵 area 가 다르거나,
         #            그 맵이 활성(is_active) 이 아니다.
-        logger.warning("[route] area=%s 에서 경유지(W1,W2…)를 하나도 못 찾음 → standard. "
+        logger.warning("[route] area=%s 에서 경유지(W1,W2…)를 하나도 못 찾음. "
                        "POI 이름이 W+숫자 인지, 로봇 area 와 맵 area 가 같은지 확인", area_id)
-        return "standard", {}
+        return _no_route("area=%s 에 경유지가 없다" % area_id, sx, sy, tx, ty)
 
     # ★ 출발과 목표의 '가장 가까운 경유지' 가 같으면 경유지를 거치지 않는다.
     #   둘 다 같은 구간 안에 있다는 뜻이라, 경유지를 들르면 지나쳤다 되돌아온다.
     #   2026-09-08 현장 — J1 반납 후 R2 로 갈 때 그 사이엔 경유지가 없는데
     #   J1·R2 둘 다 W1 이 최근접이라 J1 → W1 → R2 로 R2 를 지나쳤다 돌아왔다.
-    if nearest_index(wps, sx, sy) == nearest_index(wps, tx, ty):
-        logger.info("[route] 출발·목표가 같은 구간(최근접 경유지 %s) — 경유지 없이 직행",
-                    wps[nearest_index(wps, sx, sy)]["name"])
+    _same = nearest_index(wps, sx, sy) == nearest_index(wps, tx, ty)
+    _d_st = math.hypot(tx - sx, ty - sy)
+    if _same and (not _strict_route() or _d_st <= DIRECT_MAX_M):
+        # 코앞이면 그냥 간다. 랙 밑 이탈처럼 1~2m 짜리가 여기 해당한다.
+        logger.info("[route] 출발·목표가 같은 구간(최근접 경유지 %s, %.2f m) — 직행",
+                    wps[nearest_index(wps, sx, sy)]["name"], _d_st)
         return "standard", {}
+    if _same:
+        # ★ 경로강제 — 같은 구간이어도 멀면 자율주행으로 내보내지 않는다.
+        #   그 경유지를 거쳐서라도 좌표열 위로 다니게 한다.
+        logger.info("[route] 출발·목표가 같은 구간이지만 %.2f m — 경유지를 거친다(경로강제)",
+                    _d_st)
 
     # 맵 이미지는 '코앞 직행' 판단에만 쓴다. 없어도 경로 생성에는 지장이 없다.
     meta = map_image.map_meta_for_area(area_id)
@@ -492,10 +570,7 @@ def plan(area_id: Optional[int], sx: float, sy: float,
                     ec_start=CHARGER_ENTRY_CANDIDATES if lead else None,
                     ec_goal=CHARGER_ENTRY_CANDIDATES if tail else None)
     if seq is None:
-        # 그래도 없으면 로봇 자체 탐색에 맡긴다(예전 동작). 막지는 않는다.
-        logger.warning("[route] 경유지 그래프에서 경로를 못 찾음 → standard 로 폴백 "
-                       f"(출발 {sx:.2f},{sy:.2f} → 목표 {tx:.2f},{ty:.2f})")
-        return "standard", {}
+        return _no_route("경유지 그래프에서 경로를 못 찾음", sx, sy, tx, ty)
 
     logger.info("[route] 경유지 %d개 중 %d개 사용 (출발 %.2f,%.2f → 목표 %.2f,%.2f)%s",
                 len(wps), len(seq), sx, sy, tx, ty,

@@ -704,7 +704,7 @@
       </div>
 
       <!-- 경유지 경로 이탈 허용치 (2026-09-22)
-           현장에서 값을 바꿔가며 멈칫 원인을 좁히려고 코드 상수를 밖으로 뺐다.
+           현장에서 값을 바꿔가며 비이상적 정지(급감속) 원인을 좁히려고 코드 상수를 밖으로 뺐다.
            현장 안에서는 인터넷이 없어 코드를 못 고친다. -->
       <div class="rc-section">
         <h4>경유지 주행 — 경로 이탈 허용치</h4>
@@ -720,12 +720,55 @@
           <b>0</b> — 선을 정확히 따릅니다. 장애물을 만나면 우회하지 않고 앞에서 멈춥니다(LG 요구).
           다만 로봇이 선에서 조금만 어긋나도 <b>실패 대신 속도를 버려서라도</b> 맞추려 합니다.<br>
           <b>0.2</b> — 선에서 20 cm 는 흔들려도 됩니다. 경로는 똑같이 따라갑니다.<br><br>
-          <b>2026-09-22 현장 분석</b> — 사람이 표시한 멈칫 10건이 <b>전부 경유지 주행</b>에서 났습니다
+          <b>2026-09-22 현장 분석</b> — 사람이 표시한 비이상적 정지(급감속) 10건이 <b>전부 경유지 주행</b>에서 났습니다
           (직행 80 m·랙정렬 11 m 에서는 0건). 그때 앞은 5 m 까지 비었고, 방향도 안 틀었고,
           서버도 CPU 도 통신도 평소와 같았습니다. 심한 경우 <b>20초를 기어갔습니다</b>.<br><br>
           ⚠️ <b>안전 요구와 닿은 값입니다.</b> 올린 뒤에는 사람이 앞을 막았을 때 여전히 서는지
           반드시 확인하세요. 로봇 반폭이 0.5 m 라 0.3 m 로는 사람을 피해 돌아갈 수 없습니다
           (회피가 아니라 추종 오차 허용). 다음 이동 명령부터 적용되고, 되돌리려면 0 으로 두면 됩니다.
+        </div>
+        </details>
+      </div>
+
+      <!-- 자율주행 사용 여부 · 이동 종류 (2026-09-23)
+           자율 구간에서 사람·임시 구조물을 피하려다 이동 불가 경로로 들어가거나
+           충돌 위험이 생겼다. LG 요구는 "회피하지 않고 정지" 다. -->
+      <div class="rc-section">
+        <h4>경유지 주행 — 자율주행</h4>
+        <div class="vc-row">
+          <span class="vc-label">자율주행<br><span style="font-size:11px">사용 여부</span></span>
+          <select id="dt-strict" class="vc-range" style="height:34px">
+            <option value="1">쓰지 않는다 — 경로만 따른다 (권장)</option>
+            <option value="0">종전대로 쓴다</option>
+          </select>
+        </div>
+        <div class="vc-row">
+          <span class="vc-label">이동 종류</span>
+          <select id="dt-mvtype" class="vc-range" style="height:34px">
+            <option value="standard">standard + 경로 (제조사 권장)</option>
+            <option value="along_given_route">along_given_route (종전)</option>
+          </select>
+        </div>
+        <details class="hint">
+          <summary><span class="qmark">?</span>무엇이 달라지나 · 주의</summary>
+        <div class="vc-hint">
+          <b>자율주행 — 쓰지 않는다</b><br>
+          · 진입점(<code>R1-1</code>·<code>J1-1</code>)까지 <b>경유지 좌표열 그대로</b> 갑니다.
+            종전에는 마지막 경유지에서 진입점까지를 로봇 자율에 맡겼습니다.<br>
+          · 경유지를 못 찾거나, <b>로봇 위치를 못 읽거나</b>, 경로 계산이 실패하면
+            <b>이동을 거부합니다</b>. 종전에는 이 경우 조용히 자율주행으로 나갔습니다.<br>
+          · 남는 자율 동작은 <b>랙 올리기·내리기·충전 도킹·랙 밑 이탈</b>뿐입니다.
+            이 넷은 로봇이 스스로 자세를 잡는 동작이라 경로 지정이 먹지 않습니다.<br><br>
+          ⚠️ <b>못 가는 상황에서 안 갑니다.</b> 주행이 막히면 서버 로그의
+          <code>[route] 경로를 만들 수 없다</code> 를 보고 경유지를 보강하세요.
+          급하면 여기서 <b>[종전대로 쓴다]</b> 로 되돌릴 수 있습니다.<br><br>
+          <b>이동 종류</b><br>
+          <code>along_given_route</code> 는 제조사 문서에서 <b>deprecated</b> 로 표기돼 있고,
+          2026-09-22 현장에서 표시한 비이상적 정지 10건이 <b>전부 이 방식</b>에서 났습니다
+          (직행 80 m 에서는 0건).<br>
+          <code>standard</code> + 경로가 제조사 권장이지만 <b>실기로 확인한 적이 없습니다.</b>
+          로봇이 거부하면 <code>along_given_route</code> 로 되돌리세요.
+          거부는 이동 명령 실패로 나타납니다.
         </div>
         </details>
       </div>
@@ -1713,7 +1756,7 @@
         if (!(await szSave(cfgPending.safety))) failed.push("안전거리");
       }
       if (Object.keys(cfgPending.drive).length) {
-        if (!(await dtSave(cfgPending.drive))) failed.push("경로 이탈 허용치");
+        if (!(await dtSave(cfgPending.drive))) failed.push("주행 설정");
       }
       if (Object.keys(cfgPending.speed).length) {
         if (!rcIp) { failed.push("주행 속도"); }
@@ -1932,7 +1975,7 @@
     }
 
     // ── 경유지 경로 이탈 허용치 (2026-09-22) ──────────────
-    //   현장에서 0 → 0.1 → 0.2 로 올려가며 멈칫이 사라지는 지점을 찾기 위한 것.
+    //   현장에서 0 → 0.1 → 0.2 로 올려가며 비이상적 정지가 사라지는 지점을 찾기 위한 것.
     //   경유지는 그대로 두고 "얼마나 엄격하게 따를 것인가"만 바꾼다.
     function dtPaint(d) {
       const r = document.getElementById("dt-tol");
@@ -1941,6 +1984,12 @@
       const t = Number(d.detour_tolerance ?? 0);
       r.value = t;
       v.textContent = t === 0 ? "0 (엄격)" : t.toFixed(2) + " m";
+
+      // 자율주행 사용 여부 · 이동 종류 (2026-09-23)
+      const st = document.getElementById("dt-strict");
+      if (st) st.value = (d.strict_route === false) ? "0" : "1";
+      const mt = document.getElementById("dt-mvtype");
+      if (mt) mt.value = d.route_move_type || "standard";
     }
 
     async function dtLoad() {
@@ -1979,6 +2028,11 @@
           t === 0 ? "0 (엄격)" : t.toFixed(2) + " m";
         cfgMark("drive", "detour_tolerance", t);
       };
+
+      const st = document.getElementById("dt-strict");
+      if (st) st.onchange = () => cfgMark("drive", "strict_route", st.value === "1");
+      const mt = document.getElementById("dt-mvtype");
+      if (mt) mt.onchange = () => cfgMark("drive", "route_move_type", mt.value);
     })();
 
     async function szLoad() {

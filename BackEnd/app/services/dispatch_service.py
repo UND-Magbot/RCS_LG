@@ -591,11 +591,17 @@ def _move_via_waypoints(worker, x: float, y: float, ori: float, **kw):
     """
     xy = _current_xy(worker.robot_ip)
     if xy is None:
-        # 무로그였다 — 위치를 못 읽으면 경유지가 통째로 안 쓰이는데 흔적이 없었다
+        # ★ 종전에는 여기서 조용히 standard(자율주행)로 나갔다.
+        #   LTE 망(RTT 446ms)에서 위치 조회가 한 번 실패하면 그대로 자율주행이었다.
+        #   "회피하지 않고 정지" 가 요구사항인데 예외 경로로 회피가 살아 있었던 것.
+        if waypoint_route.strict_route():
+            logger.error(f"[route] {worker.robot_ip} 현재 위치를 못 읽어 경로를 만들 수 없다 "
+                         f"— 경로강제가 켜져 있어 이동하지 않는다")
+            raise waypoint_route.RouteUnavailable("현재 위치를 못 읽음")
         logger.warning(f"[route] {worker.robot_ip} 현재 위치를 못 읽어 경유지를 건너뜀 → standard")
         return jack_service.safe_move(worker.robot_ip, "standard", x, y, ori, **kw)
     mv, extra = waypoint_route.plan(worker.area_id, xy[0], xy[1], x, y)
-    if mv == "along_given_route":
+    if waypoint_route.is_routed(extra):
         _face_route_start(worker, extra.get("route_coordinates"))
         # 경로 길이에 맞춰 타임아웃을 올린다(내리지는 않는다). 고정값이면
         # 긴 체인이 서행 한 번에 타임아웃으로 죽고 처음부터 다시 간다.
@@ -631,9 +637,16 @@ def _approach_before_align(worker: _Worker, poi: dict) -> None:
 
     ap = waypoint_route.approach_point(worker.area_id, poi["x"], poi["y"])
     if not ap:
+        # 경유지가 하나도 없다. 종전에는 그대로 빠져나가 멀리서 align 을 걸었다
+        # (2026-09-07 alert 1007). 경로강제면 그 자리에서 실패시킨다.
+        if waypoint_route.strict_route():
+            raise waypoint_route.RouteUnavailable(
+                f"{poi['name']} 접근점을 만들 경유지가 없다")
         return
     xy = _current_xy(worker.robot_ip)
     if xy is None:
+        if waypoint_route.strict_route():
+            raise waypoint_route.RouteUnavailable("현재 위치를 못 읽음")
         return
     if math.hypot(ap["x"] - xy[0], ap["y"] - xy[1]) < waypoint_route.ARRIVED_EPS:
         return  # 이미 접근점에 있다
@@ -692,10 +705,10 @@ def _approach_before_align(worker: _Worker, poi: dict) -> None:
         f"{math.degrees(face):.1f}° (랙 {math.degrees(poi['ori']):.1f}° — 회전은 align 이 한다)")
     jack_service.update_job_status(
         worker.robot_ip, message=f"{poi['name']} 접근 이동({ap['name']})")
-    if mv == "along_given_route":
+    if waypoint_route.is_routed(extra):
         _face_route_start(worker, extra.get("route_coordinates"))
     _ap_timeout = (waypoint_route.route_timeout(rc, xy[0], xy[1], base=90)
-                   if mv == "along_given_route" else 90)
+                   if waypoint_route.is_routed(extra) else 90)
     try:
         jack_service.safe_move(worker.robot_ip, mv, ap["x"], ap["y"], face,
                                **extra, max_attempts=12, timeout=_ap_timeout)
@@ -833,13 +846,19 @@ def _entry_arrival_face(entry: dict, target: dict,
 
 
 def _move_to_entry_poi(worker: _Worker, entry: dict, target: dict) -> bool:
-    """진입점("<작업지점>-1") 까지 이동한다. **마지막 구간은 로봇 자율 + 회피.**
+    """진입점("<작업지점>-1") 까지 이동한다.
 
-    두 단계로 나눈다.
-      1) 경유지 체인으로 **마지막 경유지까지** — detour_tolerance 0 그대로.
-         통로에서는 사용자가 지정한 길로만 다녀야 한다.
-      2) 마지막 경유지 → 진입점 — `standard`. 로봇이 스스로 경로를 만들고
-         **주차된 다른 랙을 회피**해서 들어간다.
+    ★ 2026-09-23 — **경로강제(strict_route)가 켜져 있으면 자율 구간이 없다.**
+      진입점까지 좌표열 그대로 간다. 진입점부터가 정밀 동작
+      (align_with_rack / to_unload_point)이고, 그게 유일한 자율 동작이다.
+
+      왜 바꿨나 — 마지막 구간을 로봇 자율로 두었더니 사람이나 임시 구조물을
+      피하려다 **이동 불가 경로로 들어가거나 충돌 위험**이 생겼다.
+      LG 요구는 "회피하지 않고 정지" 다.
+
+    경로강제를 끄면 종전 2단 동작으로 돌아간다.
+      1) 경유지 체인으로 마지막 경유지까지 — detour_tolerance 0
+      2) 마지막 경유지 → 진입점 — `standard`, 로봇이 스스로 회피해서 들어간다
 
     도착 자세는 **오던 진행 방향** 그대로다. 진입점의 angle 을 쓰지 않는다 —
     거기서 미리 돌려두면 그다음 정밀 동작(align_with_rack / to_unload_point)이
@@ -859,8 +878,40 @@ def _move_to_entry_poi(worker: _Worker, entry: dict, target: dict) -> bool:
     mv, extra = waypoint_route.plan(worker.area_id, xy[0], xy[1],
                                     entry["x"], entry["y"])
     prev = xy
-    rc = extra.get("route_coordinates") if mv == "along_given_route" else None
+    rc = extra.get("route_coordinates") if waypoint_route.is_routed(extra) else None
     v = rc.split(",") if rc else []
+
+    # ── 경로강제: 진입점까지 좌표열 그대로. 자율 구간이 없다 ──
+    if waypoint_route.strict_route():
+        if len(v) >= 4:
+            prev = (float(v[-4]), float(v[-3]))     # 좌표열 끝이 진입점, 그 앞이 직전 경유지
+        if math.hypot(entry["x"] - prev[0], entry["y"] - prev[1]) < 1e-3:
+            # 이미 진입점 위 — 진행 방향을 못 구하니 작업지점을 바라보는 쪽으로
+            drive_face = math.atan2(target["y"] - entry["y"], target["x"] - entry["x"])
+        else:
+            drive_face = math.atan2(entry["y"] - prev[1], entry["x"] - prev[0])
+        face, why = _entry_arrival_face(entry, target, drive_face)
+        jack_service.update_job_status(
+            ip, message=f"{target['name']} 진입({entry['name']}) — 경유지 주행")
+        logger.info(
+            f"[route] {target['name']} 진입({entry['name']}) — 경로강제 "
+            f"{mv} 로 진입점까지 직접 ({len(v) // 2}점), "
+            f"도착 방향 {math.degrees(face):.1f}° — {why}")
+        if rc:
+            # 경로선을 못 벗어나므로 **들어가기 전에** 자세를 맞춘다
+            _face_route_start(worker, rc)
+        try:
+            r = jack_service.safe_move(
+                ip, mv, entry["x"], entry["y"], face, max_attempts=12,
+                timeout=(waypoint_route.route_timeout(rc, xy[0], xy[1], base=90)
+                         if rc else 90),
+                poll=jack_service.POLL_INTERVAL_SHORT, **extra)
+        except RuntimeError:
+            raise                            # 사용자 중지 · 경로 없음
+        except Exception as e:
+            logger.warning(f"[route] 진입점 이동 실패: {e}")
+            return False
+        return str(r.get("state", "")).lower() == "succeeded"
 
     # ── 1단계: 마지막 경유지까지 (좌표열에서 진입점 좌표를 뺀 나머지) ──
     if ENTRY_AUTONOMOUS_LAST_LEG and len(v) >= 4:
@@ -869,17 +920,22 @@ def _move_to_entry_poi(worker: _Worker, entry: dict, target: dict) -> bool:
         face = math.atan2(ly - xy[1], lx - xy[0])
         # 경유지가 하나뿐이면 좌표열이 목적지 한 점만 남는다. 그런 '경로' 는
         # 로봇이 거부할 수 있어 그냥 standard 로 보낸다 — 어차피 짧은 구간이다.
-        lead_mv = "along_given_route" if len(lead) >= 4 else "standard"
+        #
+        # ★ 이동 종류 이름으로 판정하면 안 된다. route_move_type 설정이
+        #   "standard" 면 경로를 실어도 mv 가 "standard" 다(2026-09-23).
+        _lead_routed = len(lead) >= 4
+        lead_mv = mv if _lead_routed else "standard"
         jack_service.update_job_status(
             ip, message=f"{target['name']} 접근 — 경유지 주행")
         logger.info(
             f"[route] {target['name']} 진입({entry['name']}) 1단계 — "
             f"{lead_mv} 로 경유지 {len(lead) // 2}개 → 마지막 경유지({lx:.2f}, {ly:.2f})")
         try:
-            kw = ({} if lead_mv == "standard" else
-                  {"route_coordinates": ",".join(lead),
-                   "detour_tolerance": waypoint_route.DETOUR_TOLERANCE})
-            if lead_mv == "along_given_route":
+            kw = ({"route_coordinates": ",".join(lead),
+                   "detour_tolerance": extra.get(
+                       "detour_tolerance", waypoint_route.DETOUR_TOLERANCE)}
+                  if _lead_routed else {})
+            if _lead_routed:
                 # 경로선을 못 벗어나므로 **들어가기 전에** 자세를 맞춘다.
                 # (2026-09-14 — 잭업 직후 58° 어긋나 여기서 멈췄다)
                 _face_route_start(worker, ",".join(lead))
@@ -3195,7 +3251,7 @@ def _goto_worker(robot_id: int, ip: str, poi: dict, mode: str) -> None:
                 if rc:
                     n = max(len(rc.split(",")) // 2 - 1, 0)
                 setst(move_type=move_type, waypoints=n,
-                      phase=("경유지 %d개 경유" % n) if move_type == "along_given_route"
+                      phase=("경유지 %d개 경유" % n) if waypoint_route.is_routed(extra)
                             else "경유지 없음 — 직행")
                 logger.info("[goto] robot=%s → %s  %s (경유 %d)",
                             robot_id, poi["name"], move_type, n)
