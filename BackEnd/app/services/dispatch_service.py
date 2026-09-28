@@ -741,7 +741,12 @@ def _face_route_start(worker: _Worker, route_coords: Optional[str]) -> None:
     try:
         # 타임아웃은 짧게 — 안 먹는 상황이면 빨리 포기하고 종전 방식으로 넘어간다.
         # (2026-09-23: 40초를 통째로 버리는 바람에 현장에서 '아무 동작 없음' 으로 보였다)
-        if jack_service.rotate_in_place(worker.robot_ip, want, timeout=12.0):
+        #
+        # 2026-09-28 현장 — 12초를 줬더니 11번 **전부** 타임아웃해서 매번 그 시간을
+        #   버렸다. 상한을 `ROTATE_TIMEOUT`(8초)으로 낮추고, 한 번 실패하면
+        #   `_twist_unfit` 에 기록해 이후로는 시도조차 하지 않는다.
+        #   그래서 이 시간은 로봇당 한 번만 든다.
+        if jack_service.rotate_in_place(worker.robot_ip, want):
             return
         logger.warning("[route] 제자리 회전이 안 끝났다 — 종전 방식(standard)으로 재시도")
     except RuntimeError:

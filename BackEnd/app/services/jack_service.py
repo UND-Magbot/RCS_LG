@@ -887,7 +887,10 @@ def cancel_current_move(ip: str, timeout: Optional[float] = None) -> dict:
 # 감속 정지 (decelerate_to_stop)
 #   멈춘 것으로 볼 속도. 위치추정이 정지 중에도 몇 cm 씩 흔들리므로 0 으로 두면 안 된다.
 STOP_SPEED_EPS = 0.06      # m/s
-STOP_WAIT_SEC = 2.5        # 감속 대기 상한(초). 1.2 m/s ÷ 2.0 m/s² = 0.6초 + 여유
+STOP_WAIT_SEC = 6.0        # 감속 대기 상한(초).
+#   계산상 1.2 m/s ÷ 2.0 m/s² = 0.6초면 되지만, 현장에서 2.5초 안에 못 멈췄다
+#   (2026-09-28 16:44:30 — 마지막 0.08 m/s). LTE 지연으로 속도 0 명령이 늦게
+#   닿고, 포즈 차분으로 재는 속도에도 지연이 섞인다. 넉넉히 준다.
 STOP_POLL_SEC = 0.15
 
 
@@ -1851,6 +1854,54 @@ ROTATE_MIN_AV = 0.15       # 이보다 느리면 바퀴가 안 돈다
 ROTATE_TOL_DEG = 4.0       # 이 안에 들어오면 성공
 ROTATE_PERIOD = 0.15       # twist 재전송 주기(초). 끊기면 로봇이 곧 멈춘다
 
+# 회전 시도 상한(초). 현장 LTE 에서는 어차피 성공하지 못하므로 **빨리 포기**하고
+# 종전 방식으로 넘어가는 편이 낫다. 12초였을 때 11번 전부 그 시간을 버렸다.
+# 첫 실패에서 `_twist_unfit` 에 기록되므로 이 시간은 로봇당 한 번만 든다.
+ROTATE_TIMEOUT = 8.0
+
+# ══════════════════════════════════════════════════════════════════
+#  `/twist` 가 안 먹는 로봇을 기억한다 (2026-09-28 현장)
+#
+#  현장 LGIT 실측 — 제자리 회전 11번이 **전부 타임아웃**해서 종전 방식으로
+#  떨어졌다. 매번 12초를 버리고 그 뒤에 3점 선회를 11초 했다(합 24초).
+#    16:43:21  +97.5° 요청  →  13초에 73.3° (5.6 °/s)   타임아웃
+#    16:50:40  +95.3° 요청  →  13초에 14.9° (1.1 °/s)   타임아웃
+#    …  11건 전부
+#  랙 이탈(drive_straight)도 같았다 — 20.3초에 0.16 m (목표 1.20 m).
+#
+#  원인은 둘이 겹쳐 있다.
+#    ① 랙을 들면 로봇이 각속도를 스스로 낮춘다. 연구소에서도 적재 회전은
+#       2.5 °/s 였다(공차 22.8 °/s). 이건 로봇 설정이라 우리가 못 줄인다.
+#    ② `/twist` 는 계속 재전송해야 하는 실시간 명령인데, 현장은 LTE 라
+#       RTT 446 ms 다. 재전송 주기(0.15초)보다 지연이 크다.
+#
+#  ①은 로봇 파라미터를 봐야 하고, ②는 망 문제라 코드로 못 고친다.
+#  그래서 **한 번 실패하면 그 로봇에서는 더 시도하지 않는다.** 버리는 시간만
+#  없애는 것이다. 서버를 재시작하면 잊는다 — 망이나 로봇이 바뀔 수 있으므로.
+_twist_unfit: set[str] = set()
+
+
+def twist_unfit(ip: str) -> bool:
+    """이 로봇에서 `/twist` 제어가 안 먹는 것으로 판정됐나."""
+    return ip in _twist_unfit
+
+
+def mark_twist_unfit(ip: str, why: str) -> None:
+    if ip in _twist_unfit:
+        return
+    _twist_unfit.add(ip)
+    logger.warning("[twist] %s 이 로봇에서는 /twist 제어가 안 먹는다(%s) — "
+                   "앞으로 제자리 회전·직선 이탈을 건너뛰고 종전 방식을 쓴다. "
+                   "서버를 재시작하면 다시 시도한다", ip, why)
+
+
+def clear_twist_unfit(ip: Optional[str] = None) -> None:
+    """망이 바뀌었을 때 다시 시도하게 만든다(콘솔에서 쓸 수 있게 열어둔다)."""
+    if ip:
+        _twist_unfit.discard(ip)
+    else:
+        _twist_unfit.clear()
+
 # 직선 이탈 (drive_straight) — 강제 종료 후 랙 아래에서 빠져나올 때 쓴다.
 #   ⚠️ remote 모드로 직접 모는 동안에는 **서버 안전존이 속도를 걸지 못하고**,
 #     후방은 애초에 서버가 보지 않는다(좌우·후방 미감시). 그래서 거리는 짧게,
@@ -1881,6 +1932,11 @@ def drive_straight(robot_ip: str, distance: float, forward: bool = True,
         return float(p["position"][0]), float(p["position"][1])
 
     where = "전진" if forward else "후진"
+    # ★ /twist 가 안 먹는 로봇이면 시도하지 않는다 (_twist_unfit 주석 참조).
+    #   현장 실측 — 20.3초에 0.16 m 밖에 못 갔다(목표 1.20 m). 시간만 버린다.
+    if twist_unfit(robot_ip):
+        logger.info("[straight] %s /twist 가 안 먹는 로봇 — 직선 이탈을 건너뛴다", robot_ip)
+        return False
     start = _xy()
     if start is None:
         logger.warning("[straight] %s 현재 위치를 못 읽어 직선 이동을 건너뛴다", robot_ip)
@@ -1921,6 +1977,10 @@ def drive_straight(robot_ip: str, distance: float, forward: bool = True,
     logger.info("[straight] %s %s %.2f m 이동 (목표 %.2f m, %.1f초)%s",
                 robot_ip, where, moved, distance, time.time() - t0,
                 "" if ok else " — 목표 미달")
+    # 크게 미달했으면 이 로봇에서는 /twist 가 안 먹는 것으로 본다.
+    #   절반도 못 갔으면 지연이나 속도 제한 때문이고, 다시 시도해도 같다.
+    if moved < distance * 0.5:
+        mark_twist_unfit(robot_ip, f"직선 이탈 {moved:.2f}/{distance:.2f} m")
     return ok
 
 
@@ -1957,13 +2017,19 @@ def _twist(robot_ip: str, lv: float, av: float) -> None:
 
 
 def rotate_in_place(robot_ip: str, target_ori: float,
-                    timeout: float = 12.0,
+                    timeout: float = ROTATE_TIMEOUT,
                     tol_deg: float = ROTATE_TOL_DEG) -> bool:
     """`target_ori`(rad) 를 바라볼 때까지 **제자리에서** 돈다.
 
     반환: 도달했으면 True. 타임아웃·실패면 False (부르는 쪽이 종전 방식으로 폴백).
     """
     from app.routers.map import _read_tracked_pose
+
+    # ★ 이 로봇에서 /twist 가 안 먹는 것으로 판정됐으면 시도하지 않는다.
+    #   현장 실측 — 11번 전부 타임아웃해서 매번 12초를 버렸다(_twist_unfit 주석).
+    if twist_unfit(robot_ip):
+        logger.info("[rotate] %s /twist 가 안 먹는 로봇 — 제자리 회전을 건너뛴다", robot_ip)
+        return False
 
     def cur_ori():
         p = _read_tracked_pose(robot_ip, timeout=2.0)
@@ -1973,6 +2039,7 @@ def rotate_in_place(robot_ip: str, target_ori: float,
     #   — 시도하면 로봇이 무시한 채 타임아웃까지 서 있게 된다.
     if not _set_control_mode(robot_ip, "remote"):
         logger.warning("[rotate] %s 원격 모드 전환 실패 — 제자리 회전을 건너뛴다", robot_ip)
+        mark_twist_unfit(robot_ip, "원격 모드 전환 실패")
         return False
 
     start = time.time()
@@ -2012,4 +2079,7 @@ def rotate_in_place(robot_ip: str, target_ori: float,
     _set_control_mode(robot_ip, "auto")              # 어떤 경로로 나가든 되돌린다
     logger.warning("[rotate] %s 제자리 회전 타임아웃 — 남은 오차 %s",
                    robot_ip, ("%.1f°" % last) if last is not None else "알 수 없음")
+    # 타임아웃했다면 이 로봇/망에서는 /twist 로 못 돈다. 다음부터 시도하지 않는다.
+    mark_twist_unfit(robot_ip,
+                     "회전 타임아웃 %s" % (("남은 %.1f°" % last) if last is not None else ""))
     return False
