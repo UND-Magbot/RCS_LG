@@ -934,21 +934,30 @@ def decelerate_to_stop(ip: str, why: str = "") -> bool:
     반환: 정지를 확인했으면 True. 상한까지 못 멈췄거나 판정 불가면 False.
     """
     tag = f" ({why})" if why else ""
-    try:
-        r = requests.post(robot_url(ip, "/robot-params"),
-                          json={"/wheel_control/max_forward_velocity": 0.0},
-                          timeout=5)
-        if r.status_code >= 400:
-            logger.warning("[stop] %s 감속 정지 — 속도 0 거부(HTTP %s) — 그대로 취소한다%s",
-                           ip, r.status_code, tag)
+
+    def _zero() -> bool:
+        try:
+            r = requests.post(robot_url(ip, "/robot-params"),
+                              json={"/wheel_control/max_forward_velocity": 0.0},
+                              timeout=5)
+            return r.status_code < 400
+        except Exception as e:
+            logger.warning("[stop] %s 속도 0 전송 실패: %s", ip, e)
             return False
-    except Exception as e:
-        logger.warning("[stop] %s 감속 정지 — 속도 0 실패(%s) — 그대로 취소한다%s", ip, e, tag)
+
+    if not _zero():
+        logger.warning("[stop] %s 감속 정지 — 속도 0 거부 — 그대로 취소한다%s", ip, tag)
         return False
 
     t0 = time.time()
     last = None
     while time.time() - t0 < STOP_WAIT_SEC:
+        # ★ 속도 0 을 **매 바퀴 다시 보낸다**.
+        #   safety_zone 은 존이 YELLOW/RED 면 `SPEED_REASSERT_SEC`(3초)마다 서행
+        #   속도를 재전송한다("화면엔 정지, 실제로는 주행" 을 막으려는 것). 그게
+        #   감속 도중에 겹치면 0 이 서행 속도로 덮여 **감속이 완료되지 않는다.**
+        #   여기 주기(약 0.15초)가 훨씬 잦으므로 이 창에서는 이쪽이 이긴다.
+        _zero()
         v = _speed_now(ip)
         if v is None:
             continue                  # 포즈를 못 읽으면 상한까지 계속 본다
