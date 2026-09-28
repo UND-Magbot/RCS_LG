@@ -162,10 +162,13 @@ def cancel_followup(robot_id: int, why: str = "사용자 명령",
                 jack_service.decelerate_to_stop(r.ip_address, why="후속 동작 중단")
             except Exception as e2:
                 logger.warning("[dispatch] 후속 동작 중단 — 감속 정지 실패(그대로 취소): %s", e2)
-            jack_service.cancel_current_move(r.ip_address, timeout=3)
+            # 순서 주의 — 중지 플래그를 **취소보다 먼저**. 그 사이에 틈이 있으면
+            # safe_move 가 취소를 재시도로 해석해 같은 이동을 다시 발행한다
+            # (force_clear 의 같은 자리 주석에 실측 기록이 있다)
             jack_service.stop_robot_job(r.ip_address)   # 진행 중 이동에서 빠져나오게
+            jack_service.cancel_current_move(r.ip_address, timeout=3)
             try:
-                jack_service.apply_state_speed(r.ip_address)    # 속도 복구 — 필수
+                jack_service.apply_state_speed(r.ip_address)    # 속도 복구 — 맨 마지막
             except Exception as e2:
                 logger.warning("[dispatch] 후속 동작 중단 — 속도 복구 실패: %s", e2)
     except Exception as e:
@@ -1785,22 +1788,42 @@ def force_clear(robot_id: int, after: str = "hold") -> tuple[bool, str]:
             jack_service.decelerate_to_stop(worker.robot_ip, why=f"{after} 종료")
         except Exception as e:
             logger.warning(f"[dispatch] force_clear — 감속 정지 실패(그대로 취소): {e}")
+        # ★★ 순서가 중요하다 — 중지 플래그를 **취소 직전에** 세운다.
+        #
+        #   `resume_robot_job` 의 설명대로 **"cancel 된 이동은 safe_move 가 자동
+        #   재시도"** 한다. 그래서 취소와 중지 플래그 사이에 틈이 생기면, 워커가
+        #   아직 살아 있어서 같은 이동을 그대로 다시 발행한다.
+        #
+        #   2026-09-28 12:46 실측 — 취소와 플래그 사이에 속도 복구(HTTP 왕복 약
+        #   0.5초)를 끼워 넣었더니 그 틈에 재시도가 들어갔다.
+        #     12:46:03  감속 정지 완료          (5.46, 5.27) 에 섰다
+        #     12:46:04  속도 1.2 복구            ← 여기서 재발행된 이동이 살아났다
+        #     12:46:05~08  다시 전진 2.4 m → (7.20, 6.68)
+        #   "정지 후 경로를 조금 더 가서 다시 돌아온다" 가 이것이었다.
+        #
+        #   safety_zone 이 RED 에서 이동을 취소하지 않는 이유(그 파일 주석)와 같은
+        #   함정이다. 플래그를 먼저 세우면 safe_move 가 `_check_stop` 에서 즉시
+        #   RuntimeError 로 빠져나가 재시도하지 않는다.
+        try:
+            jack_service.stop_robot_job(worker.robot_ip)   # 워커 즉시 탈출
+        except Exception:
+            logger.warning(f"[dispatch] force_clear — 중지 신호 전달 실패(무시): robot={robot_id}")
         try:
             jack_service.cancel_current_move(worker.robot_ip, timeout=RECOVER_ROBOT_TIMEOUT)
         except Exception as e:
             # 통신 실패해도 세션 정리는 계속한다 (로봇이 꺼졌을 수도 있다)
             logger.warning(f"[dispatch] force_clear — 이동 취소 실패(무시): robot={robot_id}: {e}")
-        # ★ 속도를 반드시 되돌린다 — 0 으로 두면 뒤따르는 후속 동작(랙 이탈·복귀)이
-        #   한 발도 못 나간다. 적재 상태에 맞는 2단 속도로 복구된다.
+        try:
+            jack_service.resume_robot_job(worker.robot_ip)  # 정지 표시 해제 (화면 정합성)
+        except Exception:
+            logger.warning(f"[dispatch] force_clear — 정지 표시 해제 실패(무시): robot={robot_id}")
+        # ★ 속도는 **맨 마지막에** 되돌린다 — 0 으로 두면 뒤따르는 후속 동작
+        #   (랙 이탈·복귀)이 한 발도 못 나간다. 여기까지 오면 워커가 죽고 이동도
+        #   취소된 뒤이므로 되살아날 이동이 없다.
         try:
             jack_service.apply_state_speed(worker.robot_ip)
         except Exception as e:
             logger.warning(f"[dispatch] force_clear — 속도 복구 실패: {e}")
-        try:
-            jack_service.stop_robot_job(worker.robot_ip)   # 워커 즉시 탈출
-            jack_service.resume_robot_job(worker.robot_ip)  # 정지 표시 해제 (화면 정합성)
-        except Exception:
-            logger.warning(f"[dispatch] force_clear — 중지 신호 전달 실패(무시): robot={robot_id}")
         worker.next_event.set()
         worker.confirm_event.set()
         _start_force_followup(robot_id, worker.robot_ip, after)
