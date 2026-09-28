@@ -31,12 +31,15 @@ call :chk "scripts\fetch_bags.py"                     "clock_sync"              
 
 echo.
 echo ------------------------------------------------------------
-echo  종료 순서  (stop 줄번호가 cancel 보다 작아야 정상)
+echo  종료 순서는 런타임 로그로 확인합니다
 echo ------------------------------------------------------------
-echo   stop_robot_job :
-for /f "tokens=1 delims=:" %%L in ('findstr /n /c:"jack_service.stop_robot_job" "BackEnd\app\services\dispatch_service.py"') do echo        %%L
-echo   cancel_move    :
-for /f "tokens=1 delims=:" %%L in ('findstr /n /c:"jack_service.cancel_current_move" "BackEnd\app\services\dispatch_service.py"') do echo        %%L
+echo   주행 중 종료를 걸었을 때 이 순서로 나오면 정상입니다.
+echo.
+echo     [stop] ... 감속 정지 완료 - 1.x 초
+echo     [jack_service] stop flag set for ...     ^<- 취소보다 먼저
+echo     [speed] ... 속도 ... 적용 성공           ^<- 맨 마지막
+echo.
+echo   순서가 틀리면 정지한 뒤에 로봇이 더 갑니다.
 
 echo.
 echo ------------------------------------------------------------
