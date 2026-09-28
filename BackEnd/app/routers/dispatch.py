@@ -29,6 +29,7 @@ from app.schemas.dispatch import (
     POIConsoleItem, ConsoleRobotItem, ConsoleStatusOut,
     DispatchRouteRequest, WaypointBrief, RobotTabletStatus,
     JobPointIn, JobPointOut,
+    GotoIn, GotoStopIn,
 )
 from app.crud import dispatch as dispatch_crud
 from app.services import dispatch_service
@@ -349,7 +350,7 @@ def _count_available_robots(db: Session) -> int:
               .all())
     # 1) 인메모리 필터 (활성 워커 제외 + 배터리)
     idle_robots = [r for r, st in rows
-                   if not dispatch_service.has_active_worker(r.id)
+                   if not dispatch_service.is_robot_busy(r.id)
                    and _battery_ok(r, st)]
     if not idle_robots:
         return 0
@@ -580,6 +581,7 @@ def _poi_status(db: Session, poi_id: int) -> DispatchPOIStatusOut:
         available_pois=available,
         occupied_poi_ids=occupied,
         available_robot_count=_count_available_robots(db),
+        clearing_robot_count=_count_clearing_robots(db),
         rack_present=rack_present,
         poi_type=poi_type,
         paired_poi_id=paired_id,
@@ -682,6 +684,24 @@ def poi_cancel_reservation(poi_id: int):
 # ══════════════════════════════════════════════════════════
 
 
+def _count_clearing_robots(db: Session) -> int:
+    """**중지 요청을 받았지만 아직 정리가 안 끝난** 로봇 수 (2026-09-23).
+
+    현장 지적 — [전체 작업 종료] 직후 R 태블릿에 **[예약하기]** 가 몇 초 떴다가
+    [로봇 호출] 로 바뀐다. 작업자는 "로봇 노는데 왜 예약?" 이 된다.
+
+    원인은 워커가 빠져나가는 시간이다. 중지 신호를 받아도
+      폴링 0.5초 + LTE 왕복 0.45초 + `safe_move` 재시도 대기 5초
+    만큼 살아 있다. **그동안 로봇은 진짜로 바쁘다** — 가용으로 세면 안 된다.
+
+    그래서 수를 따로 내려주고, 화면이 그 사이에 올바른 문구를 보여주게 한다.
+    """
+    try:
+        return len(dispatch_service.clearing_robot_ids())
+    except Exception:
+        return 0
+
+
 def _available_robot_counts(db: Session) -> dict:
     """가용 로봇 수를 타입별로 집계 (라이브 ONLINE 체크 1회).
 
@@ -692,7 +712,7 @@ def _available_robot_counts(db: Session) -> dict:
               .filter(Robot.is_active == True, Robot.ip_address != None)
               .all())
     idle = [r for r, st in rows
-            if not dispatch_service.has_active_worker(r.id) and _battery_ok(r, st)]
+            if not dispatch_service.is_robot_busy(r.id) and _battery_ok(r, st)]
     if not idle:
         return {"total": 0, "lifting": 0, "serving": 0}
     # 라이브 ONLINE 체크 — 화면 폴링이므로 **기다리지 않는다**(block=False).
@@ -887,6 +907,7 @@ def _console_status(db: Session) -> ConsoleStatusOut:
         occupied_poi_ids=occupied,
         reserved_poi_ids=sorted(reserved_ids),
         available_robot_count=counts["total"],
+        clearing_robot_count=_count_clearing_robots(db),
         available_lifting_count=counts["lifting"],
         available_serving_count=counts["serving"],
         zones=zones,
@@ -939,7 +960,7 @@ def _console_robot_items(db: Session, sessions: list, poi_name_by_id: dict) -> l
             robot_type=r.robot_type or "lifting",
             online=(r.ip_address in online_ips) if r.ip_address else False,
             battery=st.battery_level if st else None,
-            busy=dispatch_service.has_active_worker(r.id),
+            busy=dispatch_service.is_robot_busy(r.id),
             session_status=sess.status if sess else None,
             current_poi_name=cur_name,
         ))
@@ -1389,6 +1410,18 @@ def force_clear_one_robot(robot_id: int, scope: str, db: Session = Depends(get_d
     if not robot:
         raise HTTPException(status_code=404, detail="등록되지 않은 로봇입니다")
 
+    # 2026-09-21 — 대차를 **안 들고 있으면** "대차를 내리고" 를 뺀다(현장 요청).
+    #   ★ `force_clear_robot()` **앞에서** 읽는다. 그 뒤에는 후속 동작 스레드가
+    #     이미 제자리 잭다운을 시작해 "없음" 으로 보일 수 있다.
+    #   ★ 모르면(통신 실패) **들고 있다고 본다** — 후속 동작이 쓰는 기준과 같다
+    #     ("안 들고 있는데 잭다운은 해가 없지만, 들고 있는데 건너뛰면 랙을 든 채
+    #       충전소로 가버린다").
+    from app.services import jack_service as _js
+    try:
+        had_rack = _js.is_rack_loaded(robot.ip_address) is not False
+    except Exception:
+        had_rack = True
+
     result = dispatch_service.force_clear_robot(robot_id, scope)
     # 2026-09-19 — Robot 모델의 컬럼 이름은 `name` 이다. `robot_name` 은 없다.
     #   이 줄이 AttributeError 를 내서 현장에서 "강제 종료 실패 / Internal Server
@@ -1401,15 +1434,20 @@ def force_clear_one_robot(robot_id: int, scope: str, db: Session = Depends(get_d
         # 2026-09-19 — 문구 정리(현장 요청). "(다른 로봇은 그대로 진행합니다)" 삭제,
         #   용어를 '랙' → '대차' 로 통일. 이 알림은 목적지가 정해지면
         #   dispatch_service._push_followup_notice 가 같은 key 로 덮어쓴다.
-        msg = (f"⚠ [{name}] 현재 작업을 중지했습니다.\n"
-               "대차를 내리고 이동합니다.\n"
-               "내려놓은 대차를 치워 주세요.")
+        msg = "\n".join([f"⚠ [{name}] 현재 작업을 중지했습니다."]
+                        + (["대차를 내리고 이동합니다.", "내려놓은 대차를 치워 주세요."]
+                           if had_rack else ["곧 이동합니다."]))
         kind = notice_service.KIND_JOB_FORCE_CLEAR
     else:
-        msg = (f"⚠ [{name}] 작업을 전부 중지했습니다.\n"
-               f"이 로봇이 잡고 있던 호출 {result.get('cancelled', 0)}건도 취소되었습니다.\n"
-               "대차를 내리고 충전소로 이동합니다.\n"
-               "내려놓은 대차를 치워 주세요.")
+        # 2026-09-21 — 취소된 호출이 **0건이면 그 줄을 뺀다**(현장 요청).
+        #   종전에는 "호출 0건도 취소되었습니다" 가 그대로 떴다.
+        cancelled = int(result.get("cancelled", 0) or 0)
+        msg = "\n".join(
+            [f"⚠ [{name}] 작업을 전부 중지했습니다."]
+            + ([f"이 로봇이 잡고 있던 호출 {cancelled}건도 취소되었습니다."]
+               if cancelled else [])
+            + (["대차를 내리고 충전소로 이동합니다.", "내려놓은 대차를 치워 주세요."]
+               if had_rack else ["충전소로 이동합니다."]))
         kind = notice_service.KIND_JOB_FORCE_CLEAR_ALL
 
     notice_service.push(
@@ -1439,3 +1477,42 @@ def force_clear_all():
         key="force_clear",
     )
     return {"ok": True, **result}
+
+
+# ── 단일 이동 (연구용, 2026-09-23) ───────────────────────────────
+# 콘솔이 배차 시나리오에 묶여 있어 "저 POI 로 한 번 가봐" 를 못 시켰다.
+# 같은 구간을 방식만 바꿔가며(경유지 경유 vs 직행) 반복 시험하기 위한 것.
+# 배차 코드는 건드리지 않았다 — 진행 중인 배차가 있으면 거부한다.
+
+
+@router.get("/goto/pois")
+def goto_pois(robot_id: int):
+    """그 로봇의 활성 맵에 있는 **모든** POI (경유지 W·진입점 포함).
+
+    콘솔의 기존 목록은 jack/standby 만 준다. 여기서는 전부 필요하다.
+    """
+    return {"items": dispatch_service.all_pois_for_robot(robot_id)}
+
+
+@router.post("/goto")
+def goto(body: GotoIn):
+    """POI 하나로 이동. mode=route(경유지 경유) | direct(직행)"""
+    if body.mode not in ("route", "direct"):
+        raise HTTPException(400, "mode 는 route 또는 direct")
+    ok, msg = dispatch_service.goto_poi(body.robot_id, body.poi_id, body.mode)
+    if not ok:
+        raise HTTPException(409, msg)
+    return {"ok": True, **dispatch_service.goto_status(body.robot_id)}
+
+
+@router.post("/goto/stop")
+def goto_stop(body: GotoStopIn):
+    ok, msg = dispatch_service.goto_stop(body.robot_id)
+    if not ok:
+        raise HTTPException(409, msg)
+    return {"ok": True}
+
+
+@router.get("/goto/status")
+def goto_status(robot_id: int):
+    return dispatch_service.goto_status(robot_id)

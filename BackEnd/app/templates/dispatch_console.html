@@ -96,6 +96,46 @@
     }
     .rc-tab.active { background: #2a3343; color: #e6eaf2; }
 
+    /* ── 로봇 이름 수정 (2026-09-23) ──
+       ★ 여기서 .btn 을 쓰면 안 된다 — .btn 에 width:100% 가 걸려 있어
+         입력칸을 밀어내고 버튼만 거대해진다(2026-09-23 실제로 그랬다).
+         아이콘 버튼은 flex:0 0 auto 로 고정폭, 이름/입력칸만 줄어들게 한다. */
+    .rn-h2    { display: flex; align-items: center; gap: 6px; }
+    .rn-name  { flex: 1 1 auto; min-width: 0;   /* ★ 없으면 긴 이름이 연필을 밀어낸다 */
+                overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .rn-input { flex: 1 1 auto; min-width: 0; width: auto;   /* ★ width:100% 금지 */
+                height: 34px; background: #1b2230; border: 1px solid #3d7bfd;
+                border-radius: 6px; color: #e6eaf2; font-size: 15px;
+                font-weight: 600; padding: 0 10px; font-family: inherit; }
+    .rn-ico   { flex: 0 0 auto; background: none; border: 0; cursor: pointer;
+                color: #8a93a6; font-size: 17px; line-height: 1;
+                padding: 5px 7px; border-radius: 6px; }
+    .rn-ico:hover { background: #2a3343; color: #e6eaf2; }
+    .rn-ok    { color: #3de0a4; }
+
+    /* ── [테스트] 탭 (2026-09-23) ── */
+    .tn-warn { background: rgba(255,176,32,.10); border: 1px solid rgba(255,176,32,.35);
+               border-radius: 8px; padding: 10px 12px; margin: 0 0 12px;
+               font-size: 13px; line-height: 1.6; color: #ffcf7a; }
+    .tn-row  { display: flex; align-items: center; gap: 10px; margin: 12px 0 4px; }
+    .tn-name { flex: 0 0 84px; font-size: 12px; color: #9aa4b2; line-height: 1.35; }
+    .tn-input{ flex: 1 1 auto; min-width: 0; height: 32px; background: #1b2230;
+               border: 1px solid #2a3343; border-radius: 6px; color: #e6eaf2;
+               font-size: 13px; padding: 0 8px; }
+    input.tn-input[type=range] { padding: 0; height: 22px; }
+    .tn-val  { flex: 0 0 66px; text-align: right; font-size: 13px; font-weight: 600;
+               color: #e6eaf2; font-variant-numeric: tabular-nums; }
+    .tn-fac  { flex: 0 0 auto; font-size: 11px; color: #6b7686; }
+    .tn-tag  { font-size: 11px; font-weight: 400; color: #ff9f6b; margin-left: 6px; }
+    .tn-desc { font-size: 12px; line-height: 1.65; color: #8b95a5;
+               padding: 0 2px 10px 94px; border-bottom: 1px solid #222a37; }
+    .tn-desc b { color: #c5ccd8; }
+    .tn-desc code { background: #1b2230; padding: 1px 4px; border-radius: 3px; }
+    @media (max-width: 560px) {
+      .tn-name { flex-basis: 70px; }
+      .tn-desc { padding-left: 0; }
+    }
+
     /* 긴 설명 접기 — <details> 는 Chrome 33+ (구버전 WebView 안전) */
     details.hint { margin-top: 8px; border-top: 1px dashed #2a3343; padding-top: 7px; }
     details.hint > summary {
@@ -133,6 +173,19 @@
     /* 세로로 쌓는 버튼 묶음 (배차 작업) */
     .rc-stack { display: flex; flex-direction: column; gap: 8px; }
     .rc-stack .rc-action { width: 100%; }
+    /* 단일 이동 (연구용, 2026-09-23) */
+    .gt-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+    .gt-row label { width: 48px; color: #9fb0c8; font-size: 13px; flex: none; }
+    .gt-row select { flex: 1; min-width: 0; background: #232b38; color: #e6edf7;
+                     border: 1px solid #2c3543; border-radius: 8px; padding: 10px; font-size: 14px; }
+    .gt-row select:disabled { opacity: .5; }
+    .gt-modes { flex: 1; display: flex; gap: 6px; }
+    .gt-mode { flex: 1; background: #232b38; color: #9fb0c8; border: 1px solid #2c3543;
+               border-radius: 8px; padding: 10px; font-size: 13.5px; font-weight: 600; cursor: pointer; }
+    .gt-mode.active { background: #2f6fff; color: #fff; border-color: #2f6fff; }
+    .gt-mode:disabled { opacity: .5; cursor: not-allowed; }
+    .gt-info { margin-top: 8px; font-size: 13px; color: #9fb0c8; line-height: 1.55; }
+    .gt-info b { color: #e6edf7; }
     .rc-mode-btns { display: flex; gap: 8px; }
     .rc-mode-btn { flex: 1; background: #232b38; color: #9fb0c8; border: 1px solid #2c3543; border-radius: 9px; padding: 12px; font-size: 15px; font-weight: 700; cursor: pointer; }
     .rc-mode-btn.active { background: #2f6fff; color: #fff; border-color: #2f6fff; }
@@ -459,7 +512,21 @@
   <!-- 원격 제어 모달 -->
   <div class="modal-overlay" id="remote-modal">
     <div class="modal remote">
-      <h2><span id="remote-title">원격 제어</span><button class="remote-close" id="remote-close">✕</button></h2>
+      <!-- 이름 수정 (2026-09-23)
+           ★ 레이아웃 주의 — 이름이 아무리 길어도 연필이 밀려나면 안 된다.
+             이름  flex:1 1 auto + min-width:0 + 말줄임   ← 줄어드는 쪽
+             연필  flex:0 0 auto                           ← 절대 안 줄어듦 -->
+      <h2 class="rn-h2">
+        <span id="remote-title" class="rn-name">원격 제어</span>
+        <input type="text" id="rn-input" class="rn-input" maxlength="100"
+               placeholder="로봇 이름" style="display:none">
+        <button class="rn-ico" id="rn-edit" title="이름 수정">✏️</button>
+        <button class="rn-ico rn-ok" id="rn-save" title="저장(Enter)"
+                style="display:none">✔</button>
+        <button class="rn-ico" id="rn-cancel" title="취소(Esc)"
+                style="display:none">↩</button>
+        <button class="remote-close" id="remote-close">✕</button>
+      </h2>
 
       <!-- ── 탭 (2026-09-17) ────────────────────────────────────
            종전에는 9개 섹션이 세로로 한 줄이라, 매번 쓰는 [작업 강제 종료] 를
@@ -469,6 +536,7 @@
       <div class="rc-tabs">
         <button class="rc-tab active" id="rc-tab-ctrl" data-tab="ctrl">제어</button>
         <button class="rc-tab" id="rc-tab-cfg" data-tab="cfg">설정</button>
+        <button class="rc-tab" id="rc-tab-test" data-tab="test">테스트</button>
       </div>
 
       <!-- ══════════ [제어] 탭 ══════════ -->
@@ -504,6 +572,42 @@
           <!-- 배차 작업 — 이 로봇 하나만 끊는다 (2026-09-17 콘솔 상단에서 이사)
                2026-09-18 자동 운전 패널 안으로 이동 — 수동 조작 중에는 배차 자체가
                멈춰 있으므로 여기 버튼이 보일 이유가 없다(현장 요청). -->
+          <!-- 단일 이동 (연구용, 2026-09-23)
+               콘솔이 배차 시나리오(호출→적재→배송)에 묶여 있어 "저 POI 로 한 번
+               가봐" 를 못 시켰다. 주행을 한 번 보려고 배송 사이클을 통째로 태워야 했다.
+               같은 구간을 방식만 바꿔가며 반복하려고 만든 것이다. -->
+          <div class="rc-section">
+            <h4>단일 이동 <span style="font-weight:400;color:#6f7c92">— 연구용</span></h4>
+            <div class="gt-row">
+              <label for="gt-poi">목적지</label>
+              <select id="gt-poi"></select>
+            </div>
+            <div class="gt-row">
+              <label>방식</label>
+              <div class="gt-modes">
+                <button class="gt-mode active" data-mode="route">경유지 경유</button>
+                <button class="gt-mode" data-mode="direct">직행</button>
+              </div>
+            </div>
+            <div class="rc-stack">
+              <button class="rc-action" id="gt-go">이동</button>
+              <button class="rc-action danger" id="gt-stop" style="display:none">정지</button>
+            </div>
+            <div class="gt-info" id="gt-info"></div>
+            <details class="hint">
+              <summary><span class="qmark">?</span>두 방식이 무엇이 다른가</summary>
+            <div class="vc-hint">
+              <b>경유지 경유</b> — 맵에 찍은 <span class="mono">W1·W2…</span> 를 거쳐 지정한 길로만 갑니다.
+              경유지가 없으면 자동으로 직행이 됩니다.<br>
+              <b>직행</b> — 경유지를 쓰지 않고 로봇이 스스로 길을 찾아 갑니다.<br><br>
+              <b>왜 나눠 뒀나</b> — 2026-09-22 현장에서 비이상적 정지 10건이
+              <b>전부 경유지 주행에서만</b> 났습니다(직행 80m·랙정렬 11m 구간은 0건).
+              같은 목적지를 두 방식으로 번갈아 가보면 그 차이가 재현되는지 알 수 있습니다.<br><br>
+              배차가 진행 중이면 이동이 거부됩니다. 서버 안전거리 판정은 이 이동에도 그대로 걸립니다.
+            </div>
+            </details>
+          </div>
+
           <div class="rc-section">
             <h4>배차 작업 — 이 로봇만</h4>
             <div class="rc-stack">
@@ -654,33 +758,6 @@
         </details>
       </div>
 
-      <!-- 경유지 경로 이탈 허용치 (2026-09-22)
-           현장에서 값을 바꿔가며 멈칫 원인을 좁히려고 코드 상수를 밖으로 뺐다.
-           현장 안에서는 인터넷이 없어 코드를 못 고친다. -->
-      <div class="rc-section">
-        <h4>경유지 주행 — 경로 이탈 허용치</h4>
-        <div class="vc-row">
-          <span class="vc-label">허용치<br><span style="font-size:11px">(0 = 엄격)</span></span>
-          <input type="range" id="dt-tol" min="0" max="0.5" step="0.05" class="vc-range">
-          <span class="vc-value" id="dt-tol-val">-</span>
-        </div>
-        <details class="hint">
-          <summary><span class="qmark">?</span>이 값이 무엇인가 · 주의</summary>
-        <div class="vc-hint">
-          경유지로 그린 <b>경로선에서 얼마나 벗어나도 되는지</b>입니다. 경유지 자체는 그대로 씁니다.<br>
-          <b>0</b> — 선을 정확히 따릅니다. 장애물을 만나면 우회하지 않고 앞에서 멈춥니다(LG 요구).
-          다만 로봇이 선에서 조금만 어긋나도 <b>실패 대신 속도를 버려서라도</b> 맞추려 합니다.<br>
-          <b>0.2</b> — 선에서 20 cm 는 흔들려도 됩니다. 경로는 똑같이 따라갑니다.<br><br>
-          <b>2026-09-22 현장 분석</b> — 사람이 표시한 멈칫 10건이 <b>전부 경유지 주행</b>에서 났습니다
-          (직행 80 m·랙정렬 11 m 에서는 0건). 그때 앞은 5 m 까지 비었고, 방향도 안 틀었고,
-          서버도 CPU 도 통신도 평소와 같았습니다. 심한 경우 <b>20초를 기어갔습니다</b>.<br><br>
-          ⚠️ <b>안전 요구와 닿은 값입니다.</b> 올린 뒤에는 사람이 앞을 막았을 때 여전히 서는지
-          반드시 확인하세요. 로봇 반폭이 0.5 m 라 0.3 m 로는 사람을 피해 돌아갈 수 없습니다
-          (회피가 아니라 추종 오차 허용). 다음 이동 명령부터 적용되고, 되돌리려면 0 으로 두면 됩니다.
-        </div>
-        </details>
-      </div>
-
       <!-- 설정 적용 (2026-09-18)
            종전에는 슬라이더를 놓으면 400ms 뒤 자동 저장돼서, 눌렀는지 적용됐는지
            알 방법이 없었다(현장 지적). 이제 값만 바꿔두고 [확인]을 눌러야 서버로 간다. -->
@@ -693,6 +770,156 @@
       </div>
 
       </div><!-- /rc-pane-cfg -->
+
+      <!-- ══════════ [테스트] 탭 (2026-09-23) ══════════
+           왜 있나 — 비이상적 정지(급감속) 원인을 좁히려면 같은 구간을 **값만
+           바꿔가며** 반복해야 한다. 현장 안에는 인터넷이 없어 코드를 못 고친다.
+           한 번 들어가면 안에서 끝내야 하므로 되돌릴 수단이 화면에 있어야 한다.
+           [설정] 탭과 달리 **바꾸면 바로 적용**된다 — 확인 버튼을 거치지 않는다. -->
+      <div id="rc-pane-test" style="display:none">
+
+        <div class="tn-warn">
+          원인 규명용입니다. <b>값을 바꾸면 바로 적용됩니다.</b><br>
+          테스트가 끝나면 <b>[전부 공장값으로]</b> 를 눌러 되돌리세요.
+        </div>
+
+        <!-- ───── 서버가 정하는 것 ───── -->
+        <div class="rc-section">
+          <h4>주행 방식 — 서버</h4>
+
+          <div class="tn-row">
+            <div class="tn-name">자율주행</div>
+            <select id="tn-strict" class="tn-input">
+              <option value="1">쓰지 않는다 — 경로만 따른다</option>
+              <option value="0">쓴다 (종전)</option>
+            </select>
+          </div>
+          <div class="tn-desc">
+            <b>쓰지 않는다</b> — 찍어둔 경유지 선을 벗어나지 않습니다. 길을 못 찾으면
+            돌아가지 않고 <b>이동을 거부</b>합니다.<br>
+            <b>쓴다</b> — 막히면 로봇이 알아서 돌아갑니다. 사람을 피하려다 좁은 데
+            끼거나 부딪힐 수 있습니다.
+          </div>
+
+          <div class="tn-row">
+            <div class="tn-name">이동 종류</div>
+            <select id="tn-mvtype" class="tn-input">
+              <option value="along_given_route">along_given_route</option>
+              <option value="standard">standard</option>
+            </select>
+          </div>
+          <div class="tn-desc">
+            <b>along_given_route</b> — 경로를 따르는 <b>유일한</b> 방식입니다.
+            제조사 문서에는 deprecated 로 적혀 있습니다.<br>
+            <b>standard</b> — 제조사 권장이지만 <b>경로를 무시합니다.</b>
+            2026-09-23 연구소 실측 — 경유지를 1.75 m 떨어져 지나쳤습니다
+            (along_given_route 는 0.12 m).
+          </div>
+
+          <div class="tn-row">
+            <div class="tn-name">경로 이탈<br>허용치</div>
+            <input type="range" id="tn-tol" min="0" max="0.5" step="0.05" class="tn-input">
+            <span class="tn-val" id="tn-tol-val">-</span>
+          </div>
+          <div class="tn-desc">
+            경로선에서 <b>얼마나 벗어나도 되는지</b>(m). <b>0</b> 이면 선을 정확히 따르고
+            장애물 앞에서 멈춥니다(LG 요구).<br>
+            ⚠️ 올리면 사람이 앞을 막아도 <b>비켜 갈 수 있습니다.</b> 올린 뒤에는 반드시
+            막아서 서는지 확인하세요. 로봇 반폭이 0.5 m 라 0.3 m 로는 못 비킵니다.
+          </div>
+        </div>
+
+        <!-- ───── 로봇이 정하는 것 ───── -->
+        <div class="rc-section">
+          <h4>주행 설정 — 로봇 <span class="tn-tag">로봇에 직접 씁니다</span></h4>
+
+          <div class="tn-row">
+            <div class="tn-name">노면 감속</div>
+            <select id="tn-bumpen" class="tn-input">
+              <option value="1">켜짐</option>
+              <option value="0">꺼짐</option>
+            </select>
+            <span class="tn-fac">공장값 켜짐</span>
+          </div>
+          <div class="tn-desc">
+            바닥 요철을 감지하면 <b>로봇이 스스로 속도를 줄입니다.</b> 서버는 이걸 모르고,
+            로그에도 이유가 안 남습니다.<br>
+            <b>급감속의 유력한 원인</b>으로 보고 있는 항목입니다. 껐을 때 증상이
+            사라지면 원인 확정입니다.<br>
+            ⚠️ 끄면 요철에서 감속을 안 해 <b>랙이 흔들립니다.</b> 확인만 하고 되돌리세요.
+          </div>
+
+          <div class="tn-row">
+            <div class="tn-name">노면 감속<br>민감도</div>
+            <input type="range" id="tn-bump" min="0.05" max="1.5" step="0.05" class="tn-input">
+            <span class="tn-val" id="tn-bump-val">-</span>
+            <span class="tn-fac">공장값 0.50</span>
+          </div>
+          <div class="tn-desc">
+            <b>낮을수록 민감</b>합니다. 작은 요철에도 속도를 줄입니다.<br>
+            연구소에서 증상이 안 나올 때 <b>0.3 → 0.1 로 낮춰 재현</b>을 시도합니다.
+            현장에서는 반대로 <b>올려서</b> 증상이 줄어드는지 봅니다.
+          </div>
+
+          <div class="tn-row">
+            <div class="tn-name">가속</div>
+            <input type="range" id="tn-acc" min="0.1" max="1.0" step="0.05" class="tn-input">
+            <span class="tn-val" id="tn-acc-val">-</span>
+            <span class="tn-fac">공장값 0.30</span>
+          </div>
+          <div class="tn-desc">
+            m/s². 속도를 <b>올리는</b> 빠르기입니다. 지금 0.3 이면 정지에서 1.2 m/s 까지
+            <b>4초</b> 걸립니다.<br>
+            감속은 -2.0 이라 <b>6.7배 빠릅니다.</b> 이 비대칭 때문에 작은 감속도
+            "섰다"처럼 보입니다. 올리면 회복이 빨라집니다 — <b>원인 제거가 아니라
+            증상 완화</b>입니다.
+          </div>
+
+          <div class="tn-row">
+            <div class="tn-name">감속</div>
+            <input type="range" id="tn-dec" min="-3.0" max="-0.3" step="0.1" class="tn-input">
+            <span class="tn-val" id="tn-dec-val">-</span>
+            <span class="tn-fac">공장값 -2.00</span>
+          </div>
+          <div class="tn-desc">
+            m/s². 속도를 <b>줄이는</b> 빠르기입니다.<br>
+            ⚠️ <b>안전과 직결됩니다.</b> 0 에 가깝게 하면 <b>서는 데 더 오래 걸립니다.</b>
+            사람이 앞에 있을 때 못 섭니다. 함부로 올리지 마세요.
+          </div>
+
+          <div class="tn-row">
+            <div class="tn-name">자동 정지</div>
+            <select id="tn-hold" class="tn-input">
+              <option value="1">켜짐</option>
+              <option value="0">꺼짐</option>
+            </select>
+            <span class="tn-fac">공장값 켜짐</span>
+          </div>
+          <div class="tn-desc">
+            로봇이 스스로 판단해 멈추고 버티는 기능(<code>auto_hold</code>)입니다.
+            아직 어떤 조건에서 도는지 확인하지 못했습니다.<br>
+            껐을 때 급감속이 달라지는지 보는 <b>보조 항목</b>입니다.
+          </div>
+
+          <div class="tn-row">
+            <div class="tn-name">지금 속도</div>
+            <span class="tn-val" id="tn-speed">-</span>
+            <span class="tn-fac">여기서는 못 바꿉니다 — [설정] 탭</span>
+          </div>
+          <div class="tn-desc">
+            안전존이 실시간으로 덮어쓰는 값이라 여기서 다루지 않습니다.
+            <b>설정값보다 낮으면 안전존이 제한 중</b>이라는 뜻입니다.
+          </div>
+        </div>
+
+        <div class="cfg-bar">
+          <span class="cfg-state" id="tn-state">로봇 값을 읽는 중…</span>
+          <div class="cfg-btns">
+            <button class="btn btn-ghost" id="tn-reload">다시 읽기</button>
+            <button class="btn btn-call" id="tn-factory">전부 공장값으로</button>
+          </div>
+        </div>
+      </div><!-- /rc-pane-test -->
 
       <!-- 상태 문구는 두 탭 공통 -->
       <div class="rc-status" id="rc-status"></div>
@@ -1089,12 +1316,13 @@
           <div class="sub">${here ? "랙을 가지러 오는 중…" : jName + " 로 배송 중…"}</div>
           <button class="btn btn-call" disabled>로봇 호출 — 작업 중</button>`;
       } else {
-        const canCall = data.available_robot_count > 0;
-        const label = canCall ? `로봇 호출 — ${jName} 로 배송` : "예약하기";
-        const bcls = canCall ? "btn-call" : "btn-reserve";
+        const blk = callBlock();                     // null 이면 지금 부를 수 있다
+        const label = blk ? blk.label : `로봇 호출 — ${jName} 로 배송`;
+        const bcls = blk ? blk.cls : "btn-call";
+        const sub = (blk && blk.sub) ? blk.sub : `랙을 <b>${jName}</b> 로 보냅니다`;
         body = `
-          <div class="sub">랙을 <b>${jName}</b> 로 보냅니다</div>
-          <button class="btn ${bcls}" data-action="call" data-poi="${p.poi_id}">${label}</button>`;
+          <div class="sub">${sub}</div>
+          <button class="btn ${bcls}"${(blk && blk.disabled) ? " disabled" : ""} data-action="call" data-poi="${p.poi_id}">${label}</button>`;
       }
       return `
         <div class="tile state-${cls}">
@@ -1155,6 +1383,31 @@
         </div>`;
     }
 
+    // ── 호출 불가 사유 (2026-09-23 현장 지적) ────────────────
+    //   종전에는 가용 0대면 무조건 [예약하기] 였다. 왜 못 부르는지가 안 보여서
+    //   "로봇 노는데 왜 예약?" 이 됐다. 상황을 버튼에 그대로 쓴다.
+    //
+    //   정리 중   강제 종료 직후 수 초. 곧 끝나므로 **누르지 못하게** 한다
+    //   복귀 중   충전소로 가는 중. 수 분 걸리므로 **예약이 맞다** — 다만
+    //             왜 예약인지를 알려준다. 예약해 두면 도착 후 자동 출발한다
+    //   그 외     다른 로봇이 작업 중 — 종전대로
+    //
+    //   null 을 돌려주면 "지금 부를 수 있다" 는 뜻이다.
+    function callBlock() {
+      if ((data && data.available_robot_count) > 0) return null;
+      if ((data && data.clearing_robot_count) > 0) {
+        return { label: "⏳ 정리 중", cls: "btn-call", disabled: true,
+                 sub: "작업을 정리하고 있습니다 — 잠시 후 호출됩니다" };
+      }
+      const returning = (data && data.robots || []).some(
+        (r) => r.online && r.busy && r.session_status === "returning");
+      if (returning) {
+        return { label: "예약하기 — 복귀 후 자동 출발", cls: "btn-reserve", disabled: false,
+                 sub: "로봇이 충전소로 복귀 중입니다" };
+      }
+      return { label: "예약하기", cls: "btn-reserve", disabled: false, sub: null };
+    }
+
     function tileHtml(p) {
       // 배송 모드(job_points 매핑 있음) — R 타일/J 타일로 갈라 그린다.
       //
@@ -1183,9 +1436,11 @@
         badgeOverride = "경유지 예약";
         body = `<div class="sub">로봇의 다음 경유지로<br/>예약된 위치입니다</div>`;
       } else if (p.state === "empty") {
-        const label = canCall ? "로봇 호출" : "예약하기";
-        const cls = canCall ? "btn-call" : "btn-reserve";
-        body = `<button class="btn ${cls}" data-action="call" data-poi="${p.poi_id}">${label}</button>`;
+        const blk = callBlock();
+        const label = blk ? blk.label : "로봇 호출";
+        const cls = blk ? blk.cls : "btn-call";
+        body = (blk && blk.sub ? `<div class="sub">${blk.sub}</div>` : "")
+             + `<button class="btn ${cls}"${(blk && blk.disabled) ? " disabled" : ""} data-action="call" data-poi="${p.poi_id}">${label}</button>`;
       } else if (p.state === "reserved") {
         const mode = p.reserved_with_rack === false ? "렉 없이" : "렉 포함";
         body = `
@@ -1663,9 +1918,6 @@
       if (Object.keys(cfgPending.safety).length) {
         if (!(await szSave(cfgPending.safety))) failed.push("안전거리");
       }
-      if (Object.keys(cfgPending.drive).length) {
-        if (!(await dtSave(cfgPending.drive))) failed.push("경로 이탈 허용치");
-      }
       if (Object.keys(cfgPending.speed).length) {
         if (!rcIp) { failed.push("주행 속도"); }
         else {
@@ -1701,14 +1953,16 @@
 
     // ── 제어 / 설정 탭 ─────────────────────────────────
     function setRcTab(tab) {
-      const ctrl = tab !== "cfg";
-      document.getElementById("rc-tab-ctrl").classList.toggle("active", ctrl);
-      document.getElementById("rc-tab-cfg").classList.toggle("active", !ctrl);
-      document.getElementById("rc-pane-ctrl").style.display = ctrl ? "" : "none";
-      document.getElementById("rc-pane-cfg").style.display = ctrl ? "none" : "";
+      const t = (tab === "cfg" || tab === "test") ? tab : "ctrl";
+      for (const k of ["ctrl", "cfg", "test"]) {
+        document.getElementById("rc-tab-" + k).classList.toggle("active", k === t);
+        document.getElementById("rc-pane-" + k).style.display = (k === t) ? "" : "none";
+      }
+      if (t === "test") tnLoad();      // 열 때마다 로봇에서 실제 값을 읽는다
     }
     document.getElementById("rc-tab-ctrl").onclick = () => setRcTab("ctrl");
     document.getElementById("rc-tab-cfg").onclick = () => setRcTab("cfg");
+    document.getElementById("rc-tab-test").onclick = () => setRcTab("test");
 
     function sendTwist(lv, av) { rcPost(`twist/${rcIp}`, { linear_velocity: lv, angular_velocity: av }); }
     function startMove(lv, av) {
@@ -1882,27 +2136,48 @@
       }
     }
 
-    // ── 경유지 경로 이탈 허용치 (2026-09-22) ──────────────
-    //   현장에서 0 → 0.1 → 0.2 로 올려가며 멈칫이 사라지는 지점을 찾기 위한 것.
-    //   경유지는 그대로 두고 "얼마나 엄격하게 따를 것인가"만 바꾼다.
-    function dtPaint(d) {
-      const r = document.getElementById("dt-tol");
-      const v = document.getElementById("dt-tol-val");
-      if (!r || !v || !d) return;
-      const t = Number(d.detour_tolerance ?? 0);
-      r.value = t;
-      v.textContent = t === 0 ? "0 (엄격)" : t.toFixed(2) + " m";
+    // ══════════════════════════════════════════════════════
+    //  [테스트] 탭 (2026-09-23)
+    //
+    //  [설정] 탭과 달리 **바꾸면 바로 적용**된다. 확인 버튼을 거치지 않는다.
+    //  원인 규명은 "값 바꾸고 → 바로 한 바퀴" 를 반복하는 일이라,
+    //  중간에 확인 단계가 있으면 그게 그대로 시간 낭비가 된다.
+    //
+    //  서버 값 : /api/settings/drive      (경로 이탈 허용치 · 자율주행 · 이동 종류)
+    //  로봇 값 : /api/robots/tuning/<ip>  (노면 감속 · 가속 · 감속 · 자동 정지)
+    // ══════════════════════════════════════════════════════
+    let tnFactory = {};
+
+    function tnSay(msg, bad) {
+      const el = document.getElementById("tn-state");
+      if (!el) return;
+      el.textContent = msg;
+      el.className = "cfg-state" + (bad ? " dirty" : "");
     }
 
-    async function dtLoad() {
+    function tnNum(id, v, digits) {
+      const r = document.getElementById(id);
+      const o = document.getElementById(id + "-val");
+      if (r != null && v != null) r.value = v;
+      if (o != null) o.textContent = (v == null) ? "-" : Number(v).toFixed(digits);
+    }
+
+    // ── 서버 주행 설정 ──
+    async function tnLoadDrive() {
       try {
         const res = await fetch("/api/settings/drive");
         if (!res.ok) return;
-        dtPaint(await res.json());
-      } catch (e) { /* 못 읽어도 모달은 열려야 한다 */ }
+        const d = await res.json();
+        const t = Number(d.detour_tolerance ?? 0);
+        document.getElementById("tn-tol").value = t;
+        document.getElementById("tn-tol-val").textContent =
+          t === 0 ? "0 (엄격)" : t.toFixed(2);
+        document.getElementById("tn-strict").value = (d.strict_route === false) ? "0" : "1";
+        document.getElementById("tn-mvtype").value = d.route_move_type || "along_given_route";
+      } catch (e) { /* 못 읽어도 화면은 열려야 한다 */ }
     }
 
-    async function dtSave(changes) {
+    async function tnSaveDrive(changes, label) {
       try {
         const res = await fetch("/api/settings/drive", {
           method: "PATCH",
@@ -1910,25 +2185,123 @@
           body: JSON.stringify(changes),
         });
         if (!res.ok) {
-          let msg = "설정 저장 실패";
-          try { const j = await res.json(); msg = j.detail || msg; } catch (e) {}
-          rcStatus(msg);
-          dtLoad();
-          return false;
+          let m = "저장 실패";
+          try { m = (await res.json()).detail || m; } catch (e) {}
+          tnSay(m, true); tnLoadDrive(); return false;
         }
-        dtPaint(await res.json());
+        tnSay(label + " 적용됨 — 다음 이동부터");
         return true;
-      } catch (e) { return false; }
+      } catch (e) { tnSay("서버에 못 보냈습니다", true); return false; }
     }
 
+    // ── 로봇 파라미터 ──
+    function tnPaintRobot(d) {
+      const v = (d && d.values) || {};
+      tnFactory = (d && d.factory) || tnFactory;
+      document.getElementById("tn-bumpen").value = (v.bump_speed_limit === false) ? "0" : "1";
+      document.getElementById("tn-hold").value   = (v.auto_hold === false) ? "0" : "1";
+      tnNum("tn-bump", v.bump_tolerance, 2);
+      tnNum("tn-acc",  v.max_forward_acc, 2);
+      tnNum("tn-dec",  v.max_forward_decel, 2);
+      const sp = document.getElementById("tn-speed");
+      if (sp) sp.textContent = (d && d.speed != null) ? Number(d.speed).toFixed(2) + " m/s" : "-";
+    }
+
+    async function tnLoad() {
+      tnLoadDrive();
+      if (!rcIp) { tnSay("로봇을 먼저 고르세요", true); return; }
+      tnSay("로봇 값을 읽는 중…");
+      try {
+        const res = await fetch("/api/robots/tuning/" + rcIp);
+        const d = await res.json();
+        if (!res.ok || d.ok === false) {
+          tnSay(d.error || d.detail || "로봇에 접속할 수 없습니다", true);
+          return;
+        }
+        tnPaintRobot(d);
+        tnSay("로봇에 들어있는 값입니다");
+      } catch (e) { tnSay("로봇 값을 못 읽었습니다", true); }
+    }
+
+    async function tnSaveRobot(changes, label) {
+      if (!rcIp) { tnSay("로봇을 먼저 고르세요", true); return false; }
+      tnSay("로봇에 쓰는 중…");
+      try {
+        const res = await fetch("/api/robots/tuning/" + rcIp, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(changes),
+        });
+        const d = await res.json();
+        if (!res.ok) {
+          tnSay(d.detail || "로봇이 거부했습니다", true);
+          tnLoad(); return false;
+        }
+        tnPaintRobot(d);
+        tnSay(label + " 로봇에 적용됨");
+        return true;
+      } catch (e) { tnSay("로봇에 못 보냈습니다", true); tnLoad(); return false; }
+    }
+
+    // ── 입력 연결 ──
     (function () {
-      const r = document.getElementById("dt-tol");
-      if (!r) return;
-      r.oninput = () => {
-        const t = Number(r.value);
-        document.getElementById("dt-tol-val").textContent =
-          t === 0 ? "0 (엄격)" : t.toFixed(2) + " m";
-        cfgMark("drive", "detour_tolerance", t);
+      const tol = document.getElementById("tn-tol");
+      if (!tol) return;                       // 템플릿이 옛 버전이면 조용히 넘어간다
+
+      tol.oninput = () => {
+        const t = Number(tol.value);
+        document.getElementById("tn-tol-val").textContent =
+          t === 0 ? "0 (엄격)" : t.toFixed(2);
+      };
+      tol.onchange = () => tnSaveDrive(
+        { detour_tolerance: Number(tol.value) },
+        "경로 이탈 허용치 " + Number(tol.value).toFixed(2) + " m");
+
+      document.getElementById("tn-strict").onchange = (e) => tnSaveDrive(
+        { strict_route: e.target.value === "1" },
+        e.target.value === "1" ? "자율주행 끔 —" : "자율주행 켬 —");
+
+      document.getElementById("tn-mvtype").onchange = (e) => tnSaveDrive(
+        { route_move_type: e.target.value }, "이동 종류 " + e.target.value + " —");
+
+      document.getElementById("tn-bumpen").onchange = (e) => tnSaveRobot(
+        { bump_speed_limit: e.target.value === "1" },
+        e.target.value === "1" ? "노면 감속 켬 —" : "노면 감속 끔 —");
+
+      document.getElementById("tn-hold").onchange = (e) => tnSaveRobot(
+        { auto_hold: e.target.value === "1" },
+        e.target.value === "1" ? "자동 정지 켬 —" : "자동 정지 끔 —");
+
+      // 슬라이더 3종 — 끌 때는 숫자만 바꾸고, 손을 떼면(change) 로봇에 쓴다
+      for (const [id, key, digits, unit] of [
+        ["tn-bump", "bump_tolerance", 2, ""],
+        ["tn-acc", "max_forward_acc", 2, " m/s²"],
+        ["tn-dec", "max_forward_decel", 2, " m/s²"],
+      ]) {
+        const el = document.getElementById(id);
+        el.oninput = () => {
+          document.getElementById(id + "-val").textContent =
+            Number(el.value).toFixed(digits);
+        };
+        el.onchange = () => {
+          const o = {}; o[key] = Number(el.value);
+          tnSaveRobot(o, Number(el.value).toFixed(digits) + unit + " —");
+        };
+      }
+
+      document.getElementById("tn-reload").onclick = () => tnLoad();
+
+      document.getElementById("tn-factory").onclick = async () => {
+        if (!(await ask("로봇 주행 설정을 전부 공장값으로 되돌립니다.", "되돌리기"))) return;
+        const f = Object.keys(tnFactory).length ? tnFactory : {
+          bump_tolerance: 0.5, bump_speed_limit: true,
+          max_forward_acc: 0.3, max_forward_decel: -2.0, auto_hold: true,
+        };
+        await tnSaveRobot(f, "공장값으로 —");
+        await tnSaveDrive(
+          { detour_tolerance: 0, strict_route: true, route_move_type: "along_given_route" },
+          "서버 주행도 기본값으로 —");
+        tnLoad();
       };
     })();
 
@@ -2008,9 +2381,64 @@
       if (szPollTimer) { clearInterval(szPollTimer); szPollTimer = null; }
     }
 
+    // ── 로봇 이름 수정 (2026-09-23) ──────────────────────
+    function rnPaint() {
+      document.getElementById("remote-title").textContent =
+        "직접 제어 — " + (rcName || "로봇");
+      // 로봇을 못 고른 상태면 수정도 못 한다
+      document.getElementById("rn-edit").style.display = rcRobotId ? "" : "none";
+      document.getElementById("remote-title").title = rcName || "";   // 잘렸을 때 툴팁
+    }
+    function rnEditing(on) {
+      const set = (id, show) =>
+        document.getElementById(id).style.display = show ? "" : "none";
+      set("remote-title", !on);
+      set("rn-edit", !on && !!rcRobotId);
+      set("rn-input", on);
+      set("rn-save", on);
+      set("rn-cancel", on);
+    }
+    function rnOpen() {
+      if (!rcRobotId) return;
+      const inp = document.getElementById("rn-input");
+      inp.value = rcName || "";
+      rnEditing(true);
+      inp.focus(); inp.select();
+    }
+    function rnClose() { rnEditing(false); }
+    async function rnSave() {
+      const v = document.getElementById("rn-input").value.trim();
+      if (!v) { rcStatus("이름을 입력하세요"); return; }
+      if (v === rcName) { rnClose(); return; }
+      try {
+        const res = await fetch("/api/robots/" + rcRobotId, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: v }),
+        });
+        if (!res.ok) {
+          let m = "이름 저장 실패";
+          try { m = (await res.json()).detail || m; } catch (e) {}
+          rcStatus(m); return;
+        }
+        const d = await res.json();
+        rcName = d.name || v;
+        rnPaint(); rnClose();
+        rcStatus("이름을 바꿨습니다 — " + rcName);
+        refresh();            // 카드 목록에도 바로 반영
+      } catch (e) { rcStatus("서버에 못 보냈습니다"); }
+    }
+    document.getElementById("rn-edit").onclick = rnOpen;
+    document.getElementById("rn-save").onclick = rnSave;
+    document.getElementById("rn-cancel").onclick = rnClose;
+    document.getElementById("rn-input").onkeydown = (e) => {
+      if (e.key === "Enter") rnSave();
+      if (e.key === "Escape") rnClose();
+    };
+
     function openRemoteModal(ip, name, robotId) {
       rcIp = ip; rcName = name; rcRobotId = robotId || null;
-      document.getElementById("remote-title").textContent = "직접 제어 — " + name;
+      rnClose(); rnPaint();
       setRcMode(false);
       setRcTab("ctrl");     // 열 때는 항상 [제어] 탭부터
       document.getElementById("rc-status").textContent = "";
@@ -2020,8 +2448,9 @@
       vcLoad();             // 음성 설정을 서버에서 다시 읽어 화면에 반영
       spLoad();             // 이 로봇의 현재 주행 속도를 읽어 슬라이더에 반영
       szLoad();             // 안전거리 설정
-      dtLoad();             // 경로 이탈 허용치
       szStartPoll();        // 현재 존 표시 시작
+      gtLoadPois();         // 단일 이동 목적지 목록
+      gtStartPoll();        // 단일 이동 진행 상황
     }
     async function closeRemoteModal() {
       if (rcRemote) { stopMove(); await changeControlMode("auto"); }
@@ -2029,6 +2458,7 @@
       document.getElementById("remote-modal").classList.remove("show");
       rcStopPausePoll();
       szStopPoll();
+      gtStopPoll();
       rcIp = null; rcRobotId = null; rcName = null;
     }
     document.getElementById("remote-close").onclick = closeRemoteModal;
@@ -2112,6 +2542,93 @@
     function rcStopPausePoll() {
       if (rcPausePoll) { clearInterval(rcPausePoll); rcPausePoll = null; }
     }
+
+    // ── 단일 이동 (연구용, 2026-09-23) ───────────────────
+    //   배차를 안 태우고 POI 하나로 바로 보낸다.
+    //   같은 목적지를 [경유지 경유] / [직행] 으로 번갈아 가보며 비교한다.
+    let gtMode = "route", gtPoll = null;
+
+    async function gtLoadPois() {
+      const sel = document.getElementById("gt-poi");
+      if (!sel || !rcRobotId) return;
+      try {
+        const res = await fetch(`/api/dispatch/goto/pois?robot_id=${rcRobotId}`);
+        if (!res.ok) return;
+        const items = (await res.json()).items || [];
+        if (!items.length) { sel.innerHTML = '<option>맵에 POI 가 없습니다</option>'; return; }
+        sel.innerHTML = items.map(p =>
+          `<option value="${p.poi_id}">${p.name} — ${p.poi_type}</option>`).join("");
+      } catch (e) {}
+    }
+
+    function gtRender(s) {
+      const info = document.getElementById("gt-info");
+      const go = document.getElementById("gt-go");
+      const st = document.getElementById("gt-stop");
+      if (!info || !go || !st) return;
+      const run = !!(s && s.running);
+      go.style.display = run ? "none" : "";
+      st.style.display = run ? "" : "none";
+      document.getElementById("gt-poi").disabled = run;
+      document.querySelectorAll(".gt-mode").forEach(b => b.disabled = run);
+      if (!run) { info.innerHTML = ""; return; }
+      const m = Math.floor((s.elapsed_sec || 0) / 60), sec = (s.elapsed_sec || 0) % 60;
+      let t = `<b>${s.poi_name}</b> 로 이동 중 · ${m}분 ${sec}초`;
+      if (s.move_type) t += `<br><span class="mono" style="color:#6f7c92">${s.move_type}</span>`;
+      if (s.waypoints != null) t += ` · 경유지 ${s.waypoints}개`;
+      if (s.phase) t += `<br>${s.phase}`;
+      info.innerHTML = t;
+    }
+
+    async function gtRefresh() {
+      if (!rcRobotId) return;
+      try {
+        const res = await fetch(`/api/dispatch/goto/status?robot_id=${rcRobotId}`);
+        if (res.ok) gtRender(await res.json());
+      } catch (e) {}
+    }
+    function gtStartPoll() { gtStopPoll(); gtRefresh(); gtPoll = setInterval(gtRefresh, 2000); }
+    function gtStopPoll() { if (gtPoll) { clearInterval(gtPoll); gtPoll = null; } }
+
+    document.querySelectorAll(".gt-mode").forEach(b => {
+      b.onclick = () => {
+        gtMode = b.dataset.mode;
+        document.querySelectorAll(".gt-mode").forEach(x =>
+          x.classList.toggle("active", x === b));
+      };
+    });
+
+    document.getElementById("gt-go").onclick = async () => {
+      if (!rcRobotId) { toast("로봇을 먼저 선택하세요"); return; }
+      const sel = document.getElementById("gt-poi");
+      const pid = parseInt(sel.value, 10);
+      if (!pid) { toast("목적지를 고르세요"); return; }
+      const nm = sel.selectedOptions[0].textContent.split(" — ")[0];
+      const how = gtMode === "route" ? "경유지를 거쳐" : "직행으로";
+      if (!await ask(`${nm} 까지 ${how} 이동합니다.`, "이동")) return;
+      try {
+        const res = await fetch("/api/dispatch/goto", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ robot_id: rcRobotId, poi_id: pid, mode: gtMode }),
+        });
+        const b = await res.json().catch(() => ({}));
+        if (!res.ok) { rcStatus(b.detail || "이동 실패"); return; }
+        rcStatus("이동 시작");
+        gtRender(b);
+      } catch (e) { rcStatus("이동 실패 — 통신 오류"); }
+    };
+
+    document.getElementById("gt-stop").onclick = async () => {
+      if (!rcRobotId) return;
+      try {
+        const res = await fetch("/api/dispatch/goto/stop", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ robot_id: rcRobotId }),
+        });
+        rcStatus(res.ok ? "정지 요청됨" : "정지 실패");
+        gtRefresh();
+      } catch (e) { rcStatus("정지 실패 — 통신 오류"); }
+    };
 
     // 배차 작업 — 이 로봇만 (2026-09-17 콘솔 상단에서 이사)
     document.getElementById("rc-gc-current").onclick = () => openGcModal("current");

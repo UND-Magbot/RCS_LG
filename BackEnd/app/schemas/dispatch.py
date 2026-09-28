@@ -99,6 +99,9 @@ class DispatchPOIStatusOut(BaseModel):
     paired_state: Optional[str] = None          # 짝 POI 의 state (R 태블릿용)
     rack_occupied_at: Optional[datetime] = None
     available_robot_count: int = 0
+    # 중지 요청을 받았지만 아직 워커가 안 빠진 로봇 수 (2026-09-23).
+    # > 0 이면 화면은 [예약하기] 대신 "정리 중 — 잠시 후 호출" 을 보여준다.
+    clearing_robot_count: int = 0
 
 
 class DispatchCallResult(BaseModel):
@@ -175,6 +178,9 @@ class ConsoleStatusOut(BaseModel):
     # 출발지(떠나는 로봇의 current_poi_id)는 제외한다.
     reserved_poi_ids: list[int] = Field(default_factory=list)
     available_robot_count: int = 0
+    # 중지 요청을 받았지만 아직 워커가 안 빠진 로봇 수 (2026-09-23).
+    # > 0 이면 화면은 [예약하기] 대신 "정리 중 — 잠시 후 호출" 을 보여준다.
+    clearing_robot_count: int = 0
     available_lifting_count: int = 0
     available_serving_count: int = 0
     # 구역 표시 순서 (좌 → 우). poi_labels.json 에 적힌 순서를 그대로 따른다.
@@ -254,3 +260,18 @@ class JobPointOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# ── 단일 이동 (연구용, 2026-09-23) ───────────────────────────────
+# 배차 시나리오를 안 타고 POI 하나로 바로 보낸다. 주행 비교 시험용.
+
+
+class GotoIn(BaseModel):
+    """POI 하나로 이동."""
+    robot_id: int
+    poi_id: int
+    mode: str = "route"      # route=경유지 경유 · direct=직행(standard)
+
+
+class GotoStopIn(BaseModel):
+    robot_id: int

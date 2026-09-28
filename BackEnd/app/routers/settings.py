@@ -10,6 +10,7 @@ import json
 import logging
 import threading
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -425,7 +426,7 @@ def put_poi_labels(payload: dict[str, PoiLabelItem]):
 #   0.2 = 선에서 20cm 는 흔들려도 된다. 경로는 똑같이 따라간다.
 #
 #   ★ 왜 빼놨나 (2026-09-22 현장 로그 분석)
-#     사람이 표시한 멈칫 10건이 **전부 along_given_route** 에서 났다
+#     사람이 표시한 비이상적 정지(급감속) 10건이 **전부 along_given_route** 에서 났다
 #     (standard 80m·align_with_rack 11m 에서는 0건).
 #     그때 앞은 5m 까지 비었고, 방향도 안 틀었고(누적 회전 정상 통과와 1.00배),
 #     서버는 상한을 안 건드렸고(8건), CPU·통신·위치추정도 평소와 같았다.
@@ -435,8 +436,34 @@ def put_poi_labels(payload: dict[str, PoiLabelItem]):
 #   ⚠️ 이 값은 **안전 요구와 닿아 있다.** 올리기 전에 사람이 앞을 막았을 때
 #      여전히 서는지 실기로 확인할 것. 로봇 반폭이 0.5m 라 0.3m 로는
 #      사람을 피해 돌아갈 수 없다(= 회피가 아니라 추종 오차 허용).
+#
+# route_move_type — 경유지 경로를 실을 이동 종류
+#   "along_given_route"  **이것만 경로를 쓴다.** 제조사 문서에는 deprecated 로 적혀 있다
+#   "standard"           제조사 권장이지만 route_coordinates 를 조용히 버린다
+#
+#   ★ 2026-09-23 연구소 실측으로 결론 (상세는 waypoint_route.ROUTE_MOVE_TYPE 주석)
+#     같은 구간을 방식만 바꿔 주행했더니 standard 는 경유지를 1.75 m 떨어져
+#     지나쳤고 along_given_route 는 0.12 m 로 붙었다. standard 는 안 쓴다.
+#
+#   그래도 설정으로 남겨 두는 이유 — 펌웨어가 바뀌면 달라질 수 있고,
+#   현장에서 코드를 못 고치기 때문이다.
+#
+# strict_route — 경유지 경로를 못 만들었을 때 어떻게 할 것인가
+#   True   **이동을 거부한다.** 자율주행으로 나가지 않는다
+#   False  종전대로 standard(자율주행)로 떨어진다
+#
+#   ★ 왜 필요한가
+#     종전에는 경유지를 못 찾거나, 로봇 위치를 못 읽거나, 경로 계산이 실패하면
+#     전부 조용히 standard 로 떨어졌다. LTE 망(RTT 446ms)에서 위치 조회가
+#     한 번 실패하면 그대로 자율주행으로 나갔다는 뜻이다.
+#     "회피하지 않고 정지" 가 요구사항인데 예외 경로로 회피가 살아 있었다.
+#
+#   ⚠️ 켜면 **못 가는 상황에서 안 간다.** 주행이 막히면 로그의
+#      `[route] 경로를 만들 수 없다` 를 보고 경유지를 보강할 것.
 _DEFAULT_DRIVE = {
     "detour_tolerance": 0.0,
+    "route_move_type": "along_given_route",
+    "strict_route": True,
 }
 
 
@@ -449,10 +476,14 @@ def get_drive_settings() -> dict:
 
 class DriveSettings(BaseModel):
     detour_tolerance: float = Field(..., ge=0.0, le=1.0)
+    route_move_type: Literal["standard", "along_given_route"] = "along_given_route"
+    strict_route: bool = True
 
 
 class DriveSettingsUpdate(BaseModel):
     detour_tolerance: float | None = Field(None, ge=0.0, le=1.0)
+    route_move_type: Literal["standard", "along_given_route"] | None = None
+    strict_route: bool | None = None
 
 
 @router.get("/drive", response_model=DriveSettings)
@@ -475,6 +506,10 @@ def update_drive(payload: DriveSettingsUpdate):
             logger.exception(f"[settings] drive 저장 실패: {e}")
             raise HTTPException(500, f"설정 저장 실패: {e}")
     # 안전과 닿은 값이라 바뀐 내용을 기존값과 같이 남긴다
-    logger.warning("[settings] 주행 설정 변경: detour_tolerance %.2f → %.2f m"
-                   % (before["detour_tolerance"], merged["detour_tolerance"]))
+    logger.warning(
+        "[settings] 주행 설정 변경: detour_tolerance %.2f → %.2f m · "
+        "이동종류 %s → %s · 경로강제 %s → %s"
+        % (before["detour_tolerance"], merged["detour_tolerance"],
+           before.get("route_move_type"), merged.get("route_move_type"),
+           before.get("strict_route"), merged.get("strict_route")))
     return DriveSettings(**merged)

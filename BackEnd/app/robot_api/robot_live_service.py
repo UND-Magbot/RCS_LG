@@ -116,10 +116,58 @@ def _to_signal(wifi_info: dict, online: bool) -> str:
     return "N/A"
 
 
+# 살아 있는지 먼저 싸게 본다 (2026-09-23).
+#
+#  왜 — 꺼진 로봇 한 대가 등록돼 있으면 조회가 30~40초 걸린다.
+#    WebSocket 10초 + device_info 3초 + 그 밖 REST 각 10초가 **차례로** 타임아웃된다.
+#    병렬이라 대수와 무관하게 그만큼 걸린다.
+#    배차는 이 값을 기다려야 해서(block=True) **호출 버튼이 30초 먹통**이 됐다.
+#    2026-09-23 연구소 실측 — /api/robots/live 33.05초 (꺼진 로봇 3대).
+#
+#  TCP 연결만 해보면 살았는지 1초 안에 안다. 안 되면 거기서 끝낸다.
+#  살아 있으면 종전 경로를 그대로 타므로 정상 로봇에는 영향이 없다.
+#
+#  ⚠️ 너무 짧게 잡지 말 것 — 현장은 LTE(M2M) 라 RTT 가 446 ms 다.
+#     2.5초면 왕복 5번 분량이라 멀쩡한 로봇을 죽었다고 볼 일은 없다.
+REACH_TIMEOUT = 2.5
+
+
+def _offline_item(ip: str, errors: dict) -> dict:
+    """오프라인 판정 결과. `fetch_robot_live` 의 정상 반환과 키가 같아야 한다."""
+    return {
+        "IP": ip,
+        "SN": "N/A",
+        "ROBOTNAME": "N/A",
+        "MODEL": "N/A",
+        "NICKNAME": None,
+        "AXBOT_VERSION": None,
+        "PLATFORM": None,
+        "RUNSTATE": "OFFLINE",
+        "ONLINE": "Offline",
+        "SIGNAL": "N/A",
+        "POWER(%)": "-",
+        "errors": errors,
+    }
+
+
+def _reachable(ip: str, port: int, timeout: float = REACH_TIMEOUT) -> bool:
+    """포트가 열려 있나. 열려 있으면 종전 경로로 계속 간다."""
+    import socket
+    try:
+        with socket.create_connection((ip, port), timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+
 def fetch_robot_live(ip: str, secret: str) -> dict:
     rest_data: dict = {}
     errors: dict = {}
     online = False
+
+    # ★ 꺼진 로봇은 여기서 끝낸다 — 아래 WS·REST 타임아웃을 전부 건너뛴다
+    if not _reachable(ip, PORT):
+        return _offline_item(ip, {"reachable": "TCP 연결 실패 (%.1f초)" % REACH_TIMEOUT})
 
     # 1) 온라인 판정은 '가벼운' 경로로 먼저 확정한다.
     #    LTE(M2M) 환경에서 /device/info 는 응답이 커서 경로가 막히는(0 bytes) 사례가 있어,

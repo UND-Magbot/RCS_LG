@@ -184,6 +184,17 @@ def get_next_poi(robot_ip: str) -> dict | str | None:
     return _next_poi.pop(robot_ip, None)
 
 
+def is_stopping(robot_ip: str) -> bool:
+    """이 로봇이 **중지 요청을 받고 정리 중**인가.
+
+    `stop_robot_job` 이 세운 플래그를 그대로 읽는다. 워커가 실제로 빠져나가기까지
+    수 초가 걸리는데(폴링 0.5초 + LTE 왕복 0.45초 + safe_move 재시도 대기 5초),
+    그동안 로봇은 **진짜로 바쁘다.** 가용으로 세면 안 된다.
+    다만 화면에는 "곧 비워진다" 고 알려줘야 작업자가 예약을 잘못 걸지 않는다.
+    """
+    return bool(_stop_flags.get(robot_ip))
+
+
 def stop_robot_job(robot_ip: str):
     """특정 로봇의 진행 중인 작업에 중지 플래그 설정 + 상태 제거.
 
@@ -644,9 +655,24 @@ def wait_move(ip: str, move_id: int, timeout: int = MOVE_TIMEOUT,
     return {"state": "timeout", "fail_message": f"Move {move_id} timed out after {timeout}s"}
 
 
-# 잭 상태 판정 임계값 (2026-08-18 실측: 랙 적재 progress=1.0/weight=85, 빈 상태 0/0)
+# 잭 상태 판정 임계값
+#
+# ⚠️ 2026-09-28 실측으로 종전 해석이 뒤집혔다 — **`weight` 는 랙 무게가 아니다.**
+#   crawler_s300_op5 에서 **랙 없이** 잭업만 했는데 weight=87 이 나왔다
+#   (progress 1.0 / weight 87 / state hold). 잭 기구 자체 하중이다.
+#   2026-08-18 에 "랙 적재 weight=85" 로 적어둔 것은 랙과 무관한 값이었다.
+#   → 따라서 아래 두 값으로는 **랙 유무를 가릴 수 없다.** 실질적으로 판정하는 것은
+#     `progress` 하나이고, 그 의미는 "랙이 있나" 가 아니라 **"잭이 올라가 있나"** 다.
+#   값은 그대로 둔다(잭업 상태면 weight 조건은 항상 충족되므로 무해).
 JACK_UP_PROGRESS_MIN = 0.9      # 이 이상이면 잭이 올라간 것
-JACK_LOADED_WEIGHT_MIN = 10.0   # 이 이상이면 하중이 실린 것 = 랙을 들고 있음
+JACK_LOADED_WEIGHT_MIN = 10.0   # 하중이 실렸는가 — 잭업이면 랙 유무와 무관하게 충족된다
+
+# 잭 동작 '완료' 판정 (wait_jack_settled)
+#   실측 — 잭업은 progress 0.03 → 1.0 까지 약 11.8초, 1초 간격으로 발행된다.
+#   상한은 실측의 2배로 잡았다. 랙을 들면 더 걸릴 수 있다.
+JACK_SETTLED_UP = 0.95          # 이 이상 + state 가 jacking_* 이 아니면 잭업 완료
+JACK_SETTLED_DOWN = 0.05        # 이 이하 + 같은 조건이면 잭다운 완료
+JACK_SETTLE_TIMEOUT = 25.0      # 완료 확인 상한(초). 넘으면 경고만 남기고 진행한다
 
 
 # ── 적재 여부(랙을 들고 있는가) — LGIT 요청 1번 2단 속도용 ──────
@@ -696,15 +722,88 @@ def apply_state_speed(ip: str) -> bool:
         return False
 
 
+def wait_jack_settled(ip: str, want_up: bool, timeout: float = JACK_SETTLE_TIMEOUT) -> Optional[bool]:
+    """잭이 실제로 끝까지 움직였는지 `progress` 로 확인한다. 판정 불가면 None.
+
+    ★ 왜 필요한가 (2026-09-28 실측)
+      종전에는 명령을 보낸 뒤 **고정 10초**(JACK_WAIT_SEC)만 기다리고 다음 단계로 갔다.
+      그런데 잭업 완료까지 **11.8초**가 걸린다(랙 없이 측정. 랙을 들면 더 걸린다).
+      즉 10초 시점에는 `progress 0.8~0.9` 로 아직 올라가는 중이었다.
+      그 상태로 이동을 시작해서
+        · 랙이 부분적으로만 들린 채 끌려가고 (흔들림·낙하 위험)
+        · 서버가 잭 상태를 물으면 `progress < 0.9` 라 **"랙 없음"** 으로 답해
+          강제 종료가 랙을 안 내려놓고 충전소까지 랙을 들고 갔다.
+
+      ※ `/jack_state` 는 **변화가 있을 때만** 발행되는 저빈도 토픽이라
+        동작 중에는 1초 간격으로 오고, 멈추면 더 안 온다. 그래서 스트림을
+        계속 읽되 목표에 닿으면 즉시 끝낸다.
+
+    반환: True=완료 확인 / False=상한까지 못 닿음 / None=통신 실패로 판정 불가
+    """
+    import websocket  # 선택 의존성 — read_jack_state 와 같은 방식
+    target = "올라감" if want_up else "내려감"
+    ws = None
+    last: Optional[float] = None
+    try:
+        ws = websocket.create_connection(f"ws://{ip}:{ROBOT_PORT}/ws/v2/topics", timeout=6)
+        ws.send(_json.dumps({"enable_topic": "/jack_state"}))
+        ws.settimeout(2.0)
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                pkt = _json.loads(ws.recv())
+            except Exception:
+                continue          # 수신 타임아웃 — 상한까지는 계속 본다
+            if pkt.get("topic") != "/jack_state":
+                continue
+            try:
+                progress = float(pkt.get("progress") or 0)
+            except (TypeError, ValueError):
+                continue
+            last = progress
+            state = str(pkt.get("state") or "")
+            moving = state.startswith("jacking")
+            done = (progress >= JACK_SETTLED_UP if want_up else progress <= JACK_SETTLED_DOWN)
+            if done and not moving:
+                logger.info(f"[jack] {ip} 잭 {target} 완료 확인 — progress={progress}")
+                return True
+        logger.warning(f"[jack] {ip} 잭 {target} 완료 확인 실패 — {timeout:.0f}초 안에 "
+                       f"목표에 못 닿음 (마지막 progress={last})")
+        return False
+    except Exception as e:
+        logger.warning(f"[jack] {ip} 잭 {target} 완료 확인 불가(통신): {e}")
+        return None
+    finally:
+        if ws is not None:
+            try:
+                ws.close()
+            except Exception:
+                pass
+
+
 def jack_up(ip: str) -> dict:
     # robot_post 는 실패하면 예외를 던진다 → 여기까지 오면 명령이 접수된 것이다
     res = robot_post(ip, "/services/jack_up")
+    # ★ 명령 '접수' 와 잭이 '다 올라간 것' 은 다르다 — 끝까지 기다린다.
+    #   여기서 기다리므로 호출부(25곳)는 손대지 않아도 전부 커버된다.
+    #   완료를 못 봤어도(False/None) 적재로 본다 — 랙이 부분이라도 들려 있을 수
+    #   있고, "들고 있는데 없다고 보는 것" 이 훨씬 위험하다.
+    settled = wait_jack_settled(ip, want_up=True)
+    if settled is not True:
+        logger.warning(f"[jack] {ip} 잭업 완료를 확인하지 못했다 — 적재로 간주하고 진행")
     set_laden(ip, True)
     return res
 
 
 def jack_down(ip: str) -> dict:
     res = robot_post(ip, "/services/jack_down")
+    # 잭다운은 반대다 — 다 내려간 것을 못 봤으면 **아직 들고 있다고 본다.**
+    #   공차로 잘못 세우면 랙을 든 채 공차 속도로 달리고, 강제 종료가
+    #   "내릴 것 없다" 고 판단해 그대로 지나간다.
+    settled = wait_jack_settled(ip, want_up=False)
+    if settled is not True:
+        logger.warning(f"[jack] {ip} 잭다운 완료를 확인하지 못했다 — 적재 플래그를 유지한다")
+        return res
     set_laden(ip, False)
     return res
 
@@ -713,19 +812,40 @@ def read_jack_state(ip: str, timeout: float = 6.0) -> Optional[dict]:
     """WS /jack_state 로 잭 상태 1건 읽기. 실패 시 None.
 
     반환 예: {'state':'hold', 'progress':1.0, 'weight':85}
-    실측(2026-08-18, LG 랙): 잭업+랙적재 progress=1.0 weight=85 / 빈 상태 progress=0.0 weight=0
-    state 는 두 경우 모두 'hold' 라 구분에 쓸 수 없다. progress 와 weight 로 판정할 것.
+    실측(2026-09-28, crawler_s300_op5): 잭업 progress=1.0 weight=87 / 잭다운 0.0/0
+      — **랙 유무와 무관**하다. weight 해석은 is_rack_loaded 의 주석을 볼 것.
+    state 는 멈춘 뒤 두 경우 모두 'hold' 라 구분에 쓸 수 없다.
+      단 움직이는 중에는 'jacking_up' / 'jacking_down' 이 온다.
+
+    ★ 첫 패킷이 아니라 **짧은 창 안의 마지막 패킷**을 쓴다(2026-09-28).
+      잭이 움직이는 중에는 1초 간격으로 발행되므로, 첫 패킷을 그대로 쓰면
+      이미 지나간 중간값(예: progress 0.6)으로 판정할 수 있다.
     """
     import websocket  # 선택 의존성 — 여기서만 사용
     ws = None
+    latest = None
     try:
         ws = websocket.create_connection(f"ws://{ip}:{ROBOT_PORT}/ws/v2/topics", timeout=timeout)
         ws.send(_json.dumps({"enable_topic": "/jack_state"}))
         deadline = time.time() + timeout
+        # 첫 패킷을 받은 뒤 이 시간만 더 보고, 더 새 것이 있으면 그것을 쓴다.
+        #   토픽이 저빈도라 길게 기다리면 호출부가 그만큼 멈춘다.
+        settle_window = 1.2
+        window_end = None
         while time.time() < deadline:
-            pkt = _json.loads(ws.recv())
+            if window_end is not None and time.time() >= window_end:
+                break
+            try:
+                ws.settimeout(max(0.2, min(1.5, deadline - time.time())))
+                pkt = _json.loads(ws.recv())
+            except Exception:
+                break           # 더 올 게 없다 — 지금까지 받은 것 중 최신을 쓴다
             if pkt.get("topic") == "/jack_state":
-                return pkt
+                latest = pkt
+                if window_end is None:
+                    window_end = time.time() + settle_window
+        if latest is not None:
+            return latest
     except Exception as e:
         logger.warning(f"[jack] /jack_state 읽기 실패 ({ip}): {e}")
     finally:
@@ -738,10 +858,16 @@ def read_jack_state(ip: str, timeout: float = 6.0) -> Optional[dict]:
 
 
 def is_rack_loaded(ip: str, timeout: float = 6.0) -> Optional[bool]:
-    """지금 랙을 들고 있는가? 판정 불가(통신 실패)면 None.
+    """**잭이 올라가 있는가?** 판정 불가(통신 실패)면 None.
 
-    잭이 올라가 있고(progress) 하중이 실려 있어야(weight) 랙을 든 것으로 본다.
-    잭만 올리고 랙이 없으면 weight 가 0 에 가깝다.
+    ⚠️ 이름이 `rack_loaded` 지만 **랙 유무는 판정하지 못한다**(2026-09-28 실측).
+      랙 없이 잭업만 해도 weight=87 이 나오므로 `weight` 조건은 랙을 구분하지 않고,
+      실제로 보는 것은 `progress` 하나다. 호출부는 이 함수의 False 를
+      "랙이 없다" 로 읽지 말고 **"잭이 올라가 있지 않다"** 로 읽어야 한다.
+      랙을 들었는지는 서버가 잭업을 보냈는지(`is_laden`)와 함께 봐야 한다 —
+      잭업이 미완이면 랙이 부분적으로 들려 있어도 여기서는 False 가 나온다.
+
+    ★ 종전 주석("잭만 올리고 랙이 없으면 weight 가 0 에 가깝다")은 틀렸다.
     """
     st = read_jack_state(ip, timeout=timeout)
     if not st:
@@ -756,6 +882,93 @@ def is_rack_loaded(ip: str, timeout: float = 6.0) -> Optional[bool]:
 
 def cancel_current_move(ip: str, timeout: Optional[float] = None) -> dict:
     return robot_patch(ip, "/chassis/moves/current", {"state": "cancelled"}, timeout=timeout)
+
+
+# 감속 정지 (decelerate_to_stop)
+#   멈춘 것으로 볼 속도. 위치추정이 정지 중에도 몇 cm 씩 흔들리므로 0 으로 두면 안 된다.
+STOP_SPEED_EPS = 0.06      # m/s
+STOP_WAIT_SEC = 2.5        # 감속 대기 상한(초). 1.2 m/s ÷ 2.0 m/s² = 0.6초 + 여유
+STOP_POLL_SEC = 0.15
+
+
+def _speed_now(ip: str, dt: float = STOP_POLL_SEC) -> Optional[float]:
+    """연속 두 포즈의 위치 차분으로 속도(m/s)를 구한다.
+
+    ※ `/tracked_pose` 에는 speed 필드가 없다(AutoXing 문서 명시). 차분이 유일한 수단이다.
+    """
+    from app.routers.map import _read_tracked_pose
+    a = _read_tracked_pose(ip, timeout=2.0)
+    if not a or not a.get("position"):
+        return None
+    t0 = time.time()
+    time.sleep(dt)
+    b = _read_tracked_pose(ip, timeout=2.0)
+    if not b or not b.get("position"):
+        return None
+    el = max(1e-3, time.time() - t0)
+    return math.hypot(float(b["position"][0]) - float(a["position"][0]),
+                      float(b["position"][1]) - float(a["position"][1])) / el
+
+
+def decelerate_to_stop(ip: str, why: str = "") -> bool:
+    """**이동 명령을 살려둔 채** 속도 상한을 0 으로 걸어 로봇이 스스로 감속해 서게 한다.
+
+    왜 이렇게 세우는가 (2026-09-28 현장 지적 — 종료 시 급정거)
+      종전에는 곧바로 `cancel_current_move` 를 보냈다. 그건 주행 명령 자체를
+      버리는 것이라 로봇이 제동으로 선다. 랙을 들고 있으면 더 위험하다.
+
+      반면 `safety_zone` 은 서행도 정지도 **속도로만** 건다 — RED 진입 시
+      `max_forward_velocity = 0`. 로봇이 자기 감속도(`max_forward_decel` = -2.0 m/s²)
+      를 따라 감속해서 서고, 실기에서 0.7 m/s 에서 0.27 m 만에 섰다(2026-09-07).
+      **같은 방식을 종료에도 쓴다.**
+
+    ★ `max_forward_decel` 은 건드리지 않는다. 그 값이 장애물 앞 정지 거리를
+      결정하므로, 완화하면 RED 정지까지 같이 둔해진다.
+
+    ★ 호출부는 반드시 **`apply_state_speed(ip)` 로 속도를 되돌려야** 한다.
+      0 으로 둔 채 두면 뒤따르는 이동(랙 이탈·복귀)이 한 발도 못 나간다.
+
+    ※ `safety_zone` 과 충돌하지 않는다 — 그쪽은 **존이 전이할 때만** 명령을
+      보내므로, 여기서 0 을 걸어도 존 전이가 없으면 되돌리지 않는다.
+
+    반환: 정지를 확인했으면 True. 상한까지 못 멈췄거나 판정 불가면 False.
+    """
+    tag = f" ({why})" if why else ""
+
+    def _zero() -> bool:
+        try:
+            r = requests.post(robot_url(ip, "/robot-params"),
+                              json={"/wheel_control/max_forward_velocity": 0.0},
+                              timeout=5)
+            return r.status_code < 400
+        except Exception as e:
+            logger.warning("[stop] %s 속도 0 전송 실패: %s", ip, e)
+            return False
+
+    if not _zero():
+        logger.warning("[stop] %s 감속 정지 — 속도 0 거부 — 그대로 취소한다%s", ip, tag)
+        return False
+
+    t0 = time.time()
+    last = None
+    while time.time() - t0 < STOP_WAIT_SEC:
+        # ★ 속도 0 을 **매 바퀴 다시 보낸다**.
+        #   safety_zone 은 존이 YELLOW/RED 면 `SPEED_REASSERT_SEC`(3초)마다 서행
+        #   속도를 재전송한다("화면엔 정지, 실제로는 주행" 을 막으려는 것). 그게
+        #   감속 도중에 겹치면 0 이 서행 속도로 덮여 **감속이 완료되지 않는다.**
+        #   여기 주기(약 0.15초)가 훨씬 잦으므로 이 창에서는 이쪽이 이긴다.
+        _zero()
+        v = _speed_now(ip)
+        if v is None:
+            continue                  # 포즈를 못 읽으면 상한까지 계속 본다
+        last = v
+        if v <= STOP_SPEED_EPS:
+            logger.info("[stop] %s 감속 정지 완료 — %.2f 초%s", ip, time.time() - t0, tag)
+            return True
+    logger.warning("[stop] %s 감속 정지 — %.1f 초 안에 못 멈췄다(마지막 %s m/s)%s",
+                   ip, STOP_WAIT_SEC,
+                   f"{last:.2f}" if last is not None else "판정 불가", tag)
+    return False
 
 
 JACK_WAIT_SEC = 10  # 잭 업/다운 고정 대기 시간(초)
@@ -1611,3 +1824,192 @@ def run_route_job(
                 _zl.release_all_by_robot(robot_id)
             except Exception:
                 pass
+
+
+# ══════════════════════════════════════════════════════════════════
+#  제자리 회전 (2026-09-23)
+#
+#  왜 만들었나 — 실측으로 원인을 잡았다.
+#    종전에는 `safe_move("standard", 현재위치, 새각도)` 로 돌렸다.
+#    "지금 이 자리로 가라, 단 방향만 바꿔서" 인데, 로봇은 **거리 0인 목표를
+#    주행으로 풀어서** 앞뒤로 왔다갔다 하는 3점 선회를 한다.
+#
+#    2026-09-23 18:30:04 실측 — 77.6° 회전에 13초, 그동안
+#      전진 0.36 → 후진 0.38 → 전진 0.15 → 후진 0.11 → 전진 0.29 → 후진 0.28
+#    현장에서 "출발 보내면 앞으로 갔다 불필요한 후진하고 다시 출발" 이 이것이다.
+#
+#  `/twist` 는 속도만 주는 명령이라 경로 계획이 없다. 각속도만 주면 **제자리에서
+#  돈다.** 각도 도달 판정은 우리가 한다.
+#
+#  ⚠️ 안전 — 도는 동안 로봇은 이동하지 않지만 랙 모서리가 돈다.
+#     각속도를 낮게 잡고(ROTATE_MAX_AV), 중지 플래그를 매 주기 확인하고,
+#     타임아웃을 둬서 영영 돌지 않게 한다.
+# ══════════════════════════════════════════════════════════════════
+
+ROTATE_MAX_AV = 0.6        # rad/s. 로봇 상한(1.2)의 절반
+ROTATE_MIN_AV = 0.15       # 이보다 느리면 바퀴가 안 돈다
+ROTATE_TOL_DEG = 4.0       # 이 안에 들어오면 성공
+ROTATE_PERIOD = 0.15       # twist 재전송 주기(초). 끊기면 로봇이 곧 멈춘다
+
+# 직선 이탈 (drive_straight) — 강제 종료 후 랙 아래에서 빠져나올 때 쓴다.
+#   ⚠️ remote 모드로 직접 모는 동안에는 **서버 안전존이 속도를 걸지 못하고**,
+#     후방은 애초에 서버가 보지 않는다(좌우·후방 미감시). 그래서 거리는 짧게,
+#     속도는 안전존의 서행값(slow_speed 0.15)과 같은 값으로 묶었다.
+STRAIGHT_SPEED = 0.15      # m/s. 서행 속도와 같은 값
+STRAIGHT_TIMEOUT = 20.0    # 초. 1.2 m / 0.15 m/s = 8초 + 여유
+STRAIGHT_OK_RATIO = 0.8    # 목표 거리의 이만큼을 갔으면 성공으로 본다
+
+
+def drive_straight(robot_ip: str, distance: float, forward: bool = True,
+                   speed: float = STRAIGHT_SPEED,
+                   timeout: float = STRAIGHT_TIMEOUT) -> bool:
+    """`/twist` 로 **직선으로만** `distance`(m) 움직인다. 회전은 하지 않는다.
+
+    왜 `standard` 이동을 안 쓰는가 (2026-09-28)
+      뒤쪽 좌표를 목표로 주면 로봇이 **회전해서 전진**해버린다. 랙 아래에 있는
+      상태에서 그 회전이 바로 문제였다. 방향을 확실히 고정하려면 직접 몰아야 한다.
+
+    반환: 목표의 STRAIGHT_OK_RATIO 이상 갔으면 True. 아니면 False
+          (부르는 쪽은 종전 동작으로 폴백한다).
+    """
+    from app.routers.map import _read_tracked_pose
+
+    def _xy():
+        p = _read_tracked_pose(robot_ip, timeout=2.0)
+        if not p or not p.get("position"):
+            return None
+        return float(p["position"][0]), float(p["position"][1])
+
+    where = "전진" if forward else "후진"
+    start = _xy()
+    if start is None:
+        logger.warning("[straight] %s 현재 위치를 못 읽어 직선 이동을 건너뛴다", robot_ip)
+        return False
+    # ★ /twist 는 remote 모드에서만 먹는다 (rotate_in_place 와 같은 제약).
+    if not _set_control_mode(robot_ip, "remote"):
+        logger.warning("[straight] %s 원격 모드 전환 실패 — 직선 이동을 건너뛴다", robot_ip)
+        return False
+
+    lv = abs(speed) * (1.0 if forward else -1.0)
+    t0 = time.time()
+    moved = 0.0
+    try:
+        while time.time() - t0 < timeout:
+            _check_stop(robot_ip)
+            cur = _xy()
+            if cur is not None:
+                moved = math.hypot(cur[0] - start[0], cur[1] - start[1])
+                if moved >= distance:
+                    break
+            _twist(robot_ip, lv, 0.0)
+            time.sleep(ROTATE_PERIOD)
+    except RuntimeError:
+        try:
+            _twist(robot_ip, 0.0, 0.0)
+        except Exception:
+            pass
+        _set_control_mode(robot_ip, "auto")
+        raise                                        # 사용자 중지는 그대로 올린다
+    except Exception as e:
+        logger.warning("[straight] %s 직선 이동 실패: %s", robot_ip, e)
+    try:
+        _twist(robot_ip, 0.0, 0.0)                   # 확실히 세운다
+    except Exception:
+        pass
+    _set_control_mode(robot_ip, "auto")              # ★ 안 되돌리면 다음 주행이 안 먹는다
+    ok = moved >= distance * STRAIGHT_OK_RATIO
+    logger.info("[straight] %s %s %.2f m 이동 (목표 %.2f m, %.1f초)%s",
+                robot_ip, where, moved, distance, time.time() - t0,
+                "" if ok else " — 목표 미달")
+    return ok
+
+
+def _set_control_mode(robot_ip: str, mode: str) -> bool:
+    """로봇 바퀴 제어 모드. `/twist` 는 **remote 여야 먹는다.**
+
+    2026-09-23 실측 — 이걸 빼먹고 twist 만 보냈더니 로봇이 통째로 무시해
+    제자리 회전이 40초 타임아웃 났다. 그동안 로봇은 가만히 서 있었고,
+    현장에서는 "취소했는데 아무 동작 없음" 으로 보였다.
+    """
+    try:
+        r = requests.post(
+            robot_url(robot_ip, "/services/wheel_control/set_control_mode"),
+            json={"control_mode": mode}, timeout=5)
+        return r.status_code < 400
+    except Exception as e:
+        logger.warning("[rotate] %s 제어 모드 %s 전환 실패: %s", robot_ip, mode, e)
+        return False
+
+
+def _twist(robot_ip: str, lv: float, av: float) -> None:
+    """WS /twist 전송. 라우터가 쓰는 연결 캐시를 그대로 재사용한다."""
+    from app.routers.robot import _get_twist_ws, _drop_twist_ws
+    payload = _json.dumps({"topic": "/twist", "linear_velocity": lv,
+                           "angular_velocity": av})
+    for attempt in (1, 2):
+        try:
+            _get_twist_ws(robot_ip).send(payload)
+            return
+        except Exception:
+            _drop_twist_ws(robot_ip)
+            if attempt == 2:
+                raise
+
+
+def rotate_in_place(robot_ip: str, target_ori: float,
+                    timeout: float = 12.0,
+                    tol_deg: float = ROTATE_TOL_DEG) -> bool:
+    """`target_ori`(rad) 를 바라볼 때까지 **제자리에서** 돈다.
+
+    반환: 도달했으면 True. 타임아웃·실패면 False (부르는 쪽이 종전 방식으로 폴백).
+    """
+    from app.routers.map import _read_tracked_pose
+
+    def cur_ori():
+        p = _read_tracked_pose(robot_ip, timeout=2.0)
+        return None if not p else float(p.get("ori", 0.0))
+
+    # ★ /twist 는 remote 모드에서만 먹는다. 못 바꾸면 회전을 시도조차 하지 않는다
+    #   — 시도하면 로봇이 무시한 채 타임아웃까지 서 있게 된다.
+    if not _set_control_mode(robot_ip, "remote"):
+        logger.warning("[rotate] %s 원격 모드 전환 실패 — 제자리 회전을 건너뛴다", robot_ip)
+        return False
+
+    start = time.time()
+    last = None
+    try:
+        while time.time() - start < timeout:
+            _check_stop(robot_ip)
+            o = cur_ori()
+            if o is None:
+                time.sleep(ROTATE_PERIOD)
+                continue
+            err = math.atan2(math.sin(target_ori - o), math.cos(target_ori - o))
+            last = math.degrees(err)
+            if abs(last) <= tol_deg:
+                _twist(robot_ip, 0.0, 0.0)          # 확실히 세운다
+                _set_control_mode(robot_ip, "auto")  # ★ 안 되돌리면 다음 주행이 안 먹는다
+                logger.info("[rotate] %s 제자리 회전 완료 — 남은 오차 %.1f° (%.1f초)",
+                            robot_ip, last, time.time() - start)
+                return True
+            # 목표에 가까울수록 천천히 — 지나쳐서 되돌아오는 것을 막는다
+            av = max(ROTATE_MIN_AV, min(ROTATE_MAX_AV, abs(err) * 1.2))
+            _twist(robot_ip, 0.0, av if err > 0 else -av)
+            time.sleep(ROTATE_PERIOD)
+    except RuntimeError:
+        try:
+            _twist(robot_ip, 0.0, 0.0)
+        except Exception:
+            pass
+        _set_control_mode(robot_ip, "auto")
+        raise                                        # 사용자 중지는 그대로 올린다
+    except Exception as e:
+        logger.warning("[rotate] %s 제자리 회전 실패: %s", robot_ip, e)
+    try:
+        _twist(robot_ip, 0.0, 0.0)
+    except Exception:
+        pass
+    _set_control_mode(robot_ip, "auto")              # 어떤 경로로 나가든 되돌린다
+    logger.warning("[rotate] %s 제자리 회전 타임아웃 — 남은 오차 %s",
+                   robot_ip, ("%.1f°" % last) if last is not None else "알 수 없음")
+    return False

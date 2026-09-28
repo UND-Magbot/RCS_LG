@@ -1,42 +1,82 @@
-# ¦¡¦¡ ÀÇÁ¸¼º ¡¤ ºôµå »êÃâ¹° ¦¡¦¡
+# Python
+__pycache__/
 BackEnd/venv/
-BackEnd/venv_old/
+
+# Node
 frontend/node_modules/
 frontend/.next/
-frontend/.next_old_asus/
-frontend/out/
-BackEnd/web/
-__pycache__/
-*.pyc
 
-# ¦¡¦¡ ¼­¹öº° ¼³Á¤ ¦¡¦¡
-BackEnd/config.env
+# Env
 frontend/.env.local
+.env
 
-# ¦¡¦¡ ¿î¿µ µ¥ÀÌÅÍ ¦¡¦¡
-_db/
-*.sql
 
-# ¦¡¦¡ ¸ÊÇÎ »êÃâ¹° (DB¿£ °æ·Î¸¸ ÀúÀå) ¦¡¦¡
-BackEnd/static/maps/
+# prompts
+frontend/spec/
+frontend/CLAUDE.md
+frontend/.codex/
 
-# ¦¡¦¡ ·Î±× ¦¡¦¡
-BackEnd/_logs/
-_logs/
-·Î±×¼öÁı_*.zip
+# ì—…ë¬´ë³´ê³ 
+ì—…ë¬´ë³´ê³ _*.md
 
-# ¦¡¦¡ ¹é¾÷º» ¦¡¦¡
-_backup/
-*.bak
-*.bak_*
-
-# ¦¡¦¡ ¾Èµå·ÎÀÌµå ºôµå ¦¡¦¡
+# Android / TabletApp ë¹Œë“œ ì‚°ì¶œë¬¼
 TabletApp/.gradle/
 TabletApp/app/build/
 TabletApp/build/
 TabletApp/local.properties
 
-# ¦¡¦¡ ÇöÀåÀÛ¾÷ »êÃâ¹° ¦¡¦¡
-ÇöÀåÀÛ¾÷/»ç¿ëÆú´õ°æ·Î.txt
-ÇöÀåÀÛ¾÷/Â÷ÀÌ_*.txt
-ÇöÀåÀÛ¾÷/ÇöÀå¼öÁ¤ºĞ_*.patch
+# DB ë¤í”„ (ë¡œì»¬ ë³´ê´€ìš© â€” ìš´ì˜ ë°ì´í„°ë¼ ì»¤ë°‹ ê¸ˆì§€)
+_db/
+*.sql
+
+# ë§µí•‘ ì‚°ì¶œë¬¼ (ë¡œë´‡ì—ì„œ ë°›ì€ ë¡œì»¬ íŒŒì¼. DBì—” ê²½ë¡œë§Œ ì €ì¥ë¨)
+BackEnd/static/maps/
+
+# ìë™ ì‚¬ì´í´ ì‹¤í–‰ ë¡œê·¸ / ì •ì§€ ì‹œ ìŠ¤ëƒ…ìƒ· (ì‹¤í–‰í•  ë•Œë§ˆë‹¤ ìŒ“ì„)
+_logs/
+
+nul
+# ì„œë²„ë³„ ì„¤ì • (DB ë¹„ë°€ë²ˆí˜¸ í¬í•¨) â€” config.env.example ë§Œ ì»¤ë°‹
+BackEnd/config.env
+
+# í”„ë¡ íŠ¸ ì •ì  ë¹Œë“œ ê²°ê³¼ (ë°°í¬ ì‹œ ìƒì„±)
+BackEnd/web/
+frontend/out/
+
+# â”€â”€ 2026-09-11 ì¶”ê°€ â€” ì¸ìˆ˜ì¸ê³„ ì •ë¦¬ â”€â”€
+# ì˜› ìŠ¤ëƒ…ìƒ·Â·ë°±ì—…ë³¸. ë¬´ì—‡ì´ í˜„ì¬ ì½”ë“œì¸ì§€ í—·ê°ˆë¦¬ê²Œ í•œë‹¤
+_backup/
+*.bak_*
+*.bak
+
+# APK ëŠ” APK/ ì—ë§Œ ë‘”ë‹¤ (tests/ ìª½ì€ ì¤‘ë³µ Â· ê° 2.5MB)
+tests/*.apk
+
+# íŒŒì´ì¬ ìºì‹œ
+__pycache__/
+*.pyc
+
+# ì§„ë‹¨ ìŠ¤í¬ë¦½íŠ¸ ì‚°ì¶œë¬¼
+_logs/run_*/
+_logs/costmap_*/
+BackEnd/_logs/
+
+# í˜„ì¥ ì´ê´€ìš© íŒ¨ì¹˜ ë¬¶ìŒ (í•„ìš”í•  ë•Œ ë‹¤ì‹œ ë§Œë“ ë‹¤)
+RCS_LG_íŒ¨ì¹˜_*.zip
+
+# ë¡œê·¸ ìˆ˜ì§‘ zip (6_ë¡œê·¸ëª¨ìœ¼ê¸°.bat ì‚°ì¶œë¬¼)
+ë¡œê·¸ìˆ˜ì§‘_*.zip
+venv_old/
+.next_old_asus/
+í˜„ì¥ì‘ì—…/ì‚¬ìš©í´ë”ê²½ë¡œ.txt
+í˜„ì¥ì‘ì—…/ì°¨ì´_*.txt
+í˜„ì¥ì‘ì—…/í˜„ì¥ìˆ˜ì •ë¶„_*.patch
+_logs/bags/
+
+# â”€â”€ ì¥ì†Œë§ˆë‹¤ ë‹¬ë¼ì•¼ í•˜ëŠ” ì„¤ì • (2026-09-28) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#   git ì´ ë‚˜ë¥´ë©´ ì•ˆ ëœë‹¤. ê°œë°œ PC ê°’ì´ í˜„ì¥ì„ ë®ìœ¼ë©´ ë¡œë´‡ì´ ì—‰ëš±í•œ ê³³ìœ¼ë¡œ ê°„ë‹¤.
+#   (2026-09-22 ì‚¬ê³  â€” default_area.json í•˜ë‚˜ë¡œ 8ë¶„ê°„ ë¹ˆ ìë¦¬ì—ì„œ ë™ íƒìƒ‰)
+#   ìƒˆ ì„œë²„ë¥¼ êµ¬ì¶•í•  ë•ŒëŠ” ê°™ì€ ì´ë¦„ì˜ *.example ì„ ë³µì‚¬í•´ ì“¸ ê²ƒ.
+BackEnd/default_area.json
+BackEnd/static/robot_speed.json
+BackEnd/static/system_settings.json

@@ -64,6 +64,18 @@ import time
 import requests
 import websocket
 
+# 로봇-서버 시계 차이 기록 (2026-09-28). 없어도 본체는 동작해야 하므로 선택 의존.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    import clock_sync as _clock
+except Exception:                                      # noqa: BLE001
+    _clock = None
+
+# 시계 차이를 이 간격으로 다시 잰다(초). 로봇 시계는 계속 흘러가므로 한 번만
+# 재두면 나중에 bag 을 받을 때 그 값이 이미 틀어져 있다. 이력을 남겨 두면
+# 사건 시각에 맞는 오프셋을 골라 쓸 수 있다.
+CLOCK_EVERY_SEC = 300
+
 try:                       # 콘솔이 cp949 면 한글이 깨진다
     sys.stdout.reconfigure(encoding="utf-8")
 except Exception:
@@ -503,6 +515,32 @@ class Probe:
         except Exception as e:
             self.log("COSTMAP", "판독 실패: {}".format(e))
 
+    # -- 시계 차이 기록 ------------------------------------------
+    def log_clock(self):
+        """로봇-서버 시계 차이를 재서 이 실행 폴더와 공용 이력에 남긴다.
+
+        실패해도 본체 기록은 계속한다 — 있으면 좋은 정보이지 필수 동작이 아니다.
+        """
+        if _clock is None:
+            return None
+        try:
+            rec = _clock.measure(self.a.robot, precise=True)
+        except Exception as e:                          # noqa: BLE001
+            print("  [경고] 시계 차이 측정 실패(무시): {}".format(e))
+            return None
+        rec["source"] = "run_probe"
+        rec["run"] = self.run
+        # ① 이 실행 폴더 — 나중에 이 기록만 보고도 변환할 수 있게
+        _clock.append_log(rec, os.path.join(self.dir, "clock_offset.jsonl"))
+        # ② 공용 이력 — 여러 실행에 걸친 드리프트를 보려면 이쪽
+        _clock.append_log(rec)
+        return rec
+
+    def clock_loop(self):
+        while True:
+            time.sleep(CLOCK_EVERY_SEC)
+            self.log_clock()
+
     # -- 메인 --------------------------------------------------
     def start(self):
         a = self.a
@@ -511,6 +549,15 @@ class Probe:
         if not COSTMAP_READ:
             print("※ costmap 판독 비활성 (PNG 저장만) - {}".format(_IMPORT_ERR))
         print("Ctrl+C 로 종료\n")
+
+        # ★ 시계 차이를 먼저 한 번 재고, 기록 내내 주기적으로 갱신한다.
+        #   서버 로그와 로봇 bag 로그를 나란히 놓으려면 이 값이 있어야 한다
+        #   (로봇은 현장에서 NTP 에 못 닿아 시계가 혼자 흘러간다 — clock_sync 참조).
+        self.clock_first = self.log_clock()
+        if _clock is not None and self.clock_first:
+            print(_clock.describe(self.clock_first))
+            print()
+        threading.Thread(target=self.clock_loop, daemon=True).start()
 
         threading.Thread(target=self.poller, daemon=True).start()
         ws = websocket.create_connection(
@@ -590,6 +637,16 @@ class Probe:
                 ws.close()
             except Exception:
                 pass
+            # 끝낼 때 한 번 더 재둔다 — 시작값과 비교하면 그 세션의 드리프트를 안다
+            last = self.log_clock()
+            if _clock is not None and self.clock_first and last:
+                try:
+                    d = last["offset_sec"] - self.clock_first["offset_sec"]
+                    print("시계 차이: 시작 {:+.3f}초 → 종료 {:+.3f}초 "
+                          "(이 세션 동안 {:+.3f}초 벌어짐)".format(
+                              self.clock_first["offset_sec"], last["offset_sec"], d))
+                except Exception:                       # noqa: BLE001
+                    pass
             self.write_summary()
             for h in (self.tl, self.raw, self.csvf):
                 h.close()

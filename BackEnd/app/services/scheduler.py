@@ -192,10 +192,18 @@ def _return_to_charger(robot_ip: str, wp_list: list[dict]):
     """
     # 1) 로봇에 지정된 charging_id 우선 사용
     charger = None
+    area_id = None      # 경유지(W1, W2…) 조회에 필요한 맵 번호
     db = SessionLocal()
     try:
         from app.models.robot import Robot
         robot = db.query(Robot).filter(Robot.ip_address == robot_ip).first()
+        if robot:
+            # ※ Robot.area_id 는 문자열 컬럼이고 RobotMap.area_id 는 정수다.
+            #   배차 워커를 만들 때와 **똑같이** int 로 바꿔야 경유지 조회가 맞는다.
+            try:
+                area_id = int(robot.area_id) if robot.area_id else None
+            except (TypeError, ValueError):
+                area_id = None
         if robot and robot.charging_id:
             charging_poi = db.query(MapPOI).filter(
                 MapPOI.id == robot.charging_id, MapPOI.is_active == True
@@ -284,18 +292,55 @@ def _return_to_charger(robot_ip: str, wp_list: list[dict]):
         else:
             std_x, std_y, std_yaw = cx, cy, cyaw
             std_label = "사전 접근"
-        try:
+        # ★ 2026-09-28 — 경유지(W1, W2…)를 거쳐 간다.
+        #
+        #   09-23 경유지 개편에서 **이 복귀 경로만 빠져 있었다.** 종전에는 여기서
+        #   곧장 `standard` 로 사전 접근점까지 직행해서, 찍어둔 경유지를 하나도
+        #   지나지 않고 통로를 가로질렀다(09-28 실기 — JOB 강제 종료 후 복귀가
+        #   경유지를 건너뛰고 충전소로 직행).
+        #
+        #   ※ 저번주(fd5416c)에 고친 "경유지 건너뜀" 과는 별개다. 그것은
+        #     `waypoint_route.plan()` 이 중간 경유지를 빼먹던 문제였고,
+        #     여기는 그 `plan()` 을 **아예 부르지 않던** 문제다.
+        #
+        #   이 함수는 모든 충전소 복귀의 공통 경로다 — 강제 종료 후속 동작 ·
+        #   강제 복귀(force_return_and_dock) · 스케줄 작업 종료가 전부 여기로 온다.
+        #
+        #   경유지가 없으면 `_move_via_waypoints` 가 알아서 standard 로 떨어진다.
+        from app.services.dispatch_service import _MiniWorker, _move_via_waypoints
+        from app.services import waypoint_route as _wr
+        mini = _MiniWorker(robot_ip, area_id)
+
+        def _std_direct(why: str):
+            """경유지 경로를 못 만들었을 때의 폴백 — 종전 동작(standard 직행)."""
+            logger.warning(f"[scheduler] {std_label} 경유지 경로 없음({why}) "
+                           f"— 종전 standard 직행으로 복귀한다")
             std_move = create_move(robot_ip, "standard", std_x, std_y, std_yaw)
-            std_result = wait_move(robot_ip, std_move, timeout=60)
-            if std_result.get("state") != "succeeded":
-                logger.warning(
-                    f"[scheduler] {std_label} 실패({std_result.get('fail_message') or std_result.get('state')}) "
-                    f"— charge 단계로 직접 진행"
-                )
+            return wait_move(robot_ip, std_move, timeout=60)
+
+        try:
+            std_result = _move_via_waypoints(mini, std_x, std_y, std_yaw, timeout=60)
+        except _wr.RouteUnavailable as e:
+            # ★ RouteUnavailable 은 RuntimeError 하위다 — 중지 명령보다 **먼저** 잡아야 한다.
+            #   복귀는 작업이 아니라 회수 동작이고, 여기서 세워두면 로봇이 통로를
+            #   막아 다음 작업도 못 한다. 그래서 복귀만은 종전 동작으로 폴백한다.
+            try:
+                std_result = _std_direct(str(e))
+            except RuntimeError:
+                raise
+            except Exception as e2:
+                logger.warning(f"[scheduler] {std_label} 폴백도 실패: {e2} — charge 단계로 직접 진행")
+                std_result = {}
         except RuntimeError:
-            raise
+            raise                      # 중지 명령 — 그대로 올린다
         except Exception as e:
             logger.warning(f"[scheduler] {std_label} 예외: {e} — charge 단계로 직접 진행")
+            std_result = {}
+        if isinstance(std_result, dict) and std_result.get("state") not in (None, "succeeded"):
+            logger.warning(
+                f"[scheduler] {std_label} 실패({std_result.get('fail_message') or std_result.get('state')}) "
+                f"— charge 단계로 직접 진행"
+            )
         _time.sleep(2)
 
         # 2단계: charge로 도킹 (target_ori 명시, 재시도)

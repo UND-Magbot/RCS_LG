@@ -333,7 +333,46 @@ counters = collections.Counter()
 events_n = [0]
 snaps_n = [0]
 marks = []                      # 사용자가 스페이스바로 찍은 시각
-scan_off = {"v": None, "t": 0.0}   # 로봇-PC 시계 오프셋
+scan_off = {"v": None, "t": 0.0}   # 토픽 stamp 지연 계산용 (절대 시각 환산에는 안 쓴다)
+
+# ── 로봇-서버 시계 차이 (2026-09-28) ─────────────────────────────
+#   bag 은 **로봇 시계** 기준인데, 현장에서 로봇은 NTP 에 못 닿아 시계가 혼자
+#   흘러간다(scripts/clock_sync.py 주석 참조). 마크를 찍을 때 이 값으로 환산해
+#   두면 fetch_bags 에 넣을 구간이 바로 나온다.
+_clk = {"off": None, "t": 0.0}
+CLOCK_EVERY_SEC = 300           # 이 간격으로 다시 잰다. 로봇 시계는 계속 흘러간다
+
+
+def _clock_offset():
+    """로봇 시각 - 서버 시각 (초). 로봇이 빠르면 +. 못 재면 None.
+
+    실패해도 기록 본체는 계속된다 — 있으면 좋은 값이지 필수가 아니다.
+    """
+    now = time.time()
+    if _clk["off"] is not None and now - _clk["t"] < CLOCK_EVERY_SEC:
+        return _clk["off"]
+    ip = getattr(ARGS, "ip", None) if not isinstance(ARGS, list) else None
+    if not ip:
+        return _clk["off"]
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import clock_sync
+        rec = clock_sync.measure(ip, precise=True)
+        if rec.get("offset_sec") is None:
+            return _clk["off"]
+        _clk["off"], _clk["t"] = float(rec["offset_sec"]), now
+        rec["source"] = "drive_log"
+        clock_sync.append_log(rec)
+        try:                                   # 이 실행 폴더에도 남긴다
+            d = OUT.get("events")
+            if d is not None and getattr(d, "name", None):
+                clock_sync.append_log(rec, os.path.join(
+                    os.path.dirname(d.name), "clock_offset.jsonl"))
+        except Exception:
+            pass
+        return _clk["off"]
+    except Exception:
+        return _clk["off"]
 
 OUT = {}
 ARGS = [None]          # 파싱된 인자. WS 스레드에서도 봐야 해서 전역으로 둔다.
@@ -1022,16 +1061,35 @@ def key_watcher():
                         obs = dict(S["obs"]) if S["obs"] else None
                         fu = dict(S["fused"])
                     marks.append(now)
+                    # ★ 2026-09-28 — 이 시각을 **로봇 시계로 환산해서** 같이 남긴다.
+                    #   bag 은 로봇 시계 기준인데, 현장에서 로봇은 NTP 에 못 닿아
+                    #   시계가 혼자 흘러간다(clock_sync 참조). 여기서 환산해 두면
+                    #   fetch_bags 에 넣을 구간이 바로 나온다.
+                    off = _clock_offset()
+                    rt = (now + off) if off is not None else None
                     w("events", {"t": now, "kind": "mark", "index": len(marks),
                                  "v": v,
                                  "x": round(pose[0], 3) if pose else None,
                                  "y": round(pose[1], 3) if pose else None,
                                  "front_m": (obs or {}).get("front_m"),
                                  "n_band": (obs or {}).get("n_band"),
-                                 "suggested_speed": fu.get("suggested_speed")})
+                                 "suggested_speed": fu.get("suggested_speed"),
+                                 "clock_offset_sec": off,
+                                 "robot_time": (time.strftime("%H:%M:%S", time.localtime(rt))
+                                                if rt else None)})
                     print("  [표시 %d] %s  속도 %s  앞 %s"
                           % (len(marks), time.strftime("%H:%M:%S"), v,
                              (obs or {}).get("front_m")), flush=True)
+                    if rt is not None:
+                        lo = time.strftime("%H:%M", time.localtime(rt - 120))
+                        hi = time.strftime("%H:%M", time.localtime(rt + 120))
+                        print("            로봇 시각 %s (차이 %+.1f초)  →  "
+                              "fetch_bags --from %s --to %s"
+                              % (time.strftime("%H:%M:%S", time.localtime(rt)),
+                                 off, lo, hi), flush=True)
+                    else:
+                        print("            (시계 차이를 못 재 로봇 시각 환산 생략)",
+                              flush=True)
         except Exception:
             pass
         time.sleep(0.05)

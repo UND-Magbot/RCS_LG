@@ -631,6 +631,61 @@ def api_get_robot_target(robot_ip: str):
         return {"state": "error", "target_x": None, "target_y": None}
 
 
+def _mark_manual_move(robot_ip: str, begin: bool, what: str) -> None:
+    """라우터가 스레드로 로봇을 움직이는 동안 '바쁨' 으로 잡히게 한다."""
+    try:
+        from app.models.robot import Robot
+        from app.database import SessionLocal
+        from app.services import dispatch_service
+        db = SessionLocal()
+        try:
+            r = db.query(Robot).filter(Robot.ip_address == robot_ip).first()
+        finally:
+            db.close()
+        if r:
+            if begin:
+                dispatch_service.manual_move_begin(r.id, what)
+            else:
+                dispatch_service.manual_move_end(r.id, what)
+    except Exception:
+        pass
+
+
+def _cancel_followup_for(robot_ip: str, why: str) -> None:
+    """이 IP 의 로봇에 돌고 있는 강제 종료 후속 동작을 중단시킨다.
+
+    현장 정의 — 후속 동작 중 사용자 명령이 들어오면 **사용자가 이긴다**
+    (2026-09-23). 돌고 있지 않으면 아무 일도 하지 않는다.
+    """
+    try:
+        from app.models.robot import Robot
+        from app.database import SessionLocal
+        from app.services import dispatch_service
+        db = SessionLocal()
+        try:
+            r = db.query(Robot).filter(Robot.ip_address == robot_ip).first()
+        finally:
+            db.close()
+        if r:
+            if dispatch_service.cancel_followup(r.id, why):
+                # 후속 동작이 실제로 빠져나가야 그쪽이 중지 플래그를 걷는다.
+                # 안 기다리면 이 명령의 첫 이동이 그 플래그에 걸려 취소된다.
+                import time as _t
+                deadline = _t.time() + 3.0
+                while _t.time() < deadline and dispatch_service.is_robot_busy(r.id):
+                    _t.sleep(0.1)
+                try:
+                    from app.services.jack_service import clear_stop_flag, resume_robot_job
+                    clear_stop_flag(robot_ip)
+                    resume_robot_job(robot_ip)
+                except Exception:
+                    pass
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(
+            "[dispatch] 후속 동작 중단 시도 실패(무시) %s: %s", robot_ip, e)
+
+
 # ── 원격 제어 API ──
 
 @router.post("/remote/control-mode/{robot_ip}")
@@ -868,6 +923,7 @@ def api_stop_all(robot_ip: str):
     """모든 작업 정지 (이동 취소 + 잭 다운 + 작업 중단)"""
     import requests as req
     # 1) 백엔드 스케줄/수동 배차 작업 중단 (먼저 — 새 명령 방지)
+    _cancel_followup_for(robot_ip, "모든 작업 정지")
     from app.services.jack_service import stop_robot_job
     stop_robot_job(robot_ip)
     # 2) 로봇 이동 취소
@@ -918,6 +974,7 @@ def api_is_paused(robot_ip: str):
 
 @router.post("/remote/force-return/{robot_ip}")
 def api_force_return(robot_ip: str, db: Session = Depends(get_db)):
+    _cancel_followup_for(robot_ip, "강제 복귀")
     """강제 종료 — 현재 위치에서 잭 업 → 랙 위치 복귀 → 충전소 도킹.
     별도 thread 로 전체 절차를 수행하며 즉시 응답."""
     from app.services.jack_service import force_return_and_dock
@@ -1044,6 +1101,10 @@ def api_clear_dispatch(robot_ip: str, db: Session = Depends(get_db)):
 @router.post("/remote/dock/{robot_ip}")
 def api_dock_to_charger(robot_ip: str, db: Session = Depends(get_db)):
     """충전소로 복귀"""
+    # ★ 강제 종료 후속 동작이 돌고 있으면 먼저 중단시킨다 (2026-09-23).
+    #   안 그러면 둘이 싸워서 이 이동이 곧바로 cancelled 되고,
+    #   후속 동작이 이겨 엉뚱한 곳(예약의 R 지점)으로 가버린다.
+    _cancel_followup_for(robot_ip, "충전소 복귀")
     import requests as req
     # 로봇의 현재 영역 맵에서 충전소 POI 찾기
     robot = db.query(Robot).filter(Robot.ip_address == robot_ip).first()
@@ -1101,6 +1162,16 @@ def api_dock_to_charger(robot_ip: str, db: Session = Depends(get_db)):
         def _approach_then_charge():
             import time as _t
             from app.services import jack_service as _js
+            # ★ 이 스레드가 도는 동안 로봇은 움직인다 — 가용으로 잡히면 안 된다.
+            #   워커도 후속 동작도 아니라 종전에는 "가용 1대" 로 보였고,
+            #   그 사이 호출이 들어오면 두 명령이 같은 로봇을 동시에 몬다.
+            _mark_manual_move(robot_ip, True, "충전소 복귀")
+            try:
+                _approach_then_charge_body(_t, _js)
+            finally:
+                _mark_manual_move(robot_ip, False, "충전소 복귀")
+
+        def _approach_then_charge_body(_t, _js):
 
             # 이전 작업이 남긴 중지 플래그가 있으면 폴링이 즉시 죽는다 → 정리하고 시작
             _js._stop_flags.pop(robot_ip, None)
@@ -1163,22 +1234,21 @@ def api_dock_to_charger(robot_ip: str, db: Session = Depends(get_db)):
 @router.post("/remote/jack/{robot_ip}/{action}")
 def api_jack_control(robot_ip: str, action: str):
     """잭 업/다운 제어"""
-    import requests as req
     if action not in ("jack_up", "jack_down"):
         raise HTTPException(status_code=400, detail="action must be jack_up or jack_down")
+    # ★ 2026-09-28 — 종전에는 이 경로가 jack_service 를 **우회**해 로봇을 직접 쳤다.
+    #   그래서 잭 완료를 기다리지 않고 적재 플래그만 세웠다.
+    #   jack_service.jack_up/jack_down 을 쓰면
+    #     · 잭이 끝까지 움직였는지 progress 로 확인하고
+    #     · 적재 플래그(2단 속도용)도 그 결과에 맞춰 세운다
+    #   ⚠️ 잭 동작이 실제로 약 12초 걸리므로 이 응답도 그만큼 늦게 온다(상한 25초).
+    from app.services import jack_service
     try:
-        r = req.post(
-            f"http://{robot_ip}:8090/services/{action}",
-            json={},
-            timeout=10,
-        )
-        # 이 경로는 jack_service 를 거치지 않고 로봇을 직접 친다.
-        # 2단 속도(요청 1번)의 적재 플래그가 여기서 어긋나면, 원격으로 잭을 올린
-        # 로봇이 공차 속도로 달리게 된다 → 여기서도 같이 갱신한다.
-        if r.status_code < 400:
-            from app.services import jack_service
-            jack_service.set_laden(robot_ip, action == "jack_up")
-        return {"status": r.status_code}
+        if action == "jack_up":
+            jack_service.jack_up(robot_ip)
+        else:
+            jack_service.jack_down(robot_ip)
+        return {"status": 200}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1196,3 +1266,96 @@ def api_shutdown_robot(robot_ip: str):
         return {"status": r.status_code, "message": "로봇 종료 명령 전송"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ══════════════════════════════════════════════════════════════════
+#  주행 튜닝 파라미터 (2026-09-23) — 콘솔 [테스트] 탭이 쓴다
+#
+#  왜 밖으로 뺐나
+#    비이상적 정지(급감속)의 원인을 좁히려면 **같은 구간을 값만 바꿔가며**
+#    반복해야 한다. 그런데 현장 안에는 인터넷이 없어 코드를 못 고친다.
+#    한 번 들어가면 안에서 끝내야 하므로, 되돌릴 수단이 화면에 있어야 한다.
+#
+#  안전장치
+#    · 화이트리스트에 있는 키만 쓴다. 범위를 벗어나면 400
+#    · 속도(max_forward_velocity)는 **여기서 다루지 않는다** —
+#      안전존이 실시간으로 덮어쓰는 값이라 충돌한다. 속도는 [설정] 탭에 따로 있다
+#    · 바꾼 값은 기존값과 같이 WARNING 으로 남긴다
+# ══════════════════════════════════════════════════════════════════
+
+# 이름 → (로봇 파라미터 키, 형, 최소, 최대, 공장값)
+_TUNABLE = {
+    "bump_tolerance": ("/control/bump_tolerance", "float", 0.05, 1.5, 0.5),
+    "bump_speed_limit": ("/control/bump_based_speed_limit/enable", "bool", None, None, True),
+    "max_forward_acc": ("/wheel_control/max_forward_acc", "float", 0.1, 1.0, 0.3),
+    "max_forward_decel": ("/wheel_control/max_forward_decel", "float", -3.0, -0.3, -2.0),
+    "auto_hold": ("/planning/auto_hold", "bool", None, None, True),
+}
+
+
+@router.get("/tuning/{robot_ip}")
+def api_get_tuning(robot_ip: str):
+    """로봇에 **지금 들어 있는** 주행 튜닝 값. 공장값도 같이 준다."""
+    import requests as req
+    out = {"ok": True, "values": {}, "factory": {k: v[4] for k, v in _TUNABLE.items()}}
+    try:
+        params = req.get(f"http://{robot_ip}:8090/robot-params", timeout=8).json()
+    except Exception as e:
+        out["ok"] = False
+        out["error"] = f"로봇에 접속할 수 없습니다: {e}"
+        return out
+    for name, (key, typ, _lo, _hi, _fac) in _TUNABLE.items():
+        if key in params:
+            out["values"][name] = params[key]
+    # 참고용 — 여기서 바꾸지는 않는다
+    out["speed"] = params.get("/wheel_control/max_forward_velocity")
+    return out
+
+
+@router.post("/tuning/{robot_ip}")
+def api_set_tuning(robot_ip: str, body: dict):
+    """주행 튜닝 값 변경. 화이트리스트 + 범위 검사 후 로봇에 바로 쓴다."""
+    import logging
+    import requests as req
+
+    logger = logging.getLogger(__name__)
+    if not body:
+        raise HTTPException(status_code=400, detail="바꿀 항목이 없습니다")
+
+    payload, shown = {}, []
+    for name, raw in body.items():
+        spec = _TUNABLE.get(name)
+        if not spec:
+            raise HTTPException(status_code=400, detail=f"다룰 수 없는 항목입니다: {name}")
+        key, typ, lo, hi, _fac = spec
+        if typ == "bool":
+            val = bool(raw)
+        else:
+            try:
+                val = float(raw)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail=f"{name}: 숫자가 아닙니다")
+            if not (lo <= val <= hi):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{name} 는 {lo} ~ {hi} 사이여야 합니다 (받은 값 {val})")
+        payload[key] = val
+        shown.append(f"{name}={val}")
+
+    # 기존값을 먼저 읽어 둔다 — 바뀐 내용을 로그로 남기려는 것
+    before = {}
+    try:
+        cur = req.get(f"http://{robot_ip}:8090/robot-params", timeout=8).json()
+        before = {n: cur.get(_TUNABLE[n][0]) for n in body.keys()}
+    except Exception:
+        pass
+
+    try:
+        r = req.post(f"http://{robot_ip}:8090/robot-params", json=payload, timeout=10)
+        r.raise_for_status()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"로봇에 쓰지 못했습니다: {e}")
+
+    logger.warning("[tuning] %s 주행 파라미터 변경: %s  (이전: %s)",
+                   robot_ip, ", ".join(shown), before)
+    return api_get_tuning(robot_ip)
