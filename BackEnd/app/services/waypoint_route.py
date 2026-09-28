@@ -133,7 +133,21 @@ ARRIVED_EPS = 0.30
 # 출발점이 목표에서 이 거리 안이고 사이에 벽도 없으면 경유지를 거치지 않는다.
 # 바로 코앞인데 경유지를 찍으러 되돌아가는 낭비를 막는 것뿐이다.
 # 그 외에는 **무조건 경유지 체인을 따라간다.**
-DIRECT_MAX_M = 2.0
+#
+# ★ 2026-09-28 현장 — 2.0 → 3.0 으로 올렸다.
+#   J 에 랙을 두고 짝 R 로 갈 때 W1(또는 W7)까지 나갔다가 되돌아왔다.
+#   J↔R 사이가 2.12~2.20 m 인데 상한이 2.0 m 라 **20 cm 차이로** 경유지 경로가
+#   잡힌 것이다. 경유지는 수 m 떨어져 있어 왕복 10 m 이상을 버렸다.
+#     16:53:38  같은 구간이지만 2.20 m — 경유지를 거친다
+#     16:58:25  같은 구간이지만 2.12 m — 경유지를 거친다
+#     17:02:58  같은 구간이지만 2.20 m — 경유지를 거친다
+#   이 판정 자체는 2026-09-08 에 같은 증상(J1→W1→R2 로 되돌아옴)을 막으려고
+#   넣은 것인데, 현장 배치에서 간발의 차로 임계값을 넘겨 되살아났다.
+#
+#   ⚠️ 이 거리는 **자율주행(standard)으로 가는 구간**이다. 더 늘리지 말 것.
+#     같은 구간(최근접 경유지가 같음)이고 사이에 벽이 없을 때만 적용되지만,
+#     길어질수록 경로강제 원칙에서 벗어난다.
+DIRECT_MAX_M = 3.0
 
 # 위 '코앞 직행' 을 판단할 때만 쓰는 벽 여유(m). 랙 적재 외접원 0.672 기준.
 LOS_CLEAR_M = 0.70
@@ -448,7 +462,11 @@ def _shortest(meta, wps: list[dict], sx: float, sy: float,
     attach(START, sx, sy, ec_start or ENTRY_CANDIDATES)
     attach(GOAL, tx, ty, ec_goal or ENTRY_CANDIDATES)
 
-    # ③ 코앞이면 경유지를 거치러 되돌아가지 않는다 (벽이 없을 때만)
+    # ③ 사이가 통로면 **직행 변**을 그래프에 넣는다. 경유지를 찍으러 되돌아가는
+    #    낭비를 막는다. 최단경로가 이 변을 고르면 좌표열은 START→GOAL 직선 하나가
+    #    되므로, 자율주행이 아니라 **경로강제를 유지한 채** 곧장 간다.
+    #
+    #    상한은 DIRECT_MAX_M — 2026-09-28 에 2.0 → 3.0 으로 올렸다(그 주석 참조).
     d_st = d(sx, sy, tx, ty)
     if d_st <= DIRECT_MAX_M and not map_image.segment_blocked(
             meta, sx, sy, tx, ty, LOS_CLEAR_M):
@@ -589,19 +607,26 @@ def plan(area_id: Optional[int], sx: float, sy: float,
     #   J1·R2 둘 다 W1 이 최근접이라 J1 → W1 → R2 로 R2 를 지나쳤다 돌아왔다.
     _same = nearest_index(wps, sx, sy) == nearest_index(wps, tx, ty)
     _d_st = math.hypot(tx - sx, ty - sy)
-    if _same and (not _strict_route() or _d_st <= DIRECT_MAX_M):
+    # 맵 이미지는 직행 판정에 쓴다. 없어도 경로 생성에는 지장이 없다.
+    meta = map_image.map_meta_for_area(area_id)
+    # ★ 2026-09-28 — 직행에도 **벽 검사**를 붙였다. 종전에는 거리만 봤다.
+    #   `_shortest` 의 직행 변(아래 ③)은 처음부터 벽을 봤는데 여기만 빠져 있었다.
+    #   맵을 못 읽으면(meta 없음) 판정하지 않고 종전대로 거리만 본다.
+    _blocked = bool(meta) and map_image.segment_blocked(
+        meta, sx, sy, tx, ty, LOS_CLEAR_M)
+    if _same and _blocked:
+        logger.info("[route] 출발·목표가 같은 구간(%.2f m)이지만 사이에 벽이 있다 "
+                    "— 경유지를 거친다", _d_st)
+    elif _same and (not _strict_route() or _d_st <= DIRECT_MAX_M):
         # 코앞이면 그냥 간다. 랙 밑 이탈처럼 1~2m 짜리가 여기 해당한다.
         logger.info("[route] 출발·목표가 같은 구간(최근접 경유지 %s, %.2f m) — 직행",
                     wps[nearest_index(wps, sx, sy)]["name"], _d_st)
         return "standard", {}
-    if _same:
+    elif _same:
         # ★ 경로강제 — 같은 구간이어도 멀면 자율주행으로 내보내지 않는다.
         #   그 경유지를 거쳐서라도 좌표열 위로 다니게 한다.
         logger.info("[route] 출발·목표가 같은 구간이지만 %.2f m — 경유지를 거친다(경로강제)",
                     _d_st)
-
-    # 맵 이미지는 '코앞 직행' 판단에만 쓴다. 없어도 경로 생성에는 지장이 없다.
-    meta = map_image.map_meta_for_area(area_id)
 
     # 충전소에서 출발하면 그 충전소의 전용 경유지를 **맨 앞**에,
     # 충전소(또는 그 접근점)로 가면 **맨 뒤**에 끼운다.
@@ -615,7 +640,29 @@ def plan(area_id: Optional[int], sx: float, sy: float,
     if lead and tail and lead["name"] == tail["name"]:
         tail = None                 # 충전소 안에서만 움직이는 경우 — 한 번만
 
-    seq = _shortest(meta, wps, sx, sy, tx, ty,
+    # ★ 2026-09-28 — 체인에 붙는 **기준점**을 충전소 전용 경유지로 바꾼다.
+    #
+    #   종전에는 `C1-1`(충전소 진입점) 좌표로 후보를 뽑았다. 그런데 C1-1 은
+    #   충전소 쪽으로 들어간 자리라 통로에서 벗어나 있어서, 가까운 경유지가
+    #   **통로를 지나친 W3·W4** 로 잡히고 W2 에는 연결이 안 됐다
+    #   (`CHARGER_ENTRY_CANDIDATES` 주석의 "W3(2.06 m)" 가 그것이다).
+    #
+    #   `C<n>-2` 는 **통로 쪽에 찍어둔** 전용 경유지다. 그 좌표를 기준으로 뽑으면
+    #   통로상의 이웃(W2·W3)이 후보가 되고, 멀리 있는 W4 가 직접 붙는 길이
+    #   원천 차단된다.
+    #
+    #   현장 실측 (2026-09-28) — 같은 구간인데 결과가 뒤집혔다
+    #     16:45:10  상단 → 충전소   W4→C1-2        W3 를 건너뜀
+    #     16:38:36  충전소 → 하단   C1-2→W3→W2→W1  W3 를 거침
+    #     16:41:30  충전소 → 하단   C1-2→W2→W1     0.02 m 차이로 W3 가 빠짐
+    #   현장 요구는 "하단은 W3 안 들름 / 상단은 W3 들름" 이다. 기준점을 C1-2 로
+    #   바꾸면 체인 순서가 그대로 살아 둘 다 만족한다.
+    #
+    #   ※ 좌표열 조립(`_build`)과 도착 판정은 **실제 sx,sy,tx,ty** 를 그대로 쓴다.
+    #     여기서 바꾸는 것은 '어느 경유지에 붙을지' 를 고르는 기준뿐이다.
+    _ex, _ey = (lead["x"], lead["y"]) if lead else (sx, sy)
+    _gx, _gy = (tail["x"], tail["y"]) if tail else (tx, ty)
+    seq = _shortest(meta, wps, _ex, _ey, _gx, _gy,
                     ec_start=CHARGER_ENTRY_CANDIDATES if lead else None,
                     ec_goal=CHARGER_ENTRY_CANDIDATES if tail else None)
     if seq is None:
