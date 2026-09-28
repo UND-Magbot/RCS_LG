@@ -172,6 +172,24 @@ def main() -> int:
     print("=" * 60)
 
     os.makedirs(a.out, exist_ok=True)
+
+    # ★ 2026-09-28 — bag 의 시각은 **로봇 시계** 기준이다. 서버 로그와 겹쳐 보려면
+    #   두 시계 차이를 알아야 하므로, 받는 이 시점의 오프셋을 함께 남긴다.
+    #   (현장에서 로봇은 NTP 에 못 닿아 시계가 혼자 흘러간다 — clock_sync 참조)
+    #   ⚠️ 여기서 재는 값은 '지금' 의 차이다. bag 이 녹화된 시점과는 다를 수 있으니,
+    #      진단 중에는 run_probe 를 켜 두어 오프셋 이력을 남기는 것이 정확하다.
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    try:
+        import clock_sync as _clock
+        _rec = _clock.measure(a.ip, precise=True)
+        _rec["source"] = "fetch_bags"
+        print(_clock.describe(_rec))
+        _clock.append_log(_rec, os.path.join(a.out, "clock_offset.jsonl"))
+        _clock.append_log(_rec)
+        print()
+    except Exception as _e:                             # noqa: BLE001
+        print("  [경고] 시계 차이 측정 생략: %s\n" % _e)
+
     ok = 0
     for i, (m, it) in enumerate(pick, 1):
         fn = it["filename"]
