@@ -1234,22 +1234,21 @@ def api_dock_to_charger(robot_ip: str, db: Session = Depends(get_db)):
 @router.post("/remote/jack/{robot_ip}/{action}")
 def api_jack_control(robot_ip: str, action: str):
     """잭 업/다운 제어"""
-    import requests as req
     if action not in ("jack_up", "jack_down"):
         raise HTTPException(status_code=400, detail="action must be jack_up or jack_down")
+    # ★ 2026-09-28 — 종전에는 이 경로가 jack_service 를 **우회**해 로봇을 직접 쳤다.
+    #   그래서 잭 완료를 기다리지 않고 적재 플래그만 세웠다.
+    #   jack_service.jack_up/jack_down 을 쓰면
+    #     · 잭이 끝까지 움직였는지 progress 로 확인하고
+    #     · 적재 플래그(2단 속도용)도 그 결과에 맞춰 세운다
+    #   ⚠️ 잭 동작이 실제로 약 12초 걸리므로 이 응답도 그만큼 늦게 온다(상한 25초).
+    from app.services import jack_service
     try:
-        r = req.post(
-            f"http://{robot_ip}:8090/services/{action}",
-            json={},
-            timeout=10,
-        )
-        # 이 경로는 jack_service 를 거치지 않고 로봇을 직접 친다.
-        # 2단 속도(요청 1번)의 적재 플래그가 여기서 어긋나면, 원격으로 잭을 올린
-        # 로봇이 공차 속도로 달리게 된다 → 여기서도 같이 갱신한다.
-        if r.status_code < 400:
-            from app.services import jack_service
-            jack_service.set_laden(robot_ip, action == "jack_up")
-        return {"status": r.status_code}
+        if action == "jack_up":
+            jack_service.jack_up(robot_ip)
+        else:
+            jack_service.jack_down(robot_ip)
+        return {"status": 200}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

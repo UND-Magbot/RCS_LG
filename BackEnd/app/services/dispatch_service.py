@@ -1890,20 +1890,37 @@ def _force_followup_body(robot_id: int, robot_ip: str, after: str, label: str) -
         loaded = jack_service.is_rack_loaded(robot_ip)
     except Exception:
         loaded = None
-    # 랙이 '없다고 확인된' 경우에만 건너뛴다. 통신 실패로 모르면 내려놓는다 —
-    # 안 들고 있는데 잭다운을 해도 잭만 내려갈 뿐 해가 없지만, 들고 있는데
-    # 건너뛰면 랙을 든 채 충전소로 가버린다. (jack_service.force_return_and_dock
-    # 이 쓰는 '모르면 들고 있다고 본다' 와 같은 기준)
-    if loaded is False:
-        logger.info(f"[dispatch] {robot_ip} 후속 동작 — 랙 없음 확인, 잭 조작 생략")
+    # ★ 판정을 **두 갈래로** 본다 (2026-09-28 실기 사고 후).
+    #
+    #   is_rack_loaded() 는 이름과 달리 "잭이 올라가 있나" 만 본다(그 함수 주석 참조).
+    #   잭업이 미완이면 랙이 부분적으로 들려 있어도 **False** 가 나온다.
+    #   실제로 그랬다 — 09-28 09:25, 랙을 든 채였는데 두 번 다 False 로 읽혀
+    #   잭 조작을 건너뛰고 **랙을 든 채로 다음 예약 작업에 나섰고 충전소에 도킹했다.**
+    #
+    #   그래서 서버가 잭업을 보낸 기록(`is_laden`)도 같이 본다.
+    #   **둘 다 "없다" 고 할 때만** 생략한다. 한쪽이라도 들고 있다고 하면 내려놓는다 —
+    #   안 들고 있는데 잭다운을 해도 잭만 내려갈 뿐 해가 없지만, 들고 있는데
+    #   건너뛰면 랙을 든 채 충전소로 가버린다.
+    try:
+        flagged = jack_service.is_laden(robot_ip)
+    except Exception:
+        flagged = True          # 모르면 들고 있다고 본다
+    if loaded is False and not flagged:
+        logger.info(f"[dispatch] {robot_ip} 후속 동작 — 랙 없음 확인(잭 내려감+기록 없음), 잭 조작 생략")
     else:
-        how = "적재 확인" if loaded else "적재 여부 불명 — 안전하게"
+        if loaded:
+            how = "적재 확인"
+        elif flagged:
+            how = "잭 상태는 '내려감' 이지만 잭업 기록이 있다 — 안전하게"
+        else:
+            how = "적재 여부 불명 — 안전하게"
         jack_service.update_job_status(robot_ip, status="unloading",
                                        message=f"{label} — 이 자리에 랙을 내려놓습니다")
         logger.warning(f"[dispatch] {robot_ip} 후속 동작 — 제자리 잭다운({how})")
         try:
+            # jack_down() 이 완료(progress)까지 기다리므로 고정 대기를 덧붙이지 않는다.
+            # 사용자가 화면 앞에서 기다리는 경로라 불필요한 10초를 얹지 않는다.
             jack_service.jack_down(robot_ip)
-            time.sleep(jack_service.JACK_WAIT_SEC)
         except Exception as e:
             logger.warning(f"[dispatch] 후속 동작 — 잭다운 실패(계속 진행): {e}")
 
@@ -2412,12 +2429,20 @@ def recover_on_startup() -> None:
             ret_with_rack = bool(session.with_rack) if session.with_rack is not None else True
             if not ret_use_jack:
                 ret_with_rack = False
-            # 잭에 하중이 없으면 랙은 이미 반납된 것 → 대기장소 경유를 생략하고 충전소만 간다.
+            # 잭이 내려가 있으면 랙은 이미 반납된 것 → 대기장소 경유를 생략하고 충전소만 간다.
             # (조회 실패(None)면 원래 값을 유지 — 랙을 든 채 두는 것보다 반납을 시도하는 편이 안전)
+            #
+            # ★ 2026-09-28 — 여기서도 잭업 기록(`is_laden`)을 같이 본다.
+            #   is_rack_loaded() 는 잭업이 미완이면 랙을 들고 있어도 False 를 준다.
+            #   그 False 를 그대로 믿으면 **랙을 든 채 충전소로 직행**한다.
             if ret_with_rack and jack_service.is_rack_loaded(
                 robot.ip_address, timeout=RECOVER_ROBOT_TIMEOUT) is False:
-                ret_with_rack = False
-                logger.info(f"[dispatch] 복귀 재개 — session={session.id} 랙 이미 반납됨 → 충전소만")
+                if jack_service.is_laden(robot.ip_address):
+                    logger.warning(f"[dispatch] 복귀 재개 — session={session.id} 잭은 '내려감' 이지만 "
+                                   f"잭업 기록이 있다 → 랙 반납 경로를 유지한다")
+                else:
+                    ret_with_rack = False
+                    logger.info(f"[dispatch] 복귀 재개 — session={session.id} 랙 이미 반납됨 → 충전소만")
 
             ret_worker = _Worker(
                 robot_id=session.robot_id,

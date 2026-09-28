@@ -74,6 +74,15 @@ def sync_laden_flags() -> None:
         if loaded is None:
             logger.info(f"[boot_recovery] {ip} 잭 상태 판정 불가 — 적재 플래그 유지")
             continue
+        # ★ 2026-09-28 — 로봇이 "내려감" 이라고 해도 **서버에 잭업 기록이 있으면 덮지 않는다.**
+        #   is_rack_loaded() 는 잭업이 미완이면 랙을 들고 있어도 False 를 준다.
+        #   그걸로 플래그를 공차로 되돌리면 랙을 든 채 공차 속도로 달리고,
+        #   강제 종료도 "내릴 것 없다" 고 판단해 그냥 지나간다.
+        #   (반대 방향 — 기록이 없는데 로봇이 "올라감" 이라고 하면 그건 받아들인다)
+        if loaded is False and jack_service.is_laden(ip):
+            logger.warning(f"[boot_recovery] {ip} 잭은 '내려감' 이지만 잭업 기록이 있다 "
+                           f"— 적재 플래그를 유지한다(공차로 되돌리지 않음)")
+            continue
         jack_service.set_laden(ip, loaded)
         logger.info(f"[boot_recovery] {ip} 적재 플래그 보정: "
                     f"{'랙 있음(적재)' if loaded else '랙 없음(공차)'}")
@@ -199,7 +208,11 @@ def _recover_robot(robot_id: int) -> None:
             try:
                 from app.services import jack_service
                 loaded = jack_service.is_rack_loaded(ip)
-                if loaded is not None:
+                if loaded is False and jack_service.is_laden(ip):
+                    # 위 주기 보정과 같은 이유 — 잭업 기록이 있으면 공차로 되돌리지 않는다.
+                    logger.warning(f"[boot_recovery] {ip} 잭은 '내려감' 이지만 잭업 기록이 있다 "
+                                   f"— 적재 플래그를 유지한다")
+                elif loaded is not None:
                     jack_service.set_laden(ip, loaded)
                     logger.info(f"[boot_recovery] {ip} 적재 플래그 보정: "
                                 f"{'랙 있음(적재)' if loaded else '랙 없음(공차)'}")

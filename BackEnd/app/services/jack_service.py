@@ -655,9 +655,24 @@ def wait_move(ip: str, move_id: int, timeout: int = MOVE_TIMEOUT,
     return {"state": "timeout", "fail_message": f"Move {move_id} timed out after {timeout}s"}
 
 
-# 잭 상태 판정 임계값 (2026-08-18 실측: 랙 적재 progress=1.0/weight=85, 빈 상태 0/0)
+# 잭 상태 판정 임계값
+#
+# ⚠️ 2026-09-28 실측으로 종전 해석이 뒤집혔다 — **`weight` 는 랙 무게가 아니다.**
+#   crawler_s300_op5 에서 **랙 없이** 잭업만 했는데 weight=87 이 나왔다
+#   (progress 1.0 / weight 87 / state hold). 잭 기구 자체 하중이다.
+#   2026-08-18 에 "랙 적재 weight=85" 로 적어둔 것은 랙과 무관한 값이었다.
+#   → 따라서 아래 두 값으로는 **랙 유무를 가릴 수 없다.** 실질적으로 판정하는 것은
+#     `progress` 하나이고, 그 의미는 "랙이 있나" 가 아니라 **"잭이 올라가 있나"** 다.
+#   값은 그대로 둔다(잭업 상태면 weight 조건은 항상 충족되므로 무해).
 JACK_UP_PROGRESS_MIN = 0.9      # 이 이상이면 잭이 올라간 것
-JACK_LOADED_WEIGHT_MIN = 10.0   # 이 이상이면 하중이 실린 것 = 랙을 들고 있음
+JACK_LOADED_WEIGHT_MIN = 10.0   # 하중이 실렸는가 — 잭업이면 랙 유무와 무관하게 충족된다
+
+# 잭 동작 '완료' 판정 (wait_jack_settled)
+#   실측 — 잭업은 progress 0.03 → 1.0 까지 약 11.8초, 1초 간격으로 발행된다.
+#   상한은 실측의 2배로 잡았다. 랙을 들면 더 걸릴 수 있다.
+JACK_SETTLED_UP = 0.95          # 이 이상 + state 가 jacking_* 이 아니면 잭업 완료
+JACK_SETTLED_DOWN = 0.05        # 이 이하 + 같은 조건이면 잭다운 완료
+JACK_SETTLE_TIMEOUT = 25.0      # 완료 확인 상한(초). 넘으면 경고만 남기고 진행한다
 
 
 # ── 적재 여부(랙을 들고 있는가) — LGIT 요청 1번 2단 속도용 ──────
@@ -707,15 +722,88 @@ def apply_state_speed(ip: str) -> bool:
         return False
 
 
+def wait_jack_settled(ip: str, want_up: bool, timeout: float = JACK_SETTLE_TIMEOUT) -> Optional[bool]:
+    """잭이 실제로 끝까지 움직였는지 `progress` 로 확인한다. 판정 불가면 None.
+
+    ★ 왜 필요한가 (2026-09-28 실측)
+      종전에는 명령을 보낸 뒤 **고정 10초**(JACK_WAIT_SEC)만 기다리고 다음 단계로 갔다.
+      그런데 잭업 완료까지 **11.8초**가 걸린다(랙 없이 측정. 랙을 들면 더 걸린다).
+      즉 10초 시점에는 `progress 0.8~0.9` 로 아직 올라가는 중이었다.
+      그 상태로 이동을 시작해서
+        · 랙이 부분적으로만 들린 채 끌려가고 (흔들림·낙하 위험)
+        · 서버가 잭 상태를 물으면 `progress < 0.9` 라 **"랙 없음"** 으로 답해
+          강제 종료가 랙을 안 내려놓고 충전소까지 랙을 들고 갔다.
+
+      ※ `/jack_state` 는 **변화가 있을 때만** 발행되는 저빈도 토픽이라
+        동작 중에는 1초 간격으로 오고, 멈추면 더 안 온다. 그래서 스트림을
+        계속 읽되 목표에 닿으면 즉시 끝낸다.
+
+    반환: True=완료 확인 / False=상한까지 못 닿음 / None=통신 실패로 판정 불가
+    """
+    import websocket  # 선택 의존성 — read_jack_state 와 같은 방식
+    target = "올라감" if want_up else "내려감"
+    ws = None
+    last: Optional[float] = None
+    try:
+        ws = websocket.create_connection(f"ws://{ip}:{ROBOT_PORT}/ws/v2/topics", timeout=6)
+        ws.send(_json.dumps({"enable_topic": "/jack_state"}))
+        ws.settimeout(2.0)
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                pkt = _json.loads(ws.recv())
+            except Exception:
+                continue          # 수신 타임아웃 — 상한까지는 계속 본다
+            if pkt.get("topic") != "/jack_state":
+                continue
+            try:
+                progress = float(pkt.get("progress") or 0)
+            except (TypeError, ValueError):
+                continue
+            last = progress
+            state = str(pkt.get("state") or "")
+            moving = state.startswith("jacking")
+            done = (progress >= JACK_SETTLED_UP if want_up else progress <= JACK_SETTLED_DOWN)
+            if done and not moving:
+                logger.info(f"[jack] {ip} 잭 {target} 완료 확인 — progress={progress}")
+                return True
+        logger.warning(f"[jack] {ip} 잭 {target} 완료 확인 실패 — {timeout:.0f}초 안에 "
+                       f"목표에 못 닿음 (마지막 progress={last})")
+        return False
+    except Exception as e:
+        logger.warning(f"[jack] {ip} 잭 {target} 완료 확인 불가(통신): {e}")
+        return None
+    finally:
+        if ws is not None:
+            try:
+                ws.close()
+            except Exception:
+                pass
+
+
 def jack_up(ip: str) -> dict:
     # robot_post 는 실패하면 예외를 던진다 → 여기까지 오면 명령이 접수된 것이다
     res = robot_post(ip, "/services/jack_up")
+    # ★ 명령 '접수' 와 잭이 '다 올라간 것' 은 다르다 — 끝까지 기다린다.
+    #   여기서 기다리므로 호출부(25곳)는 손대지 않아도 전부 커버된다.
+    #   완료를 못 봤어도(False/None) 적재로 본다 — 랙이 부분이라도 들려 있을 수
+    #   있고, "들고 있는데 없다고 보는 것" 이 훨씬 위험하다.
+    settled = wait_jack_settled(ip, want_up=True)
+    if settled is not True:
+        logger.warning(f"[jack] {ip} 잭업 완료를 확인하지 못했다 — 적재로 간주하고 진행")
     set_laden(ip, True)
     return res
 
 
 def jack_down(ip: str) -> dict:
     res = robot_post(ip, "/services/jack_down")
+    # 잭다운은 반대다 — 다 내려간 것을 못 봤으면 **아직 들고 있다고 본다.**
+    #   공차로 잘못 세우면 랙을 든 채 공차 속도로 달리고, 강제 종료가
+    #   "내릴 것 없다" 고 판단해 그대로 지나간다.
+    settled = wait_jack_settled(ip, want_up=False)
+    if settled is not True:
+        logger.warning(f"[jack] {ip} 잭다운 완료를 확인하지 못했다 — 적재 플래그를 유지한다")
+        return res
     set_laden(ip, False)
     return res
 
@@ -724,19 +812,40 @@ def read_jack_state(ip: str, timeout: float = 6.0) -> Optional[dict]:
     """WS /jack_state 로 잭 상태 1건 읽기. 실패 시 None.
 
     반환 예: {'state':'hold', 'progress':1.0, 'weight':85}
-    실측(2026-08-18, LG 랙): 잭업+랙적재 progress=1.0 weight=85 / 빈 상태 progress=0.0 weight=0
-    state 는 두 경우 모두 'hold' 라 구분에 쓸 수 없다. progress 와 weight 로 판정할 것.
+    실측(2026-09-28, crawler_s300_op5): 잭업 progress=1.0 weight=87 / 잭다운 0.0/0
+      — **랙 유무와 무관**하다. weight 해석은 is_rack_loaded 의 주석을 볼 것.
+    state 는 멈춘 뒤 두 경우 모두 'hold' 라 구분에 쓸 수 없다.
+      단 움직이는 중에는 'jacking_up' / 'jacking_down' 이 온다.
+
+    ★ 첫 패킷이 아니라 **짧은 창 안의 마지막 패킷**을 쓴다(2026-09-28).
+      잭이 움직이는 중에는 1초 간격으로 발행되므로, 첫 패킷을 그대로 쓰면
+      이미 지나간 중간값(예: progress 0.6)으로 판정할 수 있다.
     """
     import websocket  # 선택 의존성 — 여기서만 사용
     ws = None
+    latest = None
     try:
         ws = websocket.create_connection(f"ws://{ip}:{ROBOT_PORT}/ws/v2/topics", timeout=timeout)
         ws.send(_json.dumps({"enable_topic": "/jack_state"}))
         deadline = time.time() + timeout
+        # 첫 패킷을 받은 뒤 이 시간만 더 보고, 더 새 것이 있으면 그것을 쓴다.
+        #   토픽이 저빈도라 길게 기다리면 호출부가 그만큼 멈춘다.
+        settle_window = 1.2
+        window_end = None
         while time.time() < deadline:
-            pkt = _json.loads(ws.recv())
+            if window_end is not None and time.time() >= window_end:
+                break
+            try:
+                ws.settimeout(max(0.2, min(1.5, deadline - time.time())))
+                pkt = _json.loads(ws.recv())
+            except Exception:
+                break           # 더 올 게 없다 — 지금까지 받은 것 중 최신을 쓴다
             if pkt.get("topic") == "/jack_state":
-                return pkt
+                latest = pkt
+                if window_end is None:
+                    window_end = time.time() + settle_window
+        if latest is not None:
+            return latest
     except Exception as e:
         logger.warning(f"[jack] /jack_state 읽기 실패 ({ip}): {e}")
     finally:
@@ -749,10 +858,16 @@ def read_jack_state(ip: str, timeout: float = 6.0) -> Optional[dict]:
 
 
 def is_rack_loaded(ip: str, timeout: float = 6.0) -> Optional[bool]:
-    """지금 랙을 들고 있는가? 판정 불가(통신 실패)면 None.
+    """**잭이 올라가 있는가?** 판정 불가(통신 실패)면 None.
 
-    잭이 올라가 있고(progress) 하중이 실려 있어야(weight) 랙을 든 것으로 본다.
-    잭만 올리고 랙이 없으면 weight 가 0 에 가깝다.
+    ⚠️ 이름이 `rack_loaded` 지만 **랙 유무는 판정하지 못한다**(2026-09-28 실측).
+      랙 없이 잭업만 해도 weight=87 이 나오므로 `weight` 조건은 랙을 구분하지 않고,
+      실제로 보는 것은 `progress` 하나다. 호출부는 이 함수의 False 를
+      "랙이 없다" 로 읽지 말고 **"잭이 올라가 있지 않다"** 로 읽어야 한다.
+      랙을 들었는지는 서버가 잭업을 보냈는지(`is_laden`)와 함께 봐야 한다 —
+      잭업이 미완이면 랙이 부분적으로 들려 있어도 여기서는 False 가 나온다.
+
+    ★ 종전 주석("잭만 올리고 랙이 없으면 weight 가 0 에 가깝다")은 틀렸다.
     """
     st = read_jack_state(ip, timeout=timeout)
     if not st:
