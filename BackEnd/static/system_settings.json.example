@@ -18,5 +18,10 @@
     "band_half_w": 0.2,
     "near_min": 0.45,
     "clear_hold_sec": 2.0
+  },
+  "drive": {
+    "detour_tolerance": 0.0,
+    "route_move_type": "along_given_route",
+    "strict_route": true
   }
 }

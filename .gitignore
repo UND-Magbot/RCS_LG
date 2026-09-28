@@ -72,3 +72,11 @@ venv_old/
 현장작업/차이_*.txt
 현장작업/현장수정분_*.patch
 _logs/bags/
+
+# ── 장소마다 달라야 하는 설정 (2026-09-28) ─────────────────────
+#   git 이 나르면 안 된다. 개발 PC 값이 현장을 덮으면 로봇이 엉뚱한 곳으로 간다.
+#   (2026-09-22 사고 — default_area.json 하나로 8분간 빈 자리에서 랙 탐색)
+#   새 서버를 구축할 때는 같은 이름의 *.example 을 복사해 쓸 것.
+BackEnd/default_area.json
+BackEnd/static/robot_speed.json
+BackEnd/static/system_settings.json
