@@ -884,6 +884,84 @@ def cancel_current_move(ip: str, timeout: Optional[float] = None) -> dict:
     return robot_patch(ip, "/chassis/moves/current", {"state": "cancelled"}, timeout=timeout)
 
 
+# 감속 정지 (decelerate_to_stop)
+#   멈춘 것으로 볼 속도. 위치추정이 정지 중에도 몇 cm 씩 흔들리므로 0 으로 두면 안 된다.
+STOP_SPEED_EPS = 0.06      # m/s
+STOP_WAIT_SEC = 2.5        # 감속 대기 상한(초). 1.2 m/s ÷ 2.0 m/s² = 0.6초 + 여유
+STOP_POLL_SEC = 0.15
+
+
+def _speed_now(ip: str, dt: float = STOP_POLL_SEC) -> Optional[float]:
+    """연속 두 포즈의 위치 차분으로 속도(m/s)를 구한다.
+
+    ※ `/tracked_pose` 에는 speed 필드가 없다(AutoXing 문서 명시). 차분이 유일한 수단이다.
+    """
+    from app.routers.map import _read_tracked_pose
+    a = _read_tracked_pose(ip, timeout=2.0)
+    if not a or not a.get("position"):
+        return None
+    t0 = time.time()
+    time.sleep(dt)
+    b = _read_tracked_pose(ip, timeout=2.0)
+    if not b or not b.get("position"):
+        return None
+    el = max(1e-3, time.time() - t0)
+    return math.hypot(float(b["position"][0]) - float(a["position"][0]),
+                      float(b["position"][1]) - float(a["position"][1])) / el
+
+
+def decelerate_to_stop(ip: str, why: str = "") -> bool:
+    """**이동 명령을 살려둔 채** 속도 상한을 0 으로 걸어 로봇이 스스로 감속해 서게 한다.
+
+    왜 이렇게 세우는가 (2026-09-28 현장 지적 — 종료 시 급정거)
+      종전에는 곧바로 `cancel_current_move` 를 보냈다. 그건 주행 명령 자체를
+      버리는 것이라 로봇이 제동으로 선다. 랙을 들고 있으면 더 위험하다.
+
+      반면 `safety_zone` 은 서행도 정지도 **속도로만** 건다 — RED 진입 시
+      `max_forward_velocity = 0`. 로봇이 자기 감속도(`max_forward_decel` = -2.0 m/s²)
+      를 따라 감속해서 서고, 실기에서 0.7 m/s 에서 0.27 m 만에 섰다(2026-09-07).
+      **같은 방식을 종료에도 쓴다.**
+
+    ★ `max_forward_decel` 은 건드리지 않는다. 그 값이 장애물 앞 정지 거리를
+      결정하므로, 완화하면 RED 정지까지 같이 둔해진다.
+
+    ★ 호출부는 반드시 **`apply_state_speed(ip)` 로 속도를 되돌려야** 한다.
+      0 으로 둔 채 두면 뒤따르는 이동(랙 이탈·복귀)이 한 발도 못 나간다.
+
+    ※ `safety_zone` 과 충돌하지 않는다 — 그쪽은 **존이 전이할 때만** 명령을
+      보내므로, 여기서 0 을 걸어도 존 전이가 없으면 되돌리지 않는다.
+
+    반환: 정지를 확인했으면 True. 상한까지 못 멈췄거나 판정 불가면 False.
+    """
+    tag = f" ({why})" if why else ""
+    try:
+        r = requests.post(robot_url(ip, "/robot-params"),
+                          json={"/wheel_control/max_forward_velocity": 0.0},
+                          timeout=5)
+        if r.status_code >= 400:
+            logger.warning("[stop] %s 감속 정지 — 속도 0 거부(HTTP %s) — 그대로 취소한다%s",
+                           ip, r.status_code, tag)
+            return False
+    except Exception as e:
+        logger.warning("[stop] %s 감속 정지 — 속도 0 실패(%s) — 그대로 취소한다%s", ip, e, tag)
+        return False
+
+    t0 = time.time()
+    last = None
+    while time.time() - t0 < STOP_WAIT_SEC:
+        v = _speed_now(ip)
+        if v is None:
+            continue                  # 포즈를 못 읽으면 상한까지 계속 본다
+        last = v
+        if v <= STOP_SPEED_EPS:
+            logger.info("[stop] %s 감속 정지 완료 — %.2f 초%s", ip, time.time() - t0, tag)
+            return True
+    logger.warning("[stop] %s 감속 정지 — %.1f 초 안에 못 멈췄다(마지막 %s m/s)%s",
+                   ip, STOP_WAIT_SEC,
+                   f"{last:.2f}" if last is not None else "판정 불가", tag)
+    return False
+
+
 JACK_WAIT_SEC = 10  # 잭 업/다운 고정 대기 시간(초)
 JACK_IDLE_TIMEOUT = 30  # 잭 다운 후 로봇 idle 대기 최대 시간
 

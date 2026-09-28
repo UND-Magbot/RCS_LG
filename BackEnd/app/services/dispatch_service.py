@@ -156,8 +156,18 @@ def cancel_followup(robot_id: int, why: str = "사용자 명령",
     try:
         r = _load_robot(robot_id)
         if r and r.ip_address:
+            # 여기도 사용자가 세우는 경우다 — 급정거하지 않게 먼저 감속시킨다
+            # (force_clear 와 같은 이유. 그 주석 참조)
+            try:
+                jack_service.decelerate_to_stop(r.ip_address, why="후속 동작 중단")
+            except Exception as e2:
+                logger.warning("[dispatch] 후속 동작 중단 — 감속 정지 실패(그대로 취소): %s", e2)
             jack_service.cancel_current_move(r.ip_address, timeout=3)
             jack_service.stop_robot_job(r.ip_address)   # 진행 중 이동에서 빠져나오게
+            try:
+                jack_service.apply_state_speed(r.ip_address)    # 속도 복구 — 필수
+            except Exception as e2:
+                logger.warning("[dispatch] 후속 동작 중단 — 속도 복구 실패: %s", e2)
     except Exception as e:
         logger.warning("[dispatch] 후속 동작 중단 — 로봇에 전달 실패(무시): %s", e)
     return True
@@ -1766,11 +1776,26 @@ def force_clear(robot_id: int, after: str = "hold") -> tuple[bool, str]:
         #   "세션은 정리됐는데 로봇은 목적지까지 가는" 상태가 된다 (2026-08-19 실기 확인).
         #   문서 §9 루틴 ⑦ "로봇은 물리적으로 그 자리 그대로" 를 만족시키려면
         #   여기서 현재 이동을 취소해야 한다.
+        # ★ 2026-09-28 — 취소 **전에 감속해서 세운다.**
+        #   곧바로 취소하면 주행 명령이 버려져 로봇이 제동으로 선다(현장 지적 "급정거").
+        #   랙을 들고 있으면 더 위험하다. safety_zone 이 RED 에서 쓰는 것과 같은
+        #   방식으로 속도 0 을 걸어 로봇이 자기 감속도로 서게 한 뒤 취소한다.
+        #   그러면 취소 시점에는 이미 속도가 0 이라 세울 것이 없다.
+        try:
+            jack_service.decelerate_to_stop(worker.robot_ip, why=f"{after} 종료")
+        except Exception as e:
+            logger.warning(f"[dispatch] force_clear — 감속 정지 실패(그대로 취소): {e}")
         try:
             jack_service.cancel_current_move(worker.robot_ip, timeout=RECOVER_ROBOT_TIMEOUT)
         except Exception as e:
             # 통신 실패해도 세션 정리는 계속한다 (로봇이 꺼졌을 수도 있다)
             logger.warning(f"[dispatch] force_clear — 이동 취소 실패(무시): robot={robot_id}: {e}")
+        # ★ 속도를 반드시 되돌린다 — 0 으로 두면 뒤따르는 후속 동작(랙 이탈·복귀)이
+        #   한 발도 못 나간다. 적재 상태에 맞는 2단 속도로 복구된다.
+        try:
+            jack_service.apply_state_speed(worker.robot_ip)
+        except Exception as e:
+            logger.warning(f"[dispatch] force_clear — 속도 복구 실패: {e}")
         try:
             jack_service.stop_robot_job(worker.robot_ip)   # 워커 즉시 탈출
             jack_service.resume_robot_job(worker.robot_ip)  # 정지 표시 해제 (화면 정합성)
