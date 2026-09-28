@@ -1946,10 +1946,19 @@ def _escape_after_unload(robot_id: int, robot_ip: str, after: str, label: str) -
       결국 **회전 → 이탈 → 다시 회전** 으로 동선을 낭비했다.
 
     무엇을 하는가
-      회전하기 **전에** 랙 밖으로 직선 이탈한다. 방향은 목적지를 보고 정한다.
-        · 목적지가 로봇 뒤쪽(각도차 > 90°)  → 후진.  되돌아가는 경우 (대부분)
-        · 목적지가 로봇 앞쪽(각도차 ≤ 90°)  → 전진.  계속 가는 방향인 경우
-      어느 쪽이든 **이탈이 곧 경로의 첫 걸음**이 되어 예상 경로를 벗어나지 않는다.
+      회전하기 **전에** 랙 밖으로 **전진**해서 빠져나온다.
+
+    ★ 2026-09-28 현장 — **무조건 전진이다.** 종전에는 목적지 방향을 보고
+      전진/후진을 골랐는데, 그건 연구소 로봇(crawler_s300_op5)이 목이 없어
+      전후 대칭이라 가능했던 것이다. **현장 longjack 은 목이 있어 후진으로
+      나오면 안 된다.**
+
+      그리고 전진이 원래 맞는 방향이다. 로봇은 작업지점에 **후진으로 진입**하므로
+      (진입점 규약 — `_entry_arrival_face` 참조) 랙 안에서 머리가 통로 쪽을 향한다.
+      전진이 곧 통로로 나오는 방향이다.
+
+      목적지가 뒤쪽이면 나온 뒤에 돌아야 하지만, 그 회전은 랙 밖에서 하므로
+      랙 아래에서 도는 것보다 낫다.
 
     ★ 픽업 쪽(`_escape_after_pickup`)과 달리 진입점을 쓸 수 없다.
       강제 종료는 작업지점이 아니라 **통로 한가운데**에서도 일어나기 때문이다.
@@ -1977,17 +1986,18 @@ def _escape_after_unload(robot_id: int, robot_ip: str, after: str, label: str) -
     if not dest:
         logger.warning("[dispatch] %s 목적지를 몰라 랙 이탈 방향을 못 정한다 — 생략", robot_ip)
         return
+    # ★ 방향은 고르지 않는다 — **항상 전진**이다(위 주석 참조).
+    #   목적지는 로그에만 남긴다. 나온 뒤 어디로 갈지 읽을 때 쓴다.
     to_dest = math.atan2(dest["y"] - pose[1], dest["x"] - pose[0])
-    diff = math.atan2(math.sin(to_dest - pose[2]), math.cos(to_dest - pose[2]))
-    forward = abs(diff) <= math.pi / 2
-    logger.info("[dispatch] %s 랙 이탈 — %s %.2f m (현재 %.1f° → 목적지 %s 방향 %.1f°, 차 %.1f°)",
-                robot_ip, "전진" if forward else "후진", UNLOAD_ESCAPE_M,
-                math.degrees(pose[2]), dest.get("name"), math.degrees(to_dest),
-                math.degrees(diff))
+    diff = math.degrees(math.atan2(math.sin(to_dest - pose[2]), math.cos(to_dest - pose[2])))
+    logger.info("[dispatch] %s 랙 이탈 — 전진 %.2f m "
+                "(현재 %.1f° / 목적지 %s 방향 %.1f°, 차 %.1f° — 나온 뒤 이만큼 돈다)",
+                robot_ip, UNLOAD_ESCAPE_M, math.degrees(pose[2]),
+                dest.get("name"), math.degrees(to_dest), diff)
     jack_service.update_job_status(robot_ip, status="moving",
-                                   message=f"{label} — 대차 밖으로 빠져나옵니다")
+                                   message=f"{label} — 대차 밖으로 빠져나옵니다(전진)")
     try:
-        jack_service.drive_straight(robot_ip, UNLOAD_ESCAPE_M, forward=forward)
+        jack_service.drive_straight(robot_ip, UNLOAD_ESCAPE_M, forward=True)
     except RuntimeError:
         raise                       # 사용자 중지는 그대로 올린다
     except Exception as e:
