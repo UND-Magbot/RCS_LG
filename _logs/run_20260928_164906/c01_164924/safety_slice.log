@@ -1,0 +1,154 @@
+09-28 16:49:25  INFO     app.services.safety_zone  [safety] 10.14.182.126 작업지점 벗어남 — 판정 재개
+09-28 16:49:28  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 1건 버림 (지연 1.36초 > 0.5) — 최신 스캔으로 판정한다
+09-28 16:49:29  INFO     app.services.safety_zone  [safety] 10.14.182.126 맵에 있는 벽 12개 건너뜀 — 앞이 비었다고 판정
+09-28 16:49:35  INFO     app.services.safety_zone  [safety] 10.14.182.126 YELLOW — 앞 2.59 m 서행 0.5 m/s
+09-28 16:49:36  INFO     app.services.safety_zone  [safety] 10.14.182.126 작업지점 R1 근처(1.71 m ≤ 2.00) — 판정 제외
+09-28 16:49:39  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 9건 버림 (지연 0.72초 > 0.5) — 최신 스캔으로 판정한다
+09-28 16:49:55  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 1건 버림 (지연 0.68초 > 0.5) — 최신 스캔으로 판정한다
+09-28 16:50:05  INFO     app.services.safety_zone  [safety] 10.14.182.126 자기 크기 갱신 — 앞끝 0.379 m / 반폭 0.440 m (폭 0.88)
+09-28 16:50:06  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 3건 버림 (지연 0.83초 > 0.5) — 최신 스캔으로 판정한다
+09-28 16:50:35  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 2건 버림 (지연 3.05초 > 0.5) — 최신 스캔으로 판정한다
+09-28 16:50:47  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 10건 버림 (지연 10.05초 > 0.5) — 최신 스캔으로 판정한다
+09-28 16:51:05  INFO     app.services.safety_zone  [safety] 10.14.182.126 작업지점 벗어남 — 판정 재개
+09-28 16:51:09  INFO     app.services.safety_zone  [safety] 10.14.182.126 맵에 있는 벽 8개 건너뜀 — 앞이 비었다고 판정
+09-28 16:51:11  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 7건 버림 (지연 0.76초 > 0.5) — 최신 스캔으로 판정한다
+09-28 16:51:19  INFO     app.services.safety_zone  [safety] 10.14.182.126 작업지점 C1 근처(1.83 m ≤ 2.00) — 판정 제외
+09-28 16:51:25  INFO     app.services.safety_zone  [safety] 10.14.182.126 작업지점 벗어남 — 판정 재개
+09-28 16:51:26  INFO     app.services.safety_zone  [safety] 10.14.182.126 맵에 있는 벽 12개 건너뜀 — 앞이 비었다고 판정
+09-28 16:51:30  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 1건 버림 (지연 1.01초 > 0.5) — 최신 스캔으로 판정한다
+09-28 16:51:42  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 9건 버림 (지연 1.18초 > 0.5) — 최신 스캔으로 판정한다
+09-28 16:51:55  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 14건 버림 (지연 3.92초 > 0.5) — 최신 스캔으로 판정한다
+09-28 16:52:14  INFO     app.services.safety_zone  [safety] 10.14.182.126 접속 실패 — 5초마다 재시도 (Connection timed out)
+09-28 16:52:26  INFO     app.services.safety_zone  [safety] 10.14.182.126 자기 크기 갱신 — 앞끝 0.379 m / 반폭 0.440 m (폭 0.88)
+09-28 16:52:28  INFO     app.services.safety_zone  [safety] 10.14.182.126 포즈가 낡아 판정 보류 (2.05초 > 1.2)
+09-28 16:52:29  INFO     app.services.safety_zone  [safety] 10.14.182.126 작업지점 5곳 — J1, R2, R1, J2, C1
+09-28 16:52:31  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 1건 버림 (지연 1.28초 > 0.5) — 최신 스캔으로 판정한다
+09-28 16:52:44  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 6건 버림 (지연 10.80초 > 0.5) — 최신 스캔으로 판정한다
+09-28 16:52:46  INFO     app.services.safety_zone  [safety] 10.14.182.126 작업지점 J1 근처(1.10 m ≤ 2.00) — 판정 제외
+09-28 16:53:00  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 27건 버림 (지연 2.69초 > 0.5) — 최신 스캔으로 판정한다
+09-28 16:53:12  INFO     app.services.safety_zone  [safety] 10.14.182.126 접속 실패 — 5초마다 재시도 (Connection timed out)
+09-28 16:53:25  INFO     app.services.safety_zone  [safety] 10.14.182.126 작업지점 5곳 — J1, R2, R1, J2, C1
+09-28 16:53:25  INFO     app.services.safety_zone  [safety] 10.14.182.126 작업지점 J1 근처(0.02 m ≤ 2.00) — 판정 제외
+09-28 16:53:28  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 1건 버림 (지연 0.82초 > 0.5) — 최신 스캔으로 판정한다
+09-28 16:53:39  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 5건 버림 (지연 8.50초 > 0.5) — 최신 스캔으로 판정한다
+09-28 16:53:50  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 8건 버림 (지연 15.27초 > 0.5) — 최신 스캔으로 판정한다
+09-28 16:54:00  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 23건 버림 (지연 12.39초 > 0.5) — 최신 스캔으로 판정한다
+09-28 16:54:13  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 18건 버림 (지연 15.73초 > 0.5) — 최신 스캔으로 판정한다
+09-28 16:54:23  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 5건 버림 (지연 23.06초 > 0.5) — 최신 스캔으로 판정한다
+09-28 16:54:28  INFO     app.services.safety_zone  [safety] 10.14.182.126 접속 실패 — 5초마다 재시도 (Connection timed out)
+09-28 16:54:38  INFO     app.services.safety_zone  [safety] 10.14.182.126 작업지점 5곳 — J1, R2, R1, J2, C1
+09-28 16:54:38  INFO     app.services.safety_zone  [safety] 10.14.182.126 작업지점 R2 근처(1.13 m ≤ 2.00) — 판정 제외
+09-28 16:54:41  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 1건 버림 (지연 0.52초 > 0.5) — 최신 스캔으로 판정한다
+09-28 16:54:55  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 4건 버림 (지연 11.87초 > 0.5) — 최신 스캔으로 판정한다
+09-28 16:55:05  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 4건 버림 (지연 19.83초 > 0.5) — 최신 스캔으로 판정한다
+09-28 16:55:15  INFO     app.services.safety_zone  [safety] 10.14.182.126 자기 크기 갱신 — 앞끝 0.379 m / 반폭 0.440 m (폭 0.88)
+09-28 16:55:15  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 34건 버림 (지연 10.94초 > 0.5) — 최신 스캔으로 판정한다
+09-28 16:55:27  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 23건 버림 (지연 1.17초 > 0.5) — 최신 스캔으로 판정한다
+09-28 16:56:02  INFO     app.services.safety_zone  [safety] 10.14.182.126 작업지점 벗어남 — 판정 재개
+09-28 16:56:04  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 8건 버림 (지연 1.41초 > 0.5) — 최신 스캔으로 판정한다
+09-28 16:56:16  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 12건 버림 (지연 4.90초 > 0.5) — 최신 스캔으로 판정한다
+09-28 16:56:24  INFO     app.services.safety_zone  [safety] 10.14.182.126 접속 실패 — 5초마다 재시도 (Connection timed out)
+09-28 16:56:36  INFO     app.services.safety_zone  [safety] 10.14.182.126 포즈가 낡아 판정 보류 (1790582196.77초 > 1.2)
+09-28 16:56:36  INFO     app.services.safety_zone  [safety] 10.14.182.126 자기 크기 갱신 — 앞끝 0.379 m / 반폭 0.440 m (폭 0.88)
+09-28 16:56:37  INFO     app.services.safety_zone  [safety] 10.14.182.126 작업지점 5곳 — J1, R2, R1, J2, C1
+09-28 16:56:38  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 1건 버림 (지연 0.52초 > 0.5) — 최신 스캔으로 판정한다
+09-28 16:56:49  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 7건 버림 (지연 5.86초 > 0.5) — 최신 스캔으로 판정한다
+09-28 16:57:02  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 21건 버림 (지연 2.82초 > 0.5) — 최신 스캔으로 판정한다
+09-28 16:57:04  INFO     app.services.safety_zone  [safety] 10.14.182.126 맵에 있는 벽 12개 건너뜀 — 앞이 비었다고 판정
+09-28 16:57:07  INFO     app.services.safety_zone  [safety] 10.14.182.126 YELLOW — 앞 1.78 m 서행 0.3 m/s
+09-28 16:57:08  INFO     app.services.safety_zone  [safety] 10.14.182.126 작업지점 C1 근처(1.99 m ≤ 2.00) — 판정 제외
+09-28 16:57:13  INFO     app.services.safety_zone  [safety] 10.14.182.126 작업지점 벗어남 — 판정 재개
+09-28 16:57:15  INFO     app.services.safety_zone  [safety] 10.14.182.126 맵에 있는 벽 12개 건너뜀 — 앞이 비었다고 판정
+09-28 16:57:20  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 12건 버림 (지연 0.83초 > 0.5) — 최신 스캔으로 판정한다
+09-28 16:57:28  INFO     app.services.safety_zone  [safety] 10.14.182.126 작업지점 R1 근처(1.63 m ≤ 2.00) — 판정 제외
+09-28 16:57:34  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 8건 버림 (지연 0.73초 > 0.5) — 최신 스캔으로 판정한다
+09-28 16:57:56  INFO     app.services.safety_zone  [safety] 10.14.182.126 자기 크기 갱신 — 앞끝 0.379 m / 반폭 0.230 m (폭 0.46)
+09-28 16:58:07  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 5건 버림 (지연 0.54초 > 0.5) — 최신 스캔으로 판정한다
+09-28 16:58:15  INFO     app.services.safety_zone  [safety] 10.14.182.126 포즈가 낡아 판정 보류 (1.22초 > 1.2)
+09-28 16:58:17  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 1건 버림 (지연 0.55초 > 0.5) — 최신 스캔으로 판정한다
+09-28 16:58:30  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 3건 버림 (지연 0.59초 > 0.5) — 최신 스캔으로 판정한다
+09-28 16:58:37  INFO     app.services.safety_zone  [safety] 10.14.182.126 포즈가 낡아 판정 보류 (1.65초 > 1.2)
+09-28 16:58:45  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 4건 버림 (지연 0.54초 > 0.5) — 최신 스캔으로 판정한다
+09-28 16:58:55  INFO     app.services.safety_zone  [safety] 10.14.182.126 작업지점 벗어남 — 판정 재개
+09-28 16:58:58  INFO     app.services.safety_zone  [safety] 10.14.182.126 맵에 있는 벽 12개 건너뜀 — 앞이 비었다고 판정
+09-28 16:58:59  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 1건 버림 (지연 0.81초 > 0.5) — 최신 스캔으로 판정한다
+09-28 16:59:02  INFO     app.services.safety_zone  [safety] 10.14.182.126 YELLOW — 앞 1.29 m 서행 0.1 m/s
+09-28 16:59:04  INFO     app.services.safety_zone  [safety] 10.14.182.126 작업지점 R1 근처(1.65 m ≤ 2.00) — 판정 제외
+09-28 16:59:21  INFO     app.services.safety_zone  [safety] 10.14.182.126 포즈가 낡아 판정 보류 (1.33초 > 1.2)
+09-28 16:59:33  INFO     app.services.safety_zone  [safety] 10.14.182.126 자기 크기 갱신 — 앞끝 0.379 m / 반폭 0.440 m (폭 0.88)
+09-28 16:59:42  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 9건 버림 (지연 0.53초 > 0.5) — 최신 스캔으로 판정한다
+09-28 17:00:03  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 2건 버림 (지연 0.95초 > 0.5) — 최신 스캔으로 판정한다
+09-28 17:00:16  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 4건 버림 (지연 0.53초 > 0.5) — 최신 스캔으로 판정한다
+09-28 17:00:30  INFO     app.services.safety_zone  [safety] 10.14.182.126 작업지점 벗어남 — 판정 재개
+09-28 17:00:32  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 2건 버림 (지연 0.58초 > 0.5) — 최신 스캔으로 판정한다
+09-28 17:00:35  INFO     app.services.safety_zone  [safety] 10.14.182.126 맵에 있는 벽 12개 건너뜀 — 앞이 비었다고 판정
+09-28 17:00:44  INFO     app.services.safety_zone  [safety] 10.14.182.126 작업지점 C1 근처(1.68 m ≤ 2.00) — 판정 제외
+09-28 17:00:51  INFO     app.services.safety_zone  [safety] 10.14.182.126 작업지점 벗어남 — 판정 재개
+09-28 17:00:51  INFO     app.services.safety_zone  [safety] 10.14.182.126 맵에 있는 벽 12개 건너뜀 — 앞이 비었다고 판정
+09-28 17:00:53  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 6건 버림 (지연 1.28초 > 0.5) — 최신 스캔으로 판정한다
+09-28 17:01:06  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 5건 버림 (지연 0.61초 > 0.5) — 최신 스캔으로 판정한다
+09-28 17:01:16  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 3건 버림 (지연 0.76초 > 0.5) — 최신 스캔으로 판정한다
+09-28 17:01:30  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 8건 버림 (지연 1.66초 > 0.5) — 최신 스캔으로 판정한다
+09-28 17:01:40  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 8건 버림 (지연 0.95초 > 0.5) — 최신 스캔으로 판정한다
+09-28 17:01:53  INFO     app.services.safety_zone  [safety] 10.14.182.126 작업지점 R2 근처(1.95 m ≤ 2.00) — 판정 제외
+09-28 17:01:55  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 8건 버림 (지연 0.60초 > 0.5) — 최신 스캔으로 판정한다
+09-28 17:02:30  INFO     app.services.safety_zone  [safety] 10.14.182.126 자기 크기 갱신 — 앞끝 0.379 m / 반폭 0.230 m (폭 0.46)
+09-28 17:02:31  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 3건 버림 (지연 1.41초 > 0.5) — 최신 스캔으로 판정한다
+09-28 17:02:50  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 2건 버림 (지연 0.55초 > 0.5) — 최신 스캔으로 판정한다
+09-28 17:03:01  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 8건 버림 (지연 1.49초 > 0.5) — 최신 스캔으로 판정한다
+09-28 17:03:11  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 7건 버림 (지연 0.52초 > 0.5) — 최신 스캔으로 판정한다
+09-28 17:03:22  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 4건 버림 (지연 1.62초 > 0.5) — 최신 스캔으로 판정한다
+09-28 17:03:32  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 14건 버림 (지연 2.08초 > 0.5) — 최신 스캔으로 판정한다
+09-28 17:03:39  INFO     app.services.safety_zone  [safety] 10.14.182.126 작업지점 벗어남 — 판정 재개
+09-28 17:03:39  INFO     app.services.safety_zone  [safety] 10.14.182.126 맵에 있는 벽 12개 건너뜀 — 앞이 비었다고 판정
+09-28 17:03:43  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 15건 버림 (지연 1.24초 > 0.5) — 최신 스캔으로 판정한다
+09-28 17:03:55  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 13건 버림 (지연 6.25초 > 0.5) — 최신 스캔으로 판정한다
+09-28 17:04:05  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 13건 버림 (지연 9.83초 > 0.5) — 최신 스캔으로 판정한다
+09-28 17:04:10  INFO     app.services.safety_zone  [safety] 10.14.182.126 작업지점 R2 근처(0.55 m ≤ 2.00) — 판정 제외
+09-28 17:04:15  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 27건 버림 (지연 3.34초 > 0.5) — 최신 스캔으로 판정한다
+09-28 17:04:22  INFO     app.services.safety_zone  [safety] 10.14.182.126 자기 크기 갱신 — 앞끝 0.379 m / 반폭 0.440 m (폭 0.88)
+09-28 17:04:26  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 23건 버림 (지연 0.54초 > 0.5) — 최신 스캔으로 판정한다
+09-28 17:04:29  INFO     app.services.safety_zone  [safety] 10.14.182.126 포즈가 낡아 판정 보류 (1.30초 > 1.2)
+09-28 17:05:10  INFO     app.services.safety_zone  [safety] 10.14.182.126 작업지점 벗어남 — 판정 재개
+09-28 17:05:12  INFO     app.services.safety_zone  [safety] 10.14.182.126 YELLOW — 앞 1.92 m 서행 0.3 m/s
+09-28 17:05:12  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 1건 버림 (지연 1.23초 > 0.5) — 최신 스캔으로 판정한다
+09-28 17:05:14  INFO     app.services.safety_zone  [safety] 10.14.182.126 서행 단계 0.30 → 0.10 m/s (앞 1.18 m)
+09-28 17:05:15  INFO     app.services.safety_zone  [safety] 10.14.182.126 RED 후보 1/3 — 앞 0.62 m, 지령 0.10 m/s (추정 +1.20) — 서행 걸고 다음 스캔 확인
+09-28 17:05:16  WARNING  app.services.safety_zone  [safety] 10.14.182.126 ★ RED — 앞 0.50 m 정지 | 로봇(-16.17,15.44) 앞끝0.379 포즈나이0.16s 속도+0.09 점=맵(-15.74,14.67) 좌우+0.07m 중심거리0.88m 맵벽까지1m밖
+09-28 17:05:21  INFO     app.services.safety_zone  [safety] 10.14.182.126 해제 — 0.10 m/s 부터 단계 복구 (목표 0.8 m/s)
+09-28 17:05:23  INFO     app.services.safety_zone  [safety] 10.14.182.126 속도 복구 0.10 → 0.20 m/s
+09-28 17:05:23  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 7건 버림 (지연 2.29초 > 0.5) — 최신 스캔으로 판정한다
+09-28 17:05:26  INFO     app.services.safety_zone  [safety] 10.14.182.126 속도 복구 0.20 → 0.30 m/s
+09-28 17:05:28  INFO     app.services.safety_zone  [safety] 10.14.182.126 속도 복구 0.30 → 0.42 m/s
+09-28 17:05:31  INFO     app.services.safety_zone  [safety] 10.14.182.126 속도 복구 0.42 → 0.55 m/s
+09-28 17:05:34  INFO     app.services.safety_zone  [safety] 10.14.182.126 속도 복구 0.55 → 0.68 m/s
+09-28 17:05:34  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 14건 버림 (지연 3.26초 > 0.5) — 최신 스캔으로 판정한다
+09-28 17:05:38  INFO     app.services.safety_zone  [safety] 10.14.182.126 속도 복구 0.68 → 0.80 m/s
+09-28 17:05:48  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 13건 버림 (지연 0.51초 > 0.5) — 최신 스캔으로 판정한다
+09-28 17:05:58  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 4건 버림 (지연 0.53초 > 0.5) — 최신 스캔으로 판정한다
+09-28 17:06:14  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 1건 버림 (지연 0.77초 > 0.5) — 최신 스캔으로 판정한다
+09-28 17:06:31  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 1건 버림 (지연 0.86초 > 0.5) — 최신 스캔으로 판정한다
+09-28 17:06:33  INFO     app.services.safety_zone  [safety] 10.14.182.126 맵에 있는 벽 1개 건너뜀 — 앞이 비었다고 판정
+09-28 17:06:37  INFO     app.services.safety_zone  [safety] 10.14.182.126 YELLOW — 앞 1.99 m 서행 0.3 m/s
+09-28 17:06:41  INFO     app.services.safety_zone  [safety] 10.14.182.126 작업지점 C1 근처(1.95 m ≤ 2.00) — 판정 제외
+09-28 17:06:46  INFO     app.services.safety_zone  [safety] 10.14.182.126 작업지점 벗어남 — 판정 재개
+09-28 17:06:47  INFO     app.services.safety_zone  [safety] 10.14.182.126 YELLOW — 앞 1.96 m 서행 0.3 m/s
+09-28 17:06:48  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 8건 버림 (지연 0.86초 > 0.5) — 최신 스캔으로 판정한다
+09-28 17:06:49  INFO     app.services.safety_zone  [safety] 10.14.182.126 맵에 있는 벽 12개 건너뜀 — 앞이 비었다고 판정
+09-28 17:06:52  INFO     app.services.safety_zone  [safety] 10.14.182.126 해제 — 0.42 m/s 부터 단계 복구 (목표 0.8 m/s)
+09-28 17:06:55  INFO     app.services.safety_zone  [safety] 10.14.182.126 속도 복구 0.42 → 0.55 m/s
+09-28 17:06:58  INFO     app.services.safety_zone  [safety] 10.14.182.126 YELLOW — 앞 2.13 m 서행 0.5 m/s
+09-28 17:06:58  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 12건 버림 (지연 0.82초 > 0.5) — 최신 스캔으로 판정한다
+09-28 17:07:01  INFO     app.services.safety_zone  [safety] 10.14.182.126 서행 단계 0.50 → 0.10 m/s (앞 1.48 m)
+09-28 17:07:03  INFO     app.services.safety_zone  [safety] 10.14.182.126 RED 후보 1/3 — 앞 0.60 m, 지령 0.10 m/s (추정 +0.50) — 서행 걸고 다음 스캔 확인
+09-28 17:07:08  INFO     app.services.safety_zone  [safety] 10.14.182.126 서행 단계 0.10 → 0.30 m/s (앞 1.91 m)
+09-28 17:07:08  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 11건 버림 (지연 2.53초 > 0.5) — 최신 스캔으로 판정한다
+09-28 17:07:13  INFO     app.services.safety_zone  [safety] 10.14.182.126 서행 단계 0.30 → 0.10 m/s (앞 1.11 m)
+09-28 17:07:15  INFO     app.services.safety_zone  [safety] 10.14.182.126 작업지점 R1 근처(1.87 m ≤ 2.00) — 판정 제외
+09-28 17:07:20  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 13건 버림 (지연 0.56초 > 0.5) — 최신 스캔으로 판정한다
+09-28 17:07:51  INFO     app.services.safety_zone  [safety] 10.14.182.126 자기 크기 갱신 — 앞끝 0.379 m / 반폭 0.230 m (폭 0.46)
+09-28 17:08:28  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 2건 버림 (지연 0.55초 > 0.5) — 최신 스캔으로 판정한다
+09-28 17:08:46  INFO     app.services.safety_zone  [safety] 10.14.182.126 밀린 스캔 2건 버림 (지연 0.52초 > 0.5) — 최신 스캔으로 판정한다
+09-28 17:08:48  INFO     app.services.safety_zone  [safety] 10.14.182.126 작업지점 벗어남 — 판정 재개
+09-28 17:08:52  INFO     app.services.safety_zone  [safety] 10.14.182.126 맵에 있는 벽 12개 건너뜀 — 앞이 비었다고 판정
+09-28 17:08:57  INFO     app.services.safety_zone  [safety] 10.14.182.126 작업지점 C1 근처(1.96 m ≤ 2.00) — 판정 제외
