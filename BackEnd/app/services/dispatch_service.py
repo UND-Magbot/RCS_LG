@@ -693,6 +693,15 @@ def _face_route_start(worker: _Worker, route_coords: Optional[str]) -> None:
     cur = _current_pose(worker.robot_ip)
     if cur is None:
         return
+    # ★ 2026-09-28 — 좌표열은 **로봇의 현재 위치부터** 시작한다(waypoint_route 주석 참조).
+    #   그래서 첫 점은 보통 자기 자리다 — 그 점으로는 방향을 정할 수 없으니
+    #   **다음 점**을 본다. 이 처리가 없으면 아래 ARRIVED_EPS 검사에 걸려
+    #   정렬 회전을 통째로 건너뛰고, 로봇이 제자리에서 알아서 돌게 된다.
+    if math.hypot(fx - xy[0], fy - xy[1]) < waypoint_route.ARRIVED_EPS and len(v) >= 4:
+        try:
+            fx, fy = float(v[2]), float(v[3])
+        except ValueError:
+            return
     d = math.hypot(fx - xy[0], fy - xy[1])
     if d < waypoint_route.ARRIVED_EPS:
         return                      # 첫 경유지 위 — 방향을 정할 수 없다
