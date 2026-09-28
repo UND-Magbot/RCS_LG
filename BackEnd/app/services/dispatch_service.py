@@ -1841,6 +1841,97 @@ def _followup_destination(after: str) -> Optional[dict]:
     return None
 
 
+# 강제 종료 후 랙 아래에서 빠져나오는 거리.
+#   진입점 규약이 쓰는 1.1 m(작업지점 정후방)와 같은 수준으로 잡았다.
+#   랙 depth 0.50 + 로봇 길이 0.76 → 뒤끝이 랙 밖으로 나오는 데 0.63 m 가 필요하고,
+#   여유를 둔 값이다.
+UNLOAD_ESCAPE_M = 1.2
+
+
+def _load_any_charging_poi(area_id: Optional[int]) -> Optional[dict]:
+    """로봇에 충전소가 지정돼 있지 않을 때의 폴백 — 첫 번째 충전소 POI.
+
+    `scheduler._return_to_charger` 의 3단계 폴백과 같은 기준이다. 방향 판정에만
+    쓰므로 진입점(C1-1)이 아니라 충전소 자체 좌표면 충분하다.
+    """
+    db = SessionLocal()
+    try:
+        q = db.query(MapPOI).filter(MapPOI.poi_type == "charging",
+                                    MapPOI.is_active == True)
+        poi = q.first()
+        if poi and poi.world_x is not None:
+            return {"name": poi.name, "x": poi.world_x, "y": poi.world_y,
+                    "ori": poi.angle or 0}
+    except Exception:
+        logger.warning("[dispatch] 충전소 POI 폴백 조회 실패")
+    finally:
+        db.close()
+    return None
+
+
+def _escape_after_unload(robot_id: int, robot_ip: str, after: str, label: str) -> None:
+    """랙을 제자리에 내려놓은 직후 **랙 아래에서 직선으로 빠져나온다** (2026-09-28).
+
+    왜 필요한가 (실기 근거)
+      강제 종료는 멈춘 그 자리에서 잭다운한다 → 랙이 로봇 위에 내려앉고
+      **로봇은 랙 아래에 갇힌다.** 그 상태로 다음 이동을 걸면
+      `_move_via_waypoints` → `_face_route_start` 가 경로 첫 방향으로 돌리는데,
+      복귀는 왔던 길을 되돌아가는 것이라 그 각도가 거의 180° 다.
+        2026-09-28 10:04:15 — 제자리 회전 +169.2°
+        2026-09-28 10:08:19 — 제자리 회전 +173.4°
+      랙을 든 풋프린트는 0.95 m 사각형이라 회전이 반경 0.672 m 를 휩쓴다
+      (`_escape_after_pickup` 주석의 실측과 같은 근거). 그래서 랙 다리를 긁고,
+      결국 **회전 → 이탈 → 다시 회전** 으로 동선을 낭비했다.
+
+    무엇을 하는가
+      회전하기 **전에** 랙 밖으로 직선 이탈한다. 방향은 목적지를 보고 정한다.
+        · 목적지가 로봇 뒤쪽(각도차 > 90°)  → 후진.  되돌아가는 경우 (대부분)
+        · 목적지가 로봇 앞쪽(각도차 ≤ 90°)  → 전진.  계속 가는 방향인 경우
+      어느 쪽이든 **이탈이 곧 경로의 첫 걸음**이 되어 예상 경로를 벗어나지 않는다.
+
+    ★ 픽업 쪽(`_escape_after_pickup`)과 달리 진입점을 쓸 수 없다.
+      강제 종료는 작업지점이 아니라 **통로 한가운데**에서도 일어나기 때문이다.
+      그래서 현재 자세 기준 직선 이동(`jack_service.drive_straight`)을 쓴다.
+
+    실패해도 조용히 넘어간다 — 그 경우 종전처럼 랙 아래에서 돈다.
+    """
+    pose = _current_pose(robot_ip)
+    if pose is None:
+        logger.warning("[dispatch] %s 현재 포즈를 못 읽어 랙 이탈 생략", robot_ip)
+        return
+    # 목적지 — 예약 인계 대상(R 지점)이 있으면 그쪽, 없으면 충전소.
+    #   ※ 여기서는 방향만 쓴다. 실제 이동 목적지는 아래에서 다시 정한다.
+    dest = _followup_destination(after)
+    if not dest:
+        _robot = _load_robot(robot_id)
+        dest = _load_charging_poi(_robot) if _robot else None
+        if not dest:
+            _area = None
+            try:
+                _area = int(_robot.area_id) if (_robot and _robot.area_id) else None
+            except (TypeError, ValueError):
+                _area = None
+            dest = _load_any_charging_poi(_area)
+    if not dest:
+        logger.warning("[dispatch] %s 목적지를 몰라 랙 이탈 방향을 못 정한다 — 생략", robot_ip)
+        return
+    to_dest = math.atan2(dest["y"] - pose[1], dest["x"] - pose[0])
+    diff = math.atan2(math.sin(to_dest - pose[2]), math.cos(to_dest - pose[2]))
+    forward = abs(diff) <= math.pi / 2
+    logger.info("[dispatch] %s 랙 이탈 — %s %.2f m (현재 %.1f° → 목적지 %s 방향 %.1f°, 차 %.1f°)",
+                robot_ip, "전진" if forward else "후진", UNLOAD_ESCAPE_M,
+                math.degrees(pose[2]), dest.get("name"), math.degrees(to_dest),
+                math.degrees(diff))
+    jack_service.update_job_status(robot_ip, status="moving",
+                                   message=f"{label} — 대차 밖으로 빠져나옵니다")
+    try:
+        jack_service.drive_straight(robot_ip, UNLOAD_ESCAPE_M, forward=forward)
+    except RuntimeError:
+        raise                       # 사용자 중지는 그대로 올린다
+    except Exception as e:
+        logger.warning("[dispatch] 랙 이탈 실패(무시하고 진행): %s", e)
+
+
 def _force_followup(robot_id: int, robot_ip: str, after: str) -> None:
     label = {"reserve": "현재 JOB 강제 종료", "charge": "전체 강제 종료"}.get(after, after)
     logger.warning(f"[dispatch] ★ {label} 후속 동작 시작 — robot={robot_id} {robot_ip}")
@@ -1923,6 +2014,10 @@ def _force_followup_body(robot_id: int, robot_ip: str, after: str, label: str) -
             jack_service.jack_down(robot_ip)
         except Exception as e:
             logger.warning(f"[dispatch] 후속 동작 — 잭다운 실패(계속 진행): {e}")
+        # ★ 랙을 내려놓았으면 로봇은 지금 **랙 아래**에 있다 — 돌기 전에 빠져나온다.
+        #   예약 인계보다 **먼저** 해야 한다. 인계하면 새 워커가 곧바로 이동을
+        #   시작하고, 그 이동의 첫 동작이 다시 '랙 아래 회전' 이 되기 때문이다.
+        _escape_after_unload(robot_id, robot_ip, after, label)
 
     # 4) 목적지로 이동
     if _followup_cancelled(robot_id):

@@ -1764,6 +1764,78 @@ ROTATE_MIN_AV = 0.15       # 이보다 느리면 바퀴가 안 돈다
 ROTATE_TOL_DEG = 4.0       # 이 안에 들어오면 성공
 ROTATE_PERIOD = 0.15       # twist 재전송 주기(초). 끊기면 로봇이 곧 멈춘다
 
+# 직선 이탈 (drive_straight) — 강제 종료 후 랙 아래에서 빠져나올 때 쓴다.
+#   ⚠️ remote 모드로 직접 모는 동안에는 **서버 안전존이 속도를 걸지 못하고**,
+#     후방은 애초에 서버가 보지 않는다(좌우·후방 미감시). 그래서 거리는 짧게,
+#     속도는 안전존의 서행값(slow_speed 0.15)과 같은 값으로 묶었다.
+STRAIGHT_SPEED = 0.15      # m/s. 서행 속도와 같은 값
+STRAIGHT_TIMEOUT = 20.0    # 초. 1.2 m / 0.15 m/s = 8초 + 여유
+STRAIGHT_OK_RATIO = 0.8    # 목표 거리의 이만큼을 갔으면 성공으로 본다
+
+
+def drive_straight(robot_ip: str, distance: float, forward: bool = True,
+                   speed: float = STRAIGHT_SPEED,
+                   timeout: float = STRAIGHT_TIMEOUT) -> bool:
+    """`/twist` 로 **직선으로만** `distance`(m) 움직인다. 회전은 하지 않는다.
+
+    왜 `standard` 이동을 안 쓰는가 (2026-09-28)
+      뒤쪽 좌표를 목표로 주면 로봇이 **회전해서 전진**해버린다. 랙 아래에 있는
+      상태에서 그 회전이 바로 문제였다. 방향을 확실히 고정하려면 직접 몰아야 한다.
+
+    반환: 목표의 STRAIGHT_OK_RATIO 이상 갔으면 True. 아니면 False
+          (부르는 쪽은 종전 동작으로 폴백한다).
+    """
+    from app.routers.map import _read_tracked_pose
+
+    def _xy():
+        p = _read_tracked_pose(robot_ip, timeout=2.0)
+        if not p or not p.get("position"):
+            return None
+        return float(p["position"][0]), float(p["position"][1])
+
+    where = "전진" if forward else "후진"
+    start = _xy()
+    if start is None:
+        logger.warning("[straight] %s 현재 위치를 못 읽어 직선 이동을 건너뛴다", robot_ip)
+        return False
+    # ★ /twist 는 remote 모드에서만 먹는다 (rotate_in_place 와 같은 제약).
+    if not _set_control_mode(robot_ip, "remote"):
+        logger.warning("[straight] %s 원격 모드 전환 실패 — 직선 이동을 건너뛴다", robot_ip)
+        return False
+
+    lv = abs(speed) * (1.0 if forward else -1.0)
+    t0 = time.time()
+    moved = 0.0
+    try:
+        while time.time() - t0 < timeout:
+            _check_stop(robot_ip)
+            cur = _xy()
+            if cur is not None:
+                moved = math.hypot(cur[0] - start[0], cur[1] - start[1])
+                if moved >= distance:
+                    break
+            _twist(robot_ip, lv, 0.0)
+            time.sleep(ROTATE_PERIOD)
+    except RuntimeError:
+        try:
+            _twist(robot_ip, 0.0, 0.0)
+        except Exception:
+            pass
+        _set_control_mode(robot_ip, "auto")
+        raise                                        # 사용자 중지는 그대로 올린다
+    except Exception as e:
+        logger.warning("[straight] %s 직선 이동 실패: %s", robot_ip, e)
+    try:
+        _twist(robot_ip, 0.0, 0.0)                   # 확실히 세운다
+    except Exception:
+        pass
+    _set_control_mode(robot_ip, "auto")              # ★ 안 되돌리면 다음 주행이 안 먹는다
+    ok = moved >= distance * STRAIGHT_OK_RATIO
+    logger.info("[straight] %s %s %.2f m 이동 (목표 %.2f m, %.1f초)%s",
+                robot_ip, where, moved, distance, time.time() - t0,
+                "" if ok else " — 목표 미달")
+    return ok
+
 
 def _set_control_mode(robot_ip: str, mode: str) -> bool:
     """로봇 바퀴 제어 모드. `/twist` 는 **remote 여야 먹는다.**
