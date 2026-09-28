@@ -16,7 +16,7 @@ rem  ※ 인터넷이 필요하다. 현장 안에서는 안 된다 - 탈의실에서 실행할 것.
 rem ============================================================
 
 set BRANCH=feature/route-only-drive
-set TARGETS=BackEnd/app scripts/clock_sync.py scripts/run_probe.py scripts/fetch_bags.py .gitignore
+set TARGETS=BackEnd/app scripts/clock_sync.py scripts/run_probe.py scripts/fetch_bags.py .gitignore 현장작업
 set CFG=%~dp0사용폴더경로.txt
 
 set USEDIR=
