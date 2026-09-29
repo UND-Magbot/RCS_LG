@@ -1,0 +1,5 @@
+# bat/cmd 는 반드시 CRLF 로 받는다 (2026-09-29)
+#   서버PC 는 core.autocrlf 가 꺼져 있어 LF 로 받혔고, cmd 가 LF + 한글(cp949) bat 의
+#   줄 경계를 잘못 읽어 L1_기록시작.bat 이 조각나 실행됐다.
+*.bat text eol=crlf
+*.cmd text eol=crlf
