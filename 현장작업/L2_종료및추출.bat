@@ -1,21 +1,25 @@
 @echo off
-chcp 949 > nul
-title [L2] 로그 기록 종료 + 추출
+rem ============================================================
+rem  L2 - stop logging and export
+rem  ASCII only on purpose: no Korean, no chcp.
+rem  (2026-09-29 the Korean version broke on the field server PC -
+rem   cmd mis-read line boundaries under a different codepage.)
+rem  All Korean messages are printed by scripts\field_session.py.
+rem ============================================================
+title L2 - stop logging and export
 cd /d "%~dp0.."
-set PY=BackEndenv\Scripts\python.exe
+set PY=BackEnd\venv\Scripts\python.exe
 if not exist "%PY%" set PY=python
-if not exist "scripts\field_session.py" (
-  echo  [오류] scripts\field_session.py 가 없습니다. 0_개발분받기.bat 으로 받으세요.
-  pause
-  exit /b 1
-)
-
-echo.
-echo ============================================================
-echo  [L2] 로그 기록 종료 + 추출
-echo ============================================================
+if not exist "scripts\field_session.py" goto :missing
 echo.
 "%PY%" scripts\field_session.py stop
 echo.
-if exist "로그추출" start "" explorer "%CD%\로그추출"
+"%PY%" scripts\field_session.py open
 pause
+exit /b 0
+
+:missing
+echo  [ERROR] scripts\field_session.py not found.
+echo          git checkout FETCH_HEAD -- scripts/field_session.py
+pause
+exit /b 1

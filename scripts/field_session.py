@@ -7,6 +7,7 @@
     python scripts/field_session.py stop           기록 종료 + 추출(zip)
     python scripts/field_session.py bags           마지막 세션의 로봇 bag 만 다시 받고 zip 갱신
     python scripts/field_session.py status
+    python scripts/field_session.py open           로그추출 폴더 열기
 
     현장작업\\L1_기록시작.bat · L2_종료및추출.bat · L3_bag다시받기.bat 가 이걸 부른다.
     현장콘솔(field_console) 의 [기록 시작]/[표시]/[종료·추출] 버튼도 같은 함수를 쓴다.
@@ -714,6 +715,8 @@ def start(log=print, ip: str | None = None) -> dict:
     log("  · 서버PC 앞  → 주행 기록기 창에서 [스페이스바]")
     log("  · 로봇 옆    → 폰으로 현장콘솔 열고 [비이상적 정지] 버튼")
     log("끝나면 L2_종료및추출.bat (또는 현장콘솔 [종료·추출])")
+    log("")
+    log("이 창은 닫아도 됩니다. 새로 열린 검은 창(주행 기록기)만 닫지 마세요.")
     return {"ok": True, "dir": d, "id": sid}
 
 
@@ -852,6 +855,13 @@ def main() -> int:
         print("표시 %s (%s건째)" % (r.get("ts"), r.get("count")) if r.get("ok") else r["msg"])
     elif cmd == "bags":
         r = bags()
+    elif cmd == "open":                    # bat 에 한글 경로를 못 쓰므로 여기서 연다
+        if os.path.isdir(ZIPDIR):
+            try:
+                os.startfile(ZIPDIR)
+            except Exception:
+                pass
+        r = {"ok": True}
     else:
         r = status()
         print(json.dumps(r, ensure_ascii=False, indent=1))

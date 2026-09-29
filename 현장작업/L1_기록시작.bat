@@ -1,24 +1,24 @@
 @echo off
-chcp 949 > nul
-title [L1] 로그 기록 시작
+rem ============================================================
+rem  L1 - start logging
+rem  ASCII only on purpose: no Korean, no chcp.
+rem  (2026-09-29 the Korean version broke on the field server PC -
+rem   cmd mis-read line boundaries under a different codepage.)
+rem  All Korean messages are printed by scripts\field_session.py.
+rem ============================================================
+title L1 - start logging
 cd /d "%~dp0.."
-set PY=BackEndenv\Scripts\python.exe
+set PY=BackEnd\venv\Scripts\python.exe
 if not exist "%PY%" set PY=python
-if not exist "scripts\field_session.py" (
-  echo  [오류] scripts\field_session.py 가 없습니다. 0_개발분받기.bat 으로 받으세요.
-  pause
-  exit /b 1
-)
-
-echo.
-echo ============================================================
-echo  [L1] 로그 기록 시작
-echo ============================================================
+if not exist "scripts\field_session.py" goto :missing
 echo.
 "%PY%" scripts\field_session.py start
 echo.
-echo ------------------------------------------------------------
-echo  이 창은 닫아도 됩니다. 기록은 계속됩니다.
-echo  새로 열린 검은 창(주행 기록기)은 닫지 마세요.
-echo ------------------------------------------------------------
 pause
+exit /b 0
+
+:missing
+echo  [ERROR] scripts\field_session.py not found.
+echo          git checkout FETCH_HEAD -- scripts/field_session.py
+pause
+exit /b 1
