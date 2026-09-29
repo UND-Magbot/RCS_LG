@@ -9,6 +9,6 @@ $env:DB_PASSWORD="1234"       # 로컬 MariaDB root 비번 (구 unde5466 는 원
 # 로그 폴더 (없으면 uvicorn 이 시작 시 에러남)
 if (-not (Test-Path "$PSScriptRoot\_logs")) { New-Item -ItemType Directory "$PSScriptRoot\_logs" | Out-Null }
 
-# --log-config : 화면 출력 유지 + _logs\backend.log 에 동시 기록(10MB x 5 자동순환).
+# --log-config : 화면 출력 형식만 정한다. 파일 기록은 app/main.py 한 곳에서 한다(2026-09-29 순환 실패 방지).
 #                uvicorn 리로더 부모까지 적용돼 "Reloading" 메시지도 파일에 남는다.
 & "$PSScriptRoot\venv\Scripts\python.exe" -m uvicorn app.main:app --reload --reload-exclude "_logs/*" --host 0.0.0.0 --port 8002 --log-config "$PSScriptRoot\log_config.json"

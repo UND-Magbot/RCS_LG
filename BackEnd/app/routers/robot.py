@@ -672,7 +672,7 @@ def _cancel_followup_for(robot_ip: str, why: str) -> None:
                 # 안 기다리면 이 명령의 첫 이동이 그 플래그에 걸려 취소된다.
                 import time as _t
                 deadline = _t.time() + 3.0
-                while _t.time() < deadline and dispatch_service.is_robot_busy(r.id):
+                while _t.time() < deadline and dispatch_service.is_followup_running(r.id):
                     _t.sleep(0.1)
                 try:
                     from app.services.jack_service import clear_stop_flag, resume_robot_job
@@ -742,6 +742,20 @@ def api_send_twist(robot_ip: str, body: dict):
     import json as _json
     lv = body.get("linear_velocity", 0)
     av = body.get("angular_velocity", 0)
+    # ★ 2026-09-29 — 잭이 움직이는 중이면 조이스틱 이동도 받지 않는다(정지 명령 0,0 은 통과).
+    #   서버의 잭 명령이 진행 중(잠금 보유)이거나 잭 멈춤을 아직 확인 못 한 경우다.
+    #   jack_service._motion_guard 주석 참조 — 달리면서 랙을 내리는 사고를 막는 관문이다.
+    if lv or av:
+        from app.services import jack_service as _js
+        _lk = _js._motion_lock(robot_ip)
+        if not _lk.acquire(blocking=False):
+            raise HTTPException(status_code=409, detail="잭 동작 중입니다 — 끝난 뒤 움직이세요")
+        try:
+            if not _js.jack_settled(robot_ip):
+                raise HTTPException(status_code=409,
+                                    detail="잭 멈춤을 확인하지 못했습니다 — 잭 상태를 먼저 확인하세요")
+        finally:
+            _lk.release()
     payload = _json.dumps({"topic": "/twist", "linear_velocity": lv, "angular_velocity": av})
 
     # 유지 중인 연결로 전송 → 실패(끊김)면 1회 재연결 후 재시도
@@ -936,10 +950,23 @@ def api_stop_all(robot_ip: str):
     except Exception:
         pass
     # 3) 잭이 올라가 있으면 잭 다운
+    #   ★ 2026-09-29 — 로봇에 직접 쏘지 않고 jack_service.jack_down 을 쓴다.
+    #     종전에는 취소 직후 곧바로 잭다운을 보내고 완료 확인 없이 '적재 해제' 로
+    #     표시했다. jack_service 경로는 ① 로봇이 멈춘 뒤에 보내고 ② 내림 완료를
+    #     확인할 때까지 **이동 명령을 막는다**(_motion_guard). 응답을 늦추지 않도록
+    #     별도 스레드에서 한다. 스레드가 돌기 전에 들어오는 이동도 막히게 먼저 표시한다.
     try:
-        req.post(f"http://{robot_ip}:8090/services/jack_down", json={}, timeout=10)
+        import threading as _th
         from app.services import jack_service
-        jack_service.set_laden(robot_ip, False)   # 2단 속도 플래그도 같이 내린다
+        jack_service._jack_unconfirmed.add(robot_ip)
+
+        def _down():
+            try:
+                jack_service.jack_down(robot_ip)
+            except Exception as e:
+                logging.getLogger(__name__).warning(f"[stop-all] {robot_ip} 잭다운 실패: {e}")
+
+        _th.Thread(target=_down, name=f"stop-all-jack-{robot_ip}", daemon=True).start()
     except Exception:
         pass
     return {"ok": True, "message": "모든 작업이 정지되었습니다"}

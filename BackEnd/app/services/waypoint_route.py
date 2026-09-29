@@ -198,6 +198,10 @@ ENTRY_CANDIDATES = 2
 #   복귀 우회는 후보 수가 아니라 **`C<n>-2` 를 통로 쪽에 제대로 찍어서** 푼다.
 CHARGER_ENTRY_CANDIDATES = 2
 
+# 통로 위 판정 폭(m) — 경유지 두 점을 잇는 선에서 좌우로 이만큼 안이면 '그 통로 위' 로 본다.
+#   현장 통로 폭 2~3 m 의 절반 수준. 강제 종료로 통로 한가운데 선 로봇이 여기에 든다.
+ON_SEGMENT_M = 1.5
+
 # 진입·이탈 구간에 붙이는 가중치. 1보다 크면 **체인을 따라가는 쪽을 선호**한다.
 # 같은 거리일 때 통로를 타도록 하는 것 — 통로가 곧 사용자가 지정한 길이기 때문이다.
 ENTRY_PENALTY = 1.2
@@ -454,12 +458,48 @@ def _shortest(meta, wps: list[dict], sx: float, sy: float,
     #    모든 경유지에 붙이면 직선이 항상 더 짧아 체인을 통째로 건너뛴다.
     #    후보가 여럿이면 어디로 들어갈지는 최단경로가 정한다 —
     #    그래서 충전소에서는 코너 쪽으로, 복귀 중이면 방금 지난 경유지로 들어간다.
-    def attach(node: int, px: float, py: float, k: int) -> None:
+    def attach(node: int, px: float, py: float, k: int, on_segment: bool = False) -> None:
         cand = sorted((d(px, py, w["x"], w["y"]), i) for i, w in enumerate(wps))
+        done = set()
         for dd, i in cand[:k]:
             add(node, i, dd * ENTRY_PENALTY)
+            done.add(i)
+        # ★ 2026-09-29 — **통로 위에 있으면 그 구간의 양 끝을 모두 후보로** 넣는다.
+        #
+        #   현장 사고(상황 2): 맵 30 은 W5—W6 가 42 m 짜리 한 구간이다. 강제 종료로
+        #   그 한가운데(W5 에서 6.4 m)에 섰는데, 가장 가까운 2개가 **뒤쪽 W5·W4** 였다.
+        #   앞쪽 W6(36 m)은 후보에 없어서 R2 로 가는 경로가
+        #     현재 → W5(뒤로 6.4 m) → W6 → R2   (U턴)
+        #   가 됐다. 로봇이 이미 올라탄 통로의 앞쪽 끝을 모르는 것이다.
+        #
+        #   구간 위(투영점이 구간 안쪽, 좌우 ON_SEGMENT_M 이내)면 그 구간의 두 끝을
+        #   붙인다. 그 선이 곧 사용자가 찍은 통로라 벽을 건너뛸 위험이 없고,
+        #   어느 쪽으로 갈지는 최단경로가 정한다. 통로 밖(충전소·작업지점 옆)에서
+        #   출발하면 종전과 같다.
+        #
+        #   **출발 쪽에만** 쓴다. 목표 쪽에 쓰면 목표 옆 통로 끝의 경유지를 건너뛰는
+        #   경로가 생긴다(구 맵 27 에서 C1-1 로 갈 때 W5 를 건너뜀 — 현장 요구
+        #   '경유지는 무조건 지난다' 와 어긋난다). 문제는 멈춘 로봇의 위치에서만 났다.
+        if not on_segment:
+            return
+        for i in range(n - 1):
+            ax, ay = wps[i]["x"], wps[i]["y"]
+            bx, by = wps[i + 1]["x"], wps[i + 1]["y"]
+            L2 = (bx - ax) ** 2 + (by - ay) ** 2
+            if L2 < 1e-6:
+                continue
+            t = ((px - ax) * (bx - ax) + (py - ay) * (by - ay)) / L2
+            if not (0.0 < t < 1.0):
+                continue
+            qx, qy = ax + t * (bx - ax), ay + t * (by - ay)
+            if d(px, py, qx, qy) > ON_SEGMENT_M:
+                continue
+            for j in (i, i + 1):
+                if j not in done:
+                    add(node, j, d(px, py, wps[j]["x"], wps[j]["y"]) * ENTRY_PENALTY)
+                    done.add(j)
 
-    attach(START, sx, sy, ec_start or ENTRY_CANDIDATES)
+    attach(START, sx, sy, ec_start or ENTRY_CANDIDATES, on_segment=True)
     attach(GOAL, tx, ty, ec_goal or ENTRY_CANDIDATES)
 
     # ③ 사이가 통로면 **직행 변**을 그래프에 넣는다. 경유지를 찍으러 되돌아가는

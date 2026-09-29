@@ -402,8 +402,9 @@ def slice_backend(d: str, t0: float, t1: float, log) -> dict:
     if not ld:
         res["error"] = "backend.log 를 못 찾음 (BackEnd/_logs)"
         return res
+    # 오래된 순환 파일부터 (2026-09-29 순환 개수 3 → 5)
     files = [os.path.join(ld, n) for n in
-             ("backend.log.3", "backend.log.2", "backend.log.1", "backend.log")]
+             [f"backend.log.{i}" for i in range(9, 0, -1)] + ["backend.log"]]
     files = [f for f in files if os.path.exists(f)]
     lo, hi = t0 - 30, t1 + 30
     y = time.localtime(t0).tm_year

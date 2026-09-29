@@ -301,6 +301,13 @@ RCS_LG/
 - **`/tracked_pose` 에는 `speed` 필드가 없다**(AutoXing 문서 명시). 속도는 연속 포즈의 **위치 차분**으로 구한다
 - **오디오는 8090 REST 가 아니라 `ws://로봇:9000`** — 장치 볼륨(`setVoice`)은 **mode 마다 별개 값**이다
   (mode 1 상위기 / 2 섀시). 로봇은 **WAV URL 을 재생하지 않는다**(mp3 만)
+- **로봇 이동과 잭은 동시에 나가면 안 된다 — 반드시 `jack_service` 관문을 거칠 것** (2026-09-29 현장 사고:
+  강제 종료 뒤 0.8 m/s 로 달리면서 랙을 내림). 이동 명령은 `robot_post(ip, "/chassis/moves")`,
+  잭은 `jack_service.jack_up/jack_down`, 직접 제어는 `drive_straight/rotate_in_place` 만 쓴다.
+  이들이 로봇별 잠금(`_motion_lock`)을 공유해서 잭 동작 중 이동을 막는다. **로봇에 `requests.post` 로
+  직접 쏘지 말 것.** 검증은 `tests/test_force_stop_jack.py` (현장 속도 기본값, 약 30분)
+- **강제 종료 뒤 로봇을 움직이는 것은 후속 처리(`_force_followup`) 하나뿐이다.** 워커는 어떤 강제 종료에서도
+  예약을 이어받지 않는다(`no_takeover`). 후속 처리가 잭 내림 완료를 확인하고 빠져나온 뒤에 넘긴다
 - 커밋은 기능 단위로, 되돌릴 수 있게 자주
 
 ```bash

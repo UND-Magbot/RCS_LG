@@ -493,7 +493,44 @@ def is_robot_busy(robot_id: int) -> bool:
             return True
     # 충전소 복귀 · 강제 복귀 — 라우터가 스레드로 돌린다
     with _manual_move_lock:
-        return robot_id in _manual_move_robots
+        if robot_id in _manual_move_robots:
+            return True
+    # ★ 2026-09-29 — 작업 없이 서 있는데 **랙을 들고 있거나 잭 정지를 확인 못 한** 로봇.
+    #   하차 중 잭 내림을 확인하지 못해 멈춘 경우, [그 자리 정지] 로 랙을 든 채 선 경우가
+    #   여기에 든다. 새 작업은 R 에서 랙을 드는 것부터 시작하므로, 이미 들고 있거나
+    #   잭이 어정쩡한 로봇에게 주면 안 된다. 원격제어 잭다운(완료 확인)이나
+    #   강제 종료 후속 처리가 끝나면 풀린다.
+    return _held_by_jack(robot_id)
+
+
+def _held_by_jack(robot_id: int) -> bool:
+    try:
+        robot = _load_robot(robot_id)
+        ip = robot.ip_address if robot else None
+    except Exception:
+        return False
+    if not ip:
+        return False
+    try:
+        if jack_service.is_laden(ip) or not jack_service.jack_settled(ip):
+            # 콘솔이 몇 초마다 가용을 물으므로 info 로 찍으면 로그가 덮인다
+            logger.debug("[dispatch] robot=%s 배차 제외 — 랙을 든 채 서 있거나 잭 정지 미확인 "
+                        "(적재=%s, 잭확인=%s)", robot_id, jack_service.is_laden(ip),
+                        jack_service.jack_settled(ip))
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def is_followup_running(robot_id: int) -> bool:
+    """강제 종료 후속 처리가 이 로봇에서 도는 중인가 (is_robot_busy 보다 좁다).
+
+    2026-09-29 — is_robot_busy 가 '랙을 든 채 정지' 도 바쁨으로 보게 되면서,
+    '후속 처리가 빠질 때까지만' 기다려야 하는 곳은 이것을 쓴다.
+    """
+    with _followup_lock:
+        return robot_id in _followup_robots
 
 
 def has_active_worker(robot_id: int) -> bool:
@@ -1765,11 +1802,27 @@ def force_clear(robot_id: int, after: str = "hold") -> tuple[bool, str]:
     """
     worker = _get_worker(robot_id)
     if worker:
+        # ★ 2026-09-29 현장 사고 — 강제 종료 뒤 로봇을 움직이는 주체가 둘이 됐다.
+        #   종전에는 [현재 JOB 강제 종료]에서 워커가 죽으면서(finally) **곧바로 대기
+        #   예약을 물어 새 작업을 시작**했다. 동시에 후속 처리 스레드는 '워커가 빠지길'
+        #   기다렸다가 잭다운을 보냈는데, 그 사이 생긴 **새 워커를 옛 워커로 착각**하고
+        #   10초를 채운 뒤 **달리는 로봇에 잭다운**을 보냈다.
+        #     14:58:39 취소 → 14:58:42 랙을 든 채 R1 로 출발 → 14:58:55 잭다운(0.8 m/s 주행 중)
+        #
+        #   이제 규칙은 하나다 — **강제 종료 뒤 로봇을 움직이는 것은 후속 처리뿐이다.**
+        #     ① 워커는 어떤 강제 종료에서도 예약을 이어받지 않는다(no_takeover)
+        #     ② 후속 처리가 랙을 내려놓고(완료 확인) 빠져나온 **뒤에** 예약을 넘긴다
+        #     ③ 그 사이 다른 배차가 붙지 않도록 **지금 즉시** '후속 처리 중' 으로 표시한다
+        #        (종전에는 후속 스레드가 뜬 뒤에 표시해서, 워커 finally 와 경합했다)
+        if after != "hold" and worker.robot_ip:
+            with _followup_lock:
+                _followup_robots.add(robot_id)
         worker.abort_flag = True
         worker.end_flag = True  # 대기 루프를 깨워 종료로 진입시킴 (abort_flag 로 복귀 스킵)
-        # "charge" = [전체 강제 종료] — 현재 작업과 **예약된 작업 전부** 종료다.
-        # 이 표시가 없으면 워커가 죽으면서 대기 예약을 물어 새 작업을 시작한다.
-        worker.no_takeover = (after == "charge")
+        # 워커가 죽으면서 대기 예약을 물어 새 작업을 시작하지 않게 한다 — 위 ① 참조.
+        #   "charge" 는 원래부터 그랬고, "reserve" 는 후속 처리가 넘긴다.
+        #   "hold"(그 자리 정지)도 로봇이 서 있어야 하는 것이므로 이어받지 않는다.
+        worker.no_takeover = True
         # 이동 중이거나 일시정지 중이면 아래 두 이벤트로는 깨울 수 없다.
         #   - 이동 중      : safe_move 안에서 로봇 응답을 기다리는 중
         #   - 일시정지 중  : _wait_if_paused() 폴링 루프에 갇혀 있음
@@ -1831,7 +1884,7 @@ def force_clear(robot_id: int, after: str = "hold") -> tuple[bool, str]:
             logger.warning(f"[dispatch] force_clear — 속도 복구 실패: {e}")
         worker.next_event.set()
         worker.confirm_event.set()
-        _start_force_followup(robot_id, worker.robot_ip, after)
+        _start_force_followup(robot_id, worker.robot_ip, after, old_worker=worker)
         return True, "ok"
     # 워커 없음 — DB 활성 세션만 정리
     ip = None
@@ -1852,10 +1905,14 @@ def force_clear(robot_id: int, after: str = "hold") -> tuple[bool, str]:
 
 
 # 강제 종료 후속 동작 — 워커가 빠져나가기를 기다리는 최대 시간
-FOLLOWUP_WORKER_WAIT_SEC = 10.0
+#   2026-09-29 — 10 → 60초. 워커는 잭 완료 대기(최대 25초 + 재확인 15초)와
+#   안정화 대기(8초) 중에는 중지 신호를 못 본다. 10초로는 워커가 살아 있는 채로
+#   후속 처리가 로봇을 움직이기 시작했다. 넘겨도 이제는 진행하지 않고 멈춘다.
+FOLLOWUP_WORKER_WAIT_SEC = 60.0
 
 
-def _start_force_followup(robot_id: int, robot_ip: Optional[str], after: str) -> None:
+def _start_force_followup(robot_id: int, robot_ip: Optional[str], after: str,
+                          old_worker: Optional["_Worker"] = None) -> None:
     """강제 종료 뒤 '랙 놓기 → 이동' 을 **별도 스레드**에서 수행한다.
 
     왜 스레드인가
@@ -1868,10 +1925,46 @@ def _start_force_followup(robot_id: int, robot_ip: Optional[str], after: str) ->
     if after == "hold" or not robot_ip:
         return
     try:
-        safe_thread(target=_force_followup, args=(robot_id, robot_ip, after),
+        safe_thread(target=_force_followup, args=(robot_id, robot_ip, after, old_worker),
                     name=f"force-followup-{robot_ip}").start()
     except Exception:
         logger.exception(f"[dispatch] 강제 종료 후속 스레드 시작 실패 robot={robot_id}")
+        with _followup_lock:
+            _followup_robots.discard(robot_id)      # force_clear 가 미리 세운 표시를 걷는다
+
+
+def _halt_followup(robot_id: int, robot_ip: str, after: str, label: str,
+                   reason: str, notify: bool = True) -> None:
+    """후속 처리를 **로봇을 움직이지 않고** 끝낸다 (2026-09-29).
+
+    잭 내림을 확인하지 못했거나, 이전 작업이 끝나지 않아 로봇을 누가 쥐고 있는지
+    불확실할 때 쓴다. 이탈·다음 작업·충전소 복귀를 **하지 않는다.**
+    대기 예약은 그대로 남는다 — 사람이 확인한 뒤 원격제어로 정리한다.
+    """
+    logger.error("[dispatch] ★ %s 후속 동작 중단 — %s. 로봇 %s 을(를) 그 자리에 세운다",
+                 label, reason, robot_ip)
+    try:
+        jack_service.update_job_status(robot_ip, status="error",
+                                       message=f"{label} — {reason}. 현장 확인 필요")
+    except Exception:
+        pass
+    if not notify:
+        return
+    try:
+        robot = _load_robot(robot_id)
+        name = (robot.name if robot else None) or f"robot {robot_id}"
+        head = "현재 작업을 중지했습니다" if after == "reserve" else "작업을 전부 중지했습니다"
+        msg = "\n".join([
+            f"⚠ [{name}] {head}.",
+            f"{reason} — 로봇을 그 자리에 세웠습니다.",
+            "현장에서 로봇과 대차 상태를 확인한 뒤 원격제어로 정리해 주세요.",
+        ])
+        kind = (notice_service.KIND_JOB_FORCE_CLEAR if after == "reserve"
+                else notice_service.KIND_JOB_FORCE_CLEAR_ALL)
+        notice_service.push(kind, msg, targets=force_clear_notice_targets(),
+                            ack_required=True, key=f"force_clear_r{robot_id}")
+    except Exception:
+        logger.exception("[dispatch] 후속 동작 중단 알림 실패")
 
 
 def _followup_destination(after: str) -> Optional[dict]:
@@ -1997,14 +2090,47 @@ def _escape_after_unload(robot_id: int, robot_ip: str, after: str, label: str) -
     jack_service.update_job_status(robot_ip, status="moving",
                                    message=f"{label} — 대차 밖으로 빠져나옵니다(전진)")
     try:
-        jack_service.drive_straight(robot_ip, UNLOAD_ESCAPE_M, forward=True)
+        ok = jack_service.drive_straight(robot_ip, UNLOAD_ESCAPE_M, forward=True)
     except RuntimeError:
         raise                       # 사용자 중지는 그대로 올린다
     except Exception as e:
-        logger.warning("[dispatch] 랙 이탈 실패(무시하고 진행): %s", e)
+        logger.warning("[dispatch] 랙 이탈 실패: %s", e)
+        ok = False
+    if not ok:
+        # ★ 2026-09-29 — /twist 가 안 먹는 로봇(현장 longjack)은 위 직선 이동을
+        #   건너뛴다. 종전에는 그대로 넘어가서 **로봇이 랙 아래에 남고**, 다음 이동이
+        #   랙 아래에서 180° 돌았다(현장 상황 1·2).
+        #   대신 **현재 방향 그대로** 앞 지점을 **같은 방향**으로 준다. 목표 방향이
+        #   지금 방향과 같으므로 회전할 이유가 없다 — 정상 하차 이탈과 같은 방식이다.
+        _escape_forward_move(robot_ip, pose, UNLOAD_ESCAPE_M, label)
 
 
-def _force_followup(robot_id: int, robot_ip: str, after: str) -> None:
+def _escape_forward_move(robot_ip: str, pose, dist: float, label: str) -> bool:
+    """현재 자세 기준 `dist` m 앞을 **현재 방향 그대로** 목표로 주는 일반 이동.
+
+    `pose` = (x, y, ori). 회전 없이 전진으로 빠져나오게 하는 것이 목적이다.
+    실패하면 False — 호출부는 계속 진행한다(종전 동작).
+    """
+    x, y, ori = pose
+    fx, fy = x + dist * math.cos(ori), y + dist * math.sin(ori)
+    logger.info("[dispatch] %s 랙 이탈(대체) — 현재 방향 %.1f° 그대로 %.2f m 앞 (%.2f, %.2f)",
+                robot_ip, math.degrees(ori), dist, fx, fy)
+    jack_service.update_job_status(robot_ip, status="moving",
+                                   message=f"{label} — 대차 밖으로 빠져나옵니다(전진)")
+    try:
+        r = jack_service.safe_move(robot_ip, "standard", fx, fy, ori,
+                                   max_attempts=2, timeout=40,
+                                   poll=jack_service.POLL_INTERVAL_SHORT)
+        return str(r.get("state", "")).lower() == "succeeded"
+    except RuntimeError:
+        raise
+    except Exception as e:
+        logger.warning("[dispatch] 랙 이탈(대체) 실패(무시하고 진행): %s", e)
+        return False
+
+
+def _force_followup(robot_id: int, robot_ip: str, after: str,
+                    old_worker: Optional["_Worker"] = None) -> None:
     label = {"reserve": "현재 JOB 강제 종료", "charge": "전체 강제 종료"}.get(after, after)
     logger.warning(f"[dispatch] ★ {label} 후속 동작 시작 — robot={robot_id} {robot_ip}")
     # 이 스레드가 도는 동안 로봇은 랙을 내려놓고 충전소로 간다 — **바쁘다.**
@@ -2015,7 +2141,7 @@ def _force_followup(robot_id: int, robot_ip: str, after: str) -> None:
         _followup_cancel.discard(robot_id)
         _followup_to_charger.discard(robot_id)
     try:
-        _force_followup_body(robot_id, robot_ip, after, label)
+        _force_followup_body(robot_id, robot_ip, after, label, old_worker)
     finally:
         with _followup_lock:
             was_cancelled = robot_id in _followup_cancel
@@ -2034,12 +2160,30 @@ def _force_followup(robot_id: int, robot_ip: str, after: str) -> None:
                 pass
 
 
-def _force_followup_body(robot_id: int, robot_ip: str, after: str, label: str) -> None:
+def _force_followup_body(robot_id: int, robot_ip: str, after: str, label: str,
+                         old_worker: Optional["_Worker"] = None) -> None:
 
-    # 1) 워커가 완전히 빠질 때까지 대기 (안 빠져도 계속 진행한다)
-    deadline = time.time() + FOLLOWUP_WORKER_WAIT_SEC
-    while time.time() < deadline and _get_worker(robot_id) is not None:
-        time.sleep(0.3)
+    # 1) **그 워커**가 완전히 빠질 때까지 대기 (2026-09-29)
+    #   종전에는 `_get_worker(robot_id) is not None` 으로 봤다. 그래서 워커가 죽으면서
+    #   만든 **새 워커**를 옛 워커로 착각해 10초를 채우고, 새 워커가 달리는 중에
+    #   잭다운을 보냈다. 이제는 넘겨받은 그 객체가 사라지는지를 본다.
+    #   워커는 잭 완료 대기(최대 25초+재확인 15초)와 안정화 대기(8초) 중일 수 있어
+    #   상한을 넉넉히 둔다. 그래도 안 빠지면 **움직이지 않는다** — 주체가 둘이 된다.
+    if old_worker is not None:
+        deadline = time.time() + FOLLOWUP_WORKER_WAIT_SEC
+        while time.time() < deadline and _get_worker(robot_id) is old_worker:
+            time.sleep(0.3)
+        if _get_worker(robot_id) is old_worker:
+            _halt_followup(robot_id, robot_ip, after, label,
+                           f"이전 작업이 {FOLLOWUP_WORKER_WAIT_SEC:.0f}초 안에 끝나지 않았다")
+            return
+    other = _get_worker(robot_id)
+    if other is not None and other is not old_worker:
+        # 강제 종료 중에는 배차가 붙지 않아야 한다(_followup_robots). 그래도 붙었으면
+        # 그 워커가 로봇을 쥐고 있으므로 후속 처리는 로봇을 건드리지 않는다.
+        _halt_followup(robot_id, robot_ip, after, label,
+                       "다른 작업이 이미 로봇을 쓰고 있다", notify=False)
+        return
 
     # 2) 중지 플래그를 걷어낸다 — 안 걷으면 아래 이동이 즉시 취소된다
     try:
@@ -2085,7 +2229,14 @@ def _force_followup_body(robot_id: int, robot_ip: str, after: str, label: str) -
             # 사용자가 화면 앞에서 기다리는 경로라 불필요한 10초를 얹지 않는다.
             jack_service.jack_down(robot_ip)
         except Exception as e:
-            logger.warning(f"[dispatch] 후속 동작 — 잭다운 실패(계속 진행): {e}")
+            logger.warning(f"[dispatch] 후속 동작 — 잭다운 명령 실패: {e}")
+        # ★ 2026-09-29 — 내림 완료를 확인하지 못했으면 **여기서 멈춘다.**
+        #   종전에는 "잭다운 실패(계속 진행)" 로 이탈·다음 작업까지 나갔다.
+        #   반쯤 내려온 랙을 끌고 가는 것보다 그 자리에 서서 사람을 부르는 게 낫다.
+        if not jack_service.jack_settled(robot_ip):
+            _halt_followup(robot_id, robot_ip, after, label,
+                           "랙 내림 완료를 확인하지 못했다")
+            return
         # ★ 랙을 내려놓았으면 로봇은 지금 **랙 아래**에 있다 — 돌기 전에 빠져나온다.
         #   예약 인계보다 **먼저** 해야 한다. 인계하면 새 워커가 곧바로 이동을
         #   시작하고, 그 이동의 첫 동작이 다시 '랙 아래 회전' 이 되기 때문이다.
@@ -3376,12 +3527,40 @@ def _dropoff_at_poi(worker: _Worker, poi: dict) -> None:
     """
     _jack_down_step(worker, label=f"잭 다운 — {poi['name']} 하차")
 
+    # ★ 2026-09-29 — 내림 완료를 확인하지 못했으면 **이탈하지 않고 멈춘다.**
+    #   종전에는 경고만 남기고 이탈·다음 작업으로 넘어갔다. 반쯤 내려온 랙 아래에서
+    #   움직이면 랙을 끌고 간다. 이 워커는 예약을 이어받지 않게 하고 빠져나간다 —
+    #   이어받으면 멈춰야 할 로봇이 곧바로 다시 출발한다. 적재 표시가 남아 있어
+    #   사람이 확인하기 전에는 새 배차도 붙지 않는다(_busy_robot_ids 참조).
+    if not jack_service.jack_settled(worker.robot_ip):
+        worker.no_takeover = True
+        msg = f"{poi['name']} 하차 — 랙 내림 완료를 확인하지 못해 멈춥니다. 현장 확인 필요"
+        jack_service.update_job_status(worker.robot_ip, status="error", message=msg)
+        raise jack_service.JackBusy(msg)
+
     jack_service.update_job_status(worker.robot_ip, message="랙 아래에서 이탈 중")
-    fx = poi["x"] + RACK_ESCAPE_M * math.cos(poi["ori"])
-    fy = poi["y"] + RACK_ESCAPE_M * math.sin(poi["ori"])
+    # ★ 2026-09-29 — 이탈 방향을 POI 방향이 아니라 **로봇의 지금 방향**으로 잡는다.
+    #   POI 방향으로 주면 실제 자세가 조금만 달라도 로봇이 **랙 아래에서 먼저 돈 뒤**
+    #   전진한다(강제 종료 쪽 `drive_straight` 주석과 같은 문제). 지금 방향 그대로
+    #   앞 지점을 주면 회전할 이유가 없다. 포즈를 못 읽으면 종전대로 POI 기준.
+    pose = _current_pose(worker.robot_ip)
+    if pose is not None:
+        dev = math.degrees(math.atan2(math.sin(pose[2] - poi["ori"]),
+                                      math.cos(pose[2] - poi["ori"])))
+        logger.info(f"[delivery] {poi['name']} 이탈 — 지금 방향 {math.degrees(pose[2]):.1f}° "
+                    f"그대로 전진 (POI 방향과 차 {dev:+.1f}°)")
+        ex_ori = pose[2]
+        fx = pose[0] + RACK_ESCAPE_M * math.cos(ex_ori)
+        fy = pose[1] + RACK_ESCAPE_M * math.sin(ex_ori)
+    else:
+        ex_ori = poi["ori"]
+        fx = poi["x"] + RACK_ESCAPE_M * math.cos(ex_ori)
+        fy = poi["y"] + RACK_ESCAPE_M * math.sin(ex_ori)
     try:
-        jack_service.safe_move(worker.robot_ip, "standard", fx, fy, poi["ori"],
+        jack_service.safe_move(worker.robot_ip, "standard", fx, fy, ex_ori,
                                max_attempts=6, timeout=60, poll=jack_service.POLL_INTERVAL_SHORT)
+    except jack_service.JackBusy:
+        raise                       # 잭 정지를 확인 못 했다 — 움직이지 않고 멈춘다
     except Exception as e:
         logger.warning(f"[delivery] 전진 이탈 실패(무시): {e}")
 
@@ -3660,9 +3839,10 @@ def _worker_loop_delivery(worker: _Worker, *, first_j_poi_id: int) -> None:
         except Exception:
             pass
         _remove_worker(worker.robot_id)
-        # ★ [전체 강제 종료] 로 끊긴 것이면 예약을 이어받지 않는다 (위 주석 참조)
+        # ★ 강제 종료로 끊긴 것이면 예약을 이어받지 않는다 — 후속 처리가 랙을 내려놓은 뒤 넘긴다
+        #   (2026-09-29 — force_clear 주석 참조. 종전에는 [전체 강제 종료]만 그랬다)
         if getattr(worker, "no_takeover", False):
-            logger.info("[delivery] 전체 강제 종료 — robot=%s 예약 이어받기 건너뜀",
+            logger.info("[delivery] 강제 종료·하차 중단 — robot=%s 워커는 예약을 이어받지 않는다",
                         worker.robot_id)
         else:
             try:

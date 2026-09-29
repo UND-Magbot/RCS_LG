@@ -17,18 +17,85 @@ from fastapi import FastAPI
 #
 #   10 MB 가 차면 backend.log.1 … .3 으로 밀리고 그 이상은 지워진다.
 #   최대 사용량은 약 40 MB 로 묶인다.
+#
+# ★ 2026-09-29 — 현장 로그가 **14:41 에 멈춰 그 뒤 한 줄도 안 남았다.**
+#   backend.log 를 **세 곳이 동시에 열고** 있었다.
+#     ① uvicorn --reload 감시(부모) 프로세스 — log_config.json 의 file 핸들러
+#     ② 서버(자식) 프로세스 — 같은 log_config.json 의 file 핸들러
+#     ③ 서버 프로세스 — 아래 이 파일의 RotatingFileHandler
+#   Windows 는 남이 열어 둔 파일의 이름을 못 바꾼다. 10 MB 가 차서 순환(이름 바꾸기)
+#   하려는 순간 실패하고, 그 뒤로는 기록이 계속 실패한다. 현장 파일이 정확히
+#   10,485,744 바이트에서 멈춰 있었다.
+#   → log_config.json 에서 파일 핸들러를 뺐고(콘솔만), **이 파일에서 한 번만** 연다.
+#     그래도 이름 바꾸기가 실패하면 '복사 후 비우기' 로 순환한다(_SafeRotatingFileHandler).
+#   시각 형식은 `월-일 시:분:초` — 진단 도구(drive_log·field_session)가 날짜를 읽는다.
 _LOG_DIR = Path(__file__).resolve().parent.parent / "_logs"
 _LOG_DIR.mkdir(parents=True, exist_ok=True)
 
+
+class _SafeRotatingFileHandler(RotatingFileHandler):
+    """이름 바꾸기가 막혀도(Windows 파일 잠금) 순환이 멈추지 않는 핸들러."""
+
+    def doRollover(self):
+        try:
+            super().doRollover()
+            return
+        except OSError:
+            pass
+        # 대체 순환 — 뒤에서부터 복사로 밀고, 현재 파일은 비운다.
+        #   ※ 표준 doRollover 는 이름을 바꾸기 **전에** 스트림을 닫는다. 그래서 여기
+        #     왔을 때 스트림이 이미 닫혀 있을 수 있다 — 'w' 로 다시 열어 비운다.
+        import shutil
+        try:
+            if self.stream:
+                self.stream.flush()
+                self.stream.close()
+                self.stream = None
+            base = self.baseFilename
+            for i in range(self.backupCount - 1, 0, -1):
+                src, dst = f"{base}.{i}", f"{base}.{i + 1}"
+                if os.path.exists(src):
+                    shutil.copyfile(src, dst)
+            if os.path.exists(base):
+                shutil.copyfile(base, f"{base}.1")
+            with open(base, "w", encoding=self.encoding or "utf-8"):
+                pass                                # 비우기
+            self.stream = self._open()
+        except Exception:
+            # 순환 자체가 안 되면 계속 이어 쓴다 — 기록이 끊기는 것보다 낫다
+            if self.stream is None:
+                self.stream = self._open()
+
+
 _fmt = logging.Formatter(
-    "%(asctime)s  %(levelname)-7s  %(name)s  %(message)s", datefmt="%H:%M:%S")
-_console = logging.StreamHandler()
-_console.setFormatter(_fmt)
-_file = RotatingFileHandler(
-    _LOG_DIR / "backend.log", maxBytes=10 * 1024 * 1024, backupCount=3,
-    encoding="utf-8")
+    "%(asctime)s  %(levelname)-7s  %(name)s  %(message)s", datefmt="%m-%d %H:%M:%S")
+_file = _SafeRotatingFileHandler(
+    _LOG_DIR / "backend.log", maxBytes=10 * 1024 * 1024, backupCount=5,
+    encoding="utf-8", delay=True)
 _file.setFormatter(_fmt)
-logging.basicConfig(level=logging.INFO, handlers=[_console, _file])
+_file.setLevel(logging.INFO)
+
+_root = logging.getLogger()
+if not any(isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler)
+           for h in _root.handlers):
+    _console = logging.StreamHandler()          # --log-config 없이 띄운 경우
+    _console.setFormatter(_fmt)
+    _root.addHandler(_console)
+_root.setLevel(logging.INFO)
+# 루트와, 전파가 꺼진 uvicorn 로거들에 **이 핸들러 하나만** 붙인다.
+for _name in ("", "uvicorn", "uvicorn.error", "uvicorn.access"):
+    _lg = logging.getLogger(_name)
+    # 설정 파일에 남아 있는 옛 파일 핸들러가 있으면 떼어낸다(구버전 log_config.json 대비)
+    for _h in list(_lg.handlers):
+        if isinstance(_h, logging.FileHandler) and _h is not _file:
+            _lg.removeHandler(_h)
+            try:
+                _h.close()
+            except Exception:
+                pass
+    if _name == "" or not _lg.propagate:
+        if _file not in _lg.handlers:
+            _lg.addHandler(_file)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 

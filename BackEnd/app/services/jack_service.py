@@ -450,6 +450,15 @@ def robot_get(ip: str, path: str, retries: int = 3) -> dict:
 
 
 def robot_post(ip: str, path: str, json_body: dict | None = None, retries: int = 3) -> dict:
+    # ★ 이동 명령은 반드시 '잭 정지' 확인을 거친다 (2026-09-29 현장 사고 — _motion_lock 주석).
+    #   이동을 보내는 곳이 여러 갈래라 여기 한 곳에서 막아야 빠짐이 없다.
+    if path == "/chassis/moves":
+        with _motion_guard(ip, "이동 명령"):
+            return _robot_post_raw(ip, path, json_body, retries)
+    return _robot_post_raw(ip, path, json_body, retries)
+
+
+def _robot_post_raw(ip: str, path: str, json_body: dict | None = None, retries: int = 3) -> dict:
     for attempt in range(retries):
         try:
             r = requests.post(robot_url(ip, path), json=json_body or {}, timeout=HTTP_TIMEOUT)
@@ -781,31 +790,193 @@ def wait_jack_settled(ip: str, want_up: bool, timeout: float = JACK_SETTLE_TIMEO
                 pass
 
 
+# ══════════════════════════════════════════════════════════════════
+#  잭 동작 ↔ 이동 상호 배제 (2026-09-29 현장 사고)
+#
+#  무슨 일이 있었나 — 로봇 bag 의 /jack_state 와 바퀴 명령을 겹쳐 본 결과
+#    14:58:56~59:06  잭 내림 92% → 0% (10초) 동안 **0.80 m/s 로 주행**
+#    14:45:01~09     잭 내림 중 0.28~0.30 m/s 로 이동·회전
+#    14:37:14~22     잭 내림 중 0.54 m/s 로 주행
+#  강제 종료 뒤 '잭 내림(후속 처리)' 과 '다음 작업 이동(워커)' 이 서로를 기다리지
+#  않고 각자 로봇에 명령을 보낸 것이 원인이다(dispatch_service 쪽 수정 참조).
+#
+#  그쪽을 고쳐도 같은 모양의 경로가 또 생길 수 있다. 그래서 **로봇 단위 잠금**을
+#  하나 두고, 잭 명령(보내기 ~ 완료 확인)과 이동 명령(보내기)이 같은 잠금을 쓴다.
+#    · 잭이 움직이는 동안에는 이동 명령이 **나갈 수 없다** (잠금 대기)
+#    · 잭 완료를 확인하지 못했으면 이동 직전에 로봇에 잭 상태를 **다시 묻고**,
+#      멈춘 것이 확인될 때만 보낸다. 끝내 확인이 안 되면 **보내지 않는다** (JackBusy)
+#    · 반대로 로봇이 이동 중이면 잭 명령을 보내지 않는다 (MoveActive)
+#  이동을 보내는 곳이 여러 갈래(워커·후속 처리·충전 복귀·도킹·원격 제어)라서
+#  robot_post 한 곳에 걸었다 — 호출부를 하나씩 고치면 언젠가 하나를 빠뜨린다.
+# ══════════════════════════════════════════════════════════════════
+class JackBusy(RuntimeError):
+    """잭이 움직이는 중(또는 멈춤을 확인 못 함)이라 이동 명령을 보내지 않았다.
+
+    RuntimeError 를 상속한다 — 호출부들이 '사용자 중지' 처럼 즉시 빠져나가게 하려는 것이다
+    (safe_move 는 RuntimeError 를 재시도하지 않고 그대로 올린다). 로봇은 그 자리에 선다.
+    """
+
+
+class MoveActive(RuntimeError):
+    """로봇이 이동 명령을 수행 중이라 잭 명령을 보내지 않았다."""
+
+
+# 이동 명령 직전 잭 정지 확인 상한(초). 잭 한 번 동작(약 10~12초)의 3배.
+JACK_GUARD_WAIT = 35.0
+# 잭 명령 직전 '로봇이 이동 중인가' 확인 상한(초).
+MOVE_IDLE_WAIT = 10.0
+
+_motion_locks: dict[str, "_threading.RLock"] = {}
+_motion_locks_guard = None      # 아래에서 초기화 (threading import 가 파일 뒤쪽에 있다)
+# 잭 명령을 보냈는데 '멈춤' 을 아직 확인하지 못한 로봇
+_jack_unconfirmed: set[str] = set()
+
+
+def _motion_lock(ip: str):
+    global _motion_locks_guard
+    import threading
+    if _motion_locks_guard is None:
+        _motion_locks_guard = threading.Lock()
+    with _motion_locks_guard:
+        lk = _motion_locks.get(ip)
+        if lk is None:
+            lk = threading.RLock()
+            _motion_locks[ip] = lk
+        return lk
+
+
+class _motion_guard:
+    """`with _motion_guard(ip, why):` — 이동 명령(또는 직접 제어)을 보내기 전 관문."""
+
+    def __init__(self, ip: str, why: str):
+        self.ip, self.why = ip, why
+        self.lk = _motion_lock(ip)
+
+    def __enter__(self):
+        # 잭 명령이 진행 중이면 그 명령이 끝날(완료 확인까지) 때까지 기다린다
+        if not self.lk.acquire(timeout=JACK_SETTLE_TIMEOUT + JACK_GUARD_WAIT):
+            raise JackBusy(f"{self.why} 보류 — 잭 동작이 끝나지 않았다 (robot={self.ip})")
+        try:
+            _wait_jack_still(self.ip, self.why)
+        except BaseException:
+            self.lk.release()
+            raise
+        return self
+
+    def __exit__(self, *exc):
+        self.lk.release()
+        return False
+
+
+def _wait_jack_still(ip: str, why: str) -> None:
+    """잭 멈춤을 확인하지 못한 로봇이면, 로봇에 직접 물어 멈춘 것을 확인한다."""
+    if ip not in _jack_unconfirmed:
+        return
+    deadline = time.time() + JACK_GUARD_WAIT
+    last = "응답 없음"
+    while time.time() < deadline:
+        st = read_jack_state(ip, timeout=4.0)
+        if st:
+            state = str(st.get("state") or "")
+            last = f"state={state} progress={st.get('progress')}"
+            if not state.startswith("jacking"):
+                _jack_unconfirmed.discard(ip)
+                logger.info(f"[jack-guard] {ip} {why} 전 잭 정지 확인 — {last}")
+                return
+        time.sleep(1.0)
+    logger.error(f"[jack-guard] ★ {ip} {why} 거부 — 잭 정지를 {JACK_GUARD_WAIT:.0f}초 안에 "
+                 f"확인하지 못했다 ({last}). 로봇을 움직이지 않는다")
+    raise JackBusy(f"{why} 거부 — 잭 정지 확인 불가 ({last})")
+
+
+def _ensure_not_moving(ip: str, why: str) -> None:
+    """로봇이 이동 명령을 수행 중이면 잭을 움직이지 않는다 (잠시 기다린 뒤에도 그러면 거부)."""
+    deadline = time.time() + MOVE_IDLE_WAIT
+    while True:
+        try:
+            cur = robot_get(ip, "/chassis/moves/current", retries=1)
+            state = str((cur or {}).get("state") or "").lower()
+        except requests.exceptions.HTTPError:
+            return                      # 현재 이동 없음(404 등)
+        except Exception as e:
+            # 조회 실패 — 잭 명령도 같은 망을 타므로 판단을 미루지 않는다.
+            # 이동 쪽은 _motion_guard 가 이미 막고 있다(같은 잠금 안이다).
+            logger.warning(f"[jack-guard] {ip} {why} 전 이동 상태 조회 실패(진행): {e}")
+            return
+        if state != "moving":
+            return
+        if time.time() >= deadline:
+            logger.error(f"[jack-guard] ★ {ip} {why} 거부 — 로봇이 이동 중이다 "
+                         f"({MOVE_IDLE_WAIT:.0f}초 기다려도 끝나지 않음)")
+            raise MoveActive(f"{why} 거부 — 로봇이 이동 중")
+        time.sleep(0.5)
+
+
+def _confirm_jack(ip: str, want_up: bool, extra: float = 15.0) -> bool:
+    """wait_jack_settled 가 확인하지 못했을 때 한 번 더 — 로봇에 직접 물어본다."""
+    deadline = time.time() + extra
+    while time.time() < deadline:
+        st = read_jack_state(ip, timeout=4.0)
+        if st:
+            try:
+                p = float(st.get("progress") or 0)
+            except (TypeError, ValueError):
+                p = None
+            state = str(st.get("state") or "")
+            if p is not None and not state.startswith("jacking") and \
+                    (p >= JACK_SETTLED_UP if want_up else p <= JACK_SETTLED_DOWN):
+                logger.info(f"[jack] {ip} 재확인으로 잭 {'올라감' if want_up else '내려감'} "
+                            f"완료 확인 — progress={p}")
+                return True
+        time.sleep(1.0)
+    return False
+
+
+def jack_settled(ip: str) -> bool:
+    """마지막 잭 명령이 끝까지 움직인 것을 확인했는가."""
+    return ip not in _jack_unconfirmed
+
+
 def jack_up(ip: str) -> dict:
-    # robot_post 는 실패하면 예외를 던진다 → 여기까지 오면 명령이 접수된 것이다
-    res = robot_post(ip, "/services/jack_up")
-    # ★ 명령 '접수' 와 잭이 '다 올라간 것' 은 다르다 — 끝까지 기다린다.
-    #   여기서 기다리므로 호출부(25곳)는 손대지 않아도 전부 커버된다.
-    #   완료를 못 봤어도(False/None) 적재로 본다 — 랙이 부분이라도 들려 있을 수
-    #   있고, "들고 있는데 없다고 보는 것" 이 훨씬 위험하다.
-    settled = wait_jack_settled(ip, want_up=True)
-    if settled is not True:
-        logger.warning(f"[jack] {ip} 잭업 완료를 확인하지 못했다 — 적재로 간주하고 진행")
-    set_laden(ip, True)
-    return res
+    with _motion_lock(ip):
+        _ensure_not_moving(ip, "잭업")
+        _jack_unconfirmed.add(ip)      # 확인 전까지는 '움직이는 중' 으로 본다
+        # robot_post 는 실패하면 예외를 던진다 → 여기까지 오면 명령이 접수된 것이다
+        res = robot_post(ip, "/services/jack_up")
+        # ★ 명령 '접수' 와 잭이 '다 올라간 것' 은 다르다 — 끝까지 기다린다.
+        #   여기서 기다리므로 호출부(25곳)는 손대지 않아도 전부 커버된다.
+        #   완료를 못 봤어도(False/None) 적재로 본다 — 랙이 부분이라도 들려 있을 수
+        #   있고, "들고 있는데 없다고 보는 것" 이 훨씬 위험하다.
+        settled = wait_jack_settled(ip, want_up=True)
+        if settled is not True:
+            settled = _confirm_jack(ip, want_up=True)
+        if settled is True:
+            _jack_unconfirmed.discard(ip)
+        else:
+            logger.warning(f"[jack] {ip} 잭업 완료를 확인하지 못했다 — 적재로 간주. "
+                           f"다음 이동 전에 잭 정지를 다시 확인한다")
+        set_laden(ip, True)
+        return res
 
 
 def jack_down(ip: str) -> dict:
-    res = robot_post(ip, "/services/jack_down")
-    # 잭다운은 반대다 — 다 내려간 것을 못 봤으면 **아직 들고 있다고 본다.**
-    #   공차로 잘못 세우면 랙을 든 채 공차 속도로 달리고, 강제 종료가
-    #   "내릴 것 없다" 고 판단해 그대로 지나간다.
-    settled = wait_jack_settled(ip, want_up=False)
-    if settled is not True:
-        logger.warning(f"[jack] {ip} 잭다운 완료를 확인하지 못했다 — 적재 플래그를 유지한다")
+    with _motion_lock(ip):
+        _ensure_not_moving(ip, "잭다운")
+        _jack_unconfirmed.add(ip)
+        res = robot_post(ip, "/services/jack_down")
+        # 잭다운은 반대다 — 다 내려간 것을 못 봤으면 **아직 들고 있다고 본다.**
+        #   공차로 잘못 세우면 랙을 든 채 공차 속도로 달리고, 강제 종료가
+        #   "내릴 것 없다" 고 판단해 그대로 지나간다.
+        settled = wait_jack_settled(ip, want_up=False)
+        if settled is not True:
+            settled = _confirm_jack(ip, want_up=False)
+        if settled is not True:
+            logger.warning(f"[jack] {ip} 잭다운 완료를 확인하지 못했다 — 적재 플래그를 유지하고, "
+                           f"다음 이동 전에 잭 정지를 다시 확인한다")
+            return res
+        _jack_unconfirmed.discard(ip)
+        set_laden(ip, False)
         return res
-    set_laden(ip, False)
-    return res
 
 
 def read_jack_state(ip: str, timeout: float = 6.0) -> Optional[dict]:
@@ -1911,7 +2082,7 @@ STRAIGHT_TIMEOUT = 20.0    # 초. 1.2 m / 0.15 m/s = 8초 + 여유
 STRAIGHT_OK_RATIO = 0.8    # 목표 거리의 이만큼을 갔으면 성공으로 본다
 
 
-def drive_straight(robot_ip: str, distance: float, forward: bool = True,
+def _drive_straight_impl(robot_ip: str, distance: float, forward: bool = True,
                    speed: float = STRAIGHT_SPEED,
                    timeout: float = STRAIGHT_TIMEOUT) -> bool:
     """`/twist` 로 **직선으로만** `distance`(m) 움직인다. 회전은 하지 않는다.
@@ -2016,7 +2187,7 @@ def _twist(robot_ip: str, lv: float, av: float) -> None:
                 raise
 
 
-def rotate_in_place(robot_ip: str, target_ori: float,
+def _rotate_in_place_impl(robot_ip: str, target_ori: float,
                     timeout: float = ROTATE_TIMEOUT,
                     tol_deg: float = ROTATE_TOL_DEG) -> bool:
     """`target_ori`(rad) 를 바라볼 때까지 **제자리에서** 돈다.
@@ -2083,3 +2254,31 @@ def rotate_in_place(robot_ip: str, target_ori: float,
     mark_twist_unfit(robot_ip,
                      "회전 타임아웃 %s" % (("남은 %.1f°" % last) if last is not None else ""))
     return False
+
+
+def drive_straight(robot_ip: str, distance: float, forward: bool = True,
+                   speed: float = STRAIGHT_SPEED,
+                   timeout: float = STRAIGHT_TIMEOUT) -> bool:
+    """`/twist` 직선 이동 — 잭 상호 배제 관문(_motion_guard)을 거친다 (2026-09-29).
+
+    잭이 움직이는 중이면 끝날 때까지 기다리고, 끝내 멈춤을 확인 못 하면 움직이지 않는다
+    (False — 호출부는 '이탈 실패' 로 처리한다).
+    """
+    try:
+        with _motion_guard(robot_ip, "직선 이동"):
+            return _drive_straight_impl(robot_ip, distance, forward, speed, timeout)
+    except JackBusy as e:
+        logger.error(f"[straight] {robot_ip} {e}")
+        return False
+
+
+def rotate_in_place(robot_ip: str, target_ori: float,
+                    timeout: float = ROTATE_TIMEOUT,
+                    tol_deg: float = ROTATE_TOL_DEG) -> bool:
+    """제자리 회전 — 잭 상호 배제 관문(_motion_guard)을 거친다 (2026-09-29)."""
+    try:
+        with _motion_guard(robot_ip, "제자리 회전"):
+            return _rotate_in_place_impl(robot_ip, target_ori, timeout, tol_deg)
+    except JackBusy as e:
+        logger.error(f"[rotate] {robot_ip} {e}")
+        return False
