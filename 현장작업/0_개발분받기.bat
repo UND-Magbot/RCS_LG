@@ -16,7 +16,7 @@ rem  ※ 인터넷이 필요하다. 현장 안에서는 안 된다 - 탈의실에서 실행할 것.
 rem ============================================================
 
 set BRANCH=feature/route-only-drive
-set TARGETS=BackEnd/app scripts/clock_sync.py scripts/run_probe.py scripts/fetch_bags.py .gitignore 현장작업
+set TARGETS=BackEnd/app scripts/clock_sync.py scripts/run_probe.py scripts/fetch_bags.py scripts/field_session.py scripts/drive_log.py scripts/field_console.py .gitignore 현장작업
 set CFG=%~dp0사용폴더경로.txt
 
 set USEDIR=
@@ -28,7 +28,7 @@ echo  [0] 개발분 받기
 echo ============================================================
 echo.
 echo   브랜치    : %BRANCH%
-echo   가져올 것 : BackEnd\app  +  scripts 3개  +  .gitignore
+echo   가져올 것 : BackEndpp  +  scripts 6개  +  .gitignore  +  현장작업
 echo.
 if not "%USEDIR%"=="" (
   echo   사용폴더  : %USEDIR%

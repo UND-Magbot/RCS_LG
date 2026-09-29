@@ -66,6 +66,8 @@ RCS_LG_패치_*.zip
 
 # 로그 수집 zip (6_로그모으기.bat 산출물)
 로그수집_*.zip
+# 로그 세션 추출 zip (L2_종료및추출.bat 산출물, 2026-09-29)
+로그추출/
 venv_old/
 .next_old_asus/
 현장작업/사용폴더경로.txt

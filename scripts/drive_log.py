@@ -1035,11 +1035,46 @@ def dump_map_context(a, base):
         print("맵 정보 저장 실패(계속 진행): %s" % str(e)[:80], flush=True)
 
 
-def key_watcher():
-    """스페이스바를 누르면 그 시각을 '멈칫' 으로 기록한다.
+def record_mark(now, source="키보드", note=""):
+    """'비이상적 정지' 표시 한 건을 기록한다. 키보드·세션 파일 공용.
 
-    v1 의 가장 큰 한계가 "어느 감속이 그 멈칫인지 모른다" 였다.
+    marks 에 넣으면 snap_writer 가 앞뒤 snap_window 초의 원본 스냅샷을 찍는다.
+    """
+    with lock:
+        pose = S["pose"]
+        v = S["v"]
+        obs = dict(S["obs"]) if S["obs"] else None
+        fu = dict(S["fused"])
+    marks.append(now)
+    # ★ 2026-09-28 — 이 시각을 **로봇 시계로 환산해서** 같이 남긴다.
+    #   bag 은 로봇 시계 기준이라, 두 시계 차이를 알아야 겹쳐 볼 수 있다.
+    off = _clock_offset()
+    rt = (now + off) if off is not None else None
+    w("events", {"t": now, "kind": "mark", "index": len(marks),
+                 "source": source, "note": note,
+                 "v": v,
+                 "x": round(pose[0], 3) if pose else None,
+                 "y": round(pose[1], 3) if pose else None,
+                 "front_m": (obs or {}).get("front_m"),
+                 "n_band": (obs or {}).get("n_band"),
+                 "suggested_speed": fu.get("suggested_speed"),
+                 "clock_offset_sec": off,
+                 "robot_time": (time.strftime("%H:%M:%S", time.localtime(rt))
+                                if rt else None)})
+    print("  [표시 %d · %s] %s  속도 %s  앞 %s%s"
+          % (len(marks), source, time.strftime("%H:%M:%S", time.localtime(now)), v,
+             (obs or {}).get("front_m"), ("  메모: " + note) if note else ""), flush=True)
+    if rt is not None:
+        print("            로봇 시각 %s (차이 %+.1f초)"
+              % (time.strftime("%H:%M:%S", time.localtime(rt)), off), flush=True)
+
+
+def key_watcher():
+    """스페이스바를 누르면 그 시각을 '비이상적 정지' 로 기록한다.
+
+    v1 의 가장 큰 한계가 "어느 감속이 그 정지인지 모른다" 였다.
     사람이 직접 찍어주면 200건을 추측으로 거를 필요가 없다.
+    세션 모드면 세션 marks.jsonl 에도 같이 남겨 웹 버튼 표시와 한 파일로 모은다.
     """
     try:
         import msvcrt
@@ -1055,44 +1090,84 @@ def key_watcher():
                     return
                 if ch in (b" ", b"\r", b"\n"):
                     now = time.time()
-                    with lock:
-                        pose = S["pose"]
-                        v = S["v"]
-                        obs = dict(S["obs"]) if S["obs"] else None
-                        fu = dict(S["fused"])
-                    marks.append(now)
-                    # ★ 2026-09-28 — 이 시각을 **로봇 시계로 환산해서** 같이 남긴다.
-                    #   bag 은 로봇 시계 기준인데, 현장에서 로봇은 NTP 에 못 닿아
-                    #   시계가 혼자 흘러간다(clock_sync 참조). 여기서 환산해 두면
-                    #   fetch_bags 에 넣을 구간이 바로 나온다.
-                    off = _clock_offset()
-                    rt = (now + off) if off is not None else None
-                    w("events", {"t": now, "kind": "mark", "index": len(marks),
-                                 "v": v,
-                                 "x": round(pose[0], 3) if pose else None,
-                                 "y": round(pose[1], 3) if pose else None,
-                                 "front_m": (obs or {}).get("front_m"),
-                                 "n_band": (obs or {}).get("n_band"),
-                                 "suggested_speed": fu.get("suggested_speed"),
-                                 "clock_offset_sec": off,
-                                 "robot_time": (time.strftime("%H:%M:%S", time.localtime(rt))
-                                                if rt else None)})
-                    print("  [표시 %d] %s  속도 %s  앞 %s"
-                          % (len(marks), time.strftime("%H:%M:%S"), v,
-                             (obs or {}).get("front_m")), flush=True)
-                    if rt is not None:
-                        lo = time.strftime("%H:%M", time.localtime(rt - 120))
-                        hi = time.strftime("%H:%M", time.localtime(rt + 120))
-                        print("            로봇 시각 %s (차이 %+.1f초)  →  "
-                              "fetch_bags --from %s --to %s"
-                              % (time.strftime("%H:%M:%S", time.localtime(rt)),
-                                 off, lo, hi), flush=True)
-                    else:
-                        print("            (시계 차이를 못 재 로봇 시각 환산 생략)",
-                              flush=True)
+                    record_mark(now, "키보드")
+                    _session_append_mark(now, "키보드")
         except Exception:
             pass
         time.sleep(0.05)
+
+
+# ── 세션 연동 (2026-09-29, scripts/field_session.py) ────────────────
+#   세션 폴더를 주면 세 가지가 바뀐다.
+#     1) 기록 위치   <세션>/drive_log/  (run_<시각> 폴더를 새로 만들지 않는다)
+#     2) 표시 합치기 <세션>/marks.jsonl 에 웹·폰 버튼 표시가 쌓이면 읽어서
+#                    스페이스바와 똑같이 처리한다(이벤트 + 원본 스냅샷)
+#     3) 종료 신호   <세션>/STOP 파일이 생기면 정상 종료한다 — 요약까지 쓰고 끝난다
+SESSION = {"dir": None}
+
+
+def _session_append_mark(now, source, note=""):
+    d = SESSION["dir"]
+    if not d:
+        return
+    try:
+        with io.open(os.path.join(d, "marks.jsonl"), "a", encoding="utf-8") as f:
+            f.write(json.dumps({"t": now, "ts": time.strftime("%H:%M:%S", time.localtime(now)),
+                                "source": source, "note": note},
+                               ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+def session_watcher():
+    d = SESSION["dir"]
+    mf = os.path.join(d, "marks.jsonl")
+    pos = os.path.getsize(mf) if os.path.exists(mf) else 0   # 시작 전 표시는 건너뛴다
+    while not stop_flag.is_set():
+        if os.path.exists(os.path.join(d, "STOP")):
+            print("  (세션 종료 신호 - 정리하고 끝냅니다)", flush=True)
+            stop_flag.set()
+            return
+        try:
+            if os.path.exists(mf) and os.path.getsize(mf) > pos:
+                with io.open(mf, "r", encoding="utf-8", errors="replace") as f:
+                    f.seek(pos)
+                    chunk = f.read()
+                    pos = f.tell()
+                for line in chunk.splitlines():
+                    try:
+                        rec = json.loads(line)
+                    except Exception:
+                        continue
+                    if rec.get("source") == "키보드":      # 내가 쓴 줄
+                        continue
+                    record_mark(float(rec.get("t") or time.time()),
+                                rec.get("source") or "웹", rec.get("note") or "")
+        except Exception:
+            pass
+        stop_flag.wait(0.5)
+
+
+class _Tee:
+    """세션 모드에서 콘솔 출력을 파일로도 남긴다 (창이 닫혀도 무슨 일이 있었는지 보이게)."""
+
+    def __init__(self, a, b):
+        self.a, self.b = a, b
+
+    def write(self, s):
+        for f in (self.a, self.b):
+            try:
+                f.write(s)
+                f.flush()
+            except Exception:
+                pass
+
+    def flush(self):
+        for f in (self.a, self.b):
+            try:
+                f.flush()
+            except Exception:
+                pass
 
 
 # ==================================================================
@@ -1884,7 +1959,7 @@ def write_summary(outdir, a, t0, t1, evs, n_bk, n_sf, cyc, reason):
                 time.strftime("%H:%M:%S", time.localtime(t1)), t1 - t0))
     L.append("- 감속 **%d건** · 로봇 제안속도 하락 **%d회** · 서버 상한변경 **%d회**"
              % (len(dec), len(sug), len(caps)))
-    L.append("- **사용자 표시(멈칫) %d건** · 스냅샷 %d개" % (len(mks), snaps_n[0]))
+    L.append("- **사용자 표시(비이상적 정지) %d건** · 스냅샷 %d개" % (len(mks), snaps_n[0]))
     L.append("- 백엔드 로그 %d줄 (그중 `[safety]` %d줄)" % (n_bk, n_sf))
     bh = [e.get("band_half_w") for e in dec if e.get("band_half_w")]
     L.append("- 밴드 반폭 실제 사용 %s m (서버 설정 %s, 풋프린트 반폭과 큰 값)"
@@ -1925,7 +2000,7 @@ def write_summary(outdir, a, t0, t1, evs, n_bk, n_sf, cyc, reason):
         L.append("")
 
     if mks:
-        L.append("## ★ 사용자가 표시한 멈칫 %d건" % len(mks))
+        L.append("## ★ 사용자가 표시한 비이상적 정지 %d건" % len(mks))
         L.append("")
         L.append("| 시각 | 속도 | 앞거리 | 밴드점 | 제안속도 | 가장 가까운 감속 |")
         L.append("|---|---:|---:|---:|---:|---|")
@@ -2308,6 +2383,8 @@ def main():
     ap.add_argument("--sug-snap-gap", type=float, default=5.0,
                     help="제안속도 스냅샷 최소 간격(초)")
     ap.add_argument("--tag", default="")
+    ap.add_argument("--session-dir", default="",
+                    help="field_session 세션 폴더. 주면 그 안에 기록하고 STOP 파일로 끝난다")
     ap.add_argument("--probe", action="store_true",
                     help="30초 사전 점검 - 토픽별 수신 여부를 보고 끝낸다")
     ap.add_argument("--light", action="store_true",
@@ -2327,15 +2404,25 @@ def main():
 
     t_start = time.time()
     stamp = time.strftime("%Y%m%d_%H%M%S", time.localtime(t_start))
-    base = os.path.join(LOG_DIR, "run_%s%s"
-                        % (stamp, ("_" + a.tag) if a.tag else ""))
-    os.makedirs(base, exist_ok=True)
+    if a.session_dir:
+        SESSION["dir"] = a.session_dir
+        base = os.path.join(a.session_dir, "drive_log")
+        os.makedirs(base, exist_ok=True)
+        try:
+            sys.stdout = _Tee(sys.stdout, io.open(
+                os.path.join(a.session_dir, "drive_log_화면.txt"), "a", encoding="utf-8"))
+        except Exception:
+            pass
+    else:
+        base = os.path.join(LOG_DIR, "run_%s%s"
+                            % (stamp, ("_" + a.tag) if a.tag else ""))
+        os.makedirs(base, exist_ok=True)
 
     print("=" * 76)
     print("[drive_log v2] 로봇 %s" % a.ip)
     print("주행 1회 = 충전소 출발 -> 충전소 복귀. 사이클마다 폴더가 하나씩 생깁니다.")
     print("상위 폴더: %s" % base)
-    print("★ 주행 중 멈칫하면 이 창에서 스페이스바를 누르세요 - 그 시각이 기록됩니다.")
+    print("★ 비이상적 정지(급감속)를 보면 이 창에서 스페이스바를 누르세요 - 그 시각이 기록됩니다.")
     print("=" * 76)
 
     try:
@@ -2378,6 +2465,8 @@ def main():
     _spawn(poll_params, a.ip)
     _spawn(comm_writer)
     _spawn(key_watcher)
+    if SESSION["dir"]:
+        _spawn(session_watcher)
     _spawn(move_writer, a.ip)
 
     print("로봇 위치 수신 대기...", flush=True)
@@ -2399,6 +2488,18 @@ def main():
     META["pois"] = _pick_active_map_pois(META.get("pois") or [])
 
     home, how = find_home(a, META["pois"])
+    # 세션 모드에서는 여기서 끝내지 않는다 — 로봇이 늦게 붙어도 그때부터 기록한다.
+    # (끝내 버리면 세션 zip 에 주행 기록이 통째로 빠진다. 종료는 STOP 파일로만)
+    while home is None and SESSION["dir"] and not stop_flag.is_set():
+        print("  로봇 위치를 기다리는 중… (세션 종료 전까지 계속 재시도)", flush=True)
+        stop_flag.wait(10.0)
+        if a.server and not META.get("pois"):
+            try:
+                META["pois"] = _pick_active_map_pois(_get_json(
+                    a.server.rstrip("/") + "/api/map/active-pois", 5))
+            except Exception:
+                pass
+        home, how = find_home(a, META.get("pois") or [])
     if home is None:
         print("★ 기준점을 정할 수 없습니다. --home x,y 로 직접 주세요.")
         _drop_if_empty(base)
@@ -2447,4 +2548,16 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    _rc = 1
+    try:
+        _rc = main()
+    finally:
+        # 세션 추출기(field_session)가 이 파일로 '정상 종료' 를 확인하고 다음 단계로 간다
+        if SESSION["dir"]:
+            try:
+                with io.open(os.path.join(SESSION["dir"], "drive_log.done"), "w",
+                             encoding="utf-8") as _f:
+                    _f.write("rc=%s at=%s\n" % (_rc, time.strftime("%H:%M:%S")))
+            except Exception:
+                pass
+    sys.exit(_rc)

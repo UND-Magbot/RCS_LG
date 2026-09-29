@@ -10,7 +10,7 @@
   bat 을 8개 왔다갔다 하면서 창을 번갈아 보는 것보다, 한 화면에서
   순서대로 누르는 편이 빠르고 빠뜨릴 일이 없다.
 
-  ★ 무엇보다 **[멈칫] 버튼을 폰으로 누를 수 있다.**
+  ★ 무엇보다 **[비이상적 정지] 표시 버튼을 폰으로 누를 수 있다.**
     종전에는 drive_log 터미널에 포커스를 두고 스페이스바를 쳐야 했는데,
     로봇을 따라다니며 그러기는 어렵다. 같은 망의 폰에서 이 화면을 열면
     로봇 옆을 걸으며 누를 수 있다.
@@ -19,8 +19,8 @@
   1) 상태      git · 백엔드 · 로봇 응답 · 현재 맵 영역
   2) 망 측정   ping 3종 + tracert + ipconfig  ★ 현장에서만 잴 수 있다
   3) 사전 점검 drive_log --probe. 로그가 실제로 남는지 먼저 본다
-  4) 주행 기록 drive_log 본 측정 + 멈칫 표시
-  5) 로그 수집 _logs + BackEnd/_logs 를 zip 으로
+  4) 로그 기록 시작 한 번 / 종료·추출 한 번 (field_session) + 비이상적 정지 표시
+     종료·추출이 서버 로그 · 알람 · 로봇 bag 까지 zip 하나로 묶는다
 
 ★ 로봇에 명령을 보내지 않는다
   ping 과 GET 조회뿐이다. 이동·잭·속도 명령은 한 줄도 없다.
@@ -40,7 +40,6 @@ import http.server
 import json
 import os
 import re
-import shutil
 import socket
 import subprocess
 import sys
@@ -278,108 +277,31 @@ def job_probe(job: Job) -> None:
     run_cmd(job, [PY, dl, "--ip", CFG["ROBOT_IP"], "--probe", "--server", CFG["BACKEND"]])
 
 
-def job_record(job: Job, cycles: int) -> None:
-    """drive_log 를 **새 콘솔 창**으로 띄운다.
-
-    ★ 왜 창을 따로 여는가
-      drive_log 의 스페이스바 마킹은 msvcrt.kbhit() 를 쓴다. 이건 **콘솔 입력**이라
-      창 없이(CREATE_NO_WINDOW) 띄우면 아예 동작하지 않는다. 그러면
-      events.jsonl 에 kind:"mark" 가 안 남고 summary.md 의
-      "★ 사용자가 표시한 멈칫" 이 0건이 된다 — 반응지연 보정(t_onset)과
-      마크 시점 스냅샷도 같이 사라진다.
-
-      그래서 기록은 **검증된 기존 경로 그대로** 새 창에서 돌리고,
-      이 화면은 진행 상황과 [멈칫] 버튼(폰용 백업)만 맡는다.
-    """
-    dl = os.path.join(ROOT, "scripts", "drive_log.py")
-    if not os.path.exists(dl):
-        job.put("[없음] scripts/drive_log.py 가 없습니다")
-        return
-    blog = os.path.join(ROOT, "BackEnd", "_logs", "backend.log")
-    args = [PY, "-u", dl, "--ip", CFG["ROBOT_IP"], "--cycles", str(cycles),
-            "--server", CFG["BACKEND"]]
-    if os.path.exists(blog):
-        args += ["--backend-log", blog]
-
-    job.put("사이클 %d회 — 새 창에서 drive_log 가 실행됩니다" % cycles)
-    job.put("")
-    job.put("  [그 창]  스페이스바 → drive_log 기록에 직접 들어갑니다 (권장)")
-    job.put("  [이 화면] 위의 [멈칫] 버튼 → 폰에서 누를 때. 별도 파일로 남습니다")
-    job.put("")
-    job.put("  둘 다 같은 시계(epoch)를 쓰므로 나중에 합칠 수 있습니다.")
-    job.put("-" * 52)
-
-    try:
-        p = subprocess.Popen(
-            args, cwd=ROOT,
-            env=dict(os.environ, PYTHONUNBUFFERED="1"),
-            creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
-        )
-    except Exception as e:
-        job.put("[실행 실패] %s" % e)
-        return
-    job.proc = p
-
-    t0 = time.time()
-    last = 0
-    while p.poll() is None:
-        time.sleep(1.0)
-        el = int(time.time() - t0)
-        if el - last >= 30:                 # 30초마다 살아있음을 알린다
-            last = el
-            job.put("  기록 중… %d분 %02d초 (멈칫 표시 %d건)"
-                    % (el // 60, el % 60, len(MARKS)))
-    job.put("")
-    job.put("drive_log 종료 (코드 %s)" % p.returncode)
-    job.put("결과는 _logs 안에 사이클 폴더로 저장됐습니다.")
-    job.put("[6] 로그 수집 으로 묶어서 챙기세요.")
+# ── 3) 로그 세션 (2026-09-29) ───────────────────────────────────
+#   종전 [주행 기록]·[표시]·[로그 수집] 을 scripts/field_session.py 하나로 합쳤다.
+#   시작 한 번 → 주행 기록기·망 상시 기록·시작 상태가 같이 돈다.
+#   종료 한 번 → 서버 로그 구간·DB 로그·로봇 bag 까지 zip 하나로 나온다.
+#   L1/L2 bat 과 같은 함수를 부르므로 어느 쪽으로 시작하고 끝내도 된다.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import field_session  # noqa: E402
 
 
-# ── 3) 멈칫 표시 ────────────────────────────────────────────────
-MARK_FILE = {"path": None}
-MARKS: list[dict] = []
+def job_session_start(job: Job) -> None:
+    r = field_session.start(log=job.put)
+    if not r.get("ok"):
+        job.put(r.get("msg", "시작 실패"))
 
 
-def mark_now(note: str = "") -> dict:
-    """사람이 누른 시각을 기록. drive_log 와 같은 단일 시계(epoch)를 쓴다."""
-    if MARK_FILE["path"] is None:
-        os.makedirs(LOGS, exist_ok=True)
-        MARK_FILE["path"] = os.path.join(
-            LOGS, "marks_%s.jsonl" % datetime.now().strftime("%Y%m%d_%H%M%S"))
-    rec = {"t": time.time(), "ts": datetime.now().strftime("%H:%M:%S"), "note": note}
-    MARKS.append(rec)
-    try:
-        with open(MARK_FILE["path"], "a", encoding="utf-8") as f:
-            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
-    return rec
+def job_session_stop(job: Job) -> None:
+    r = field_session.stop(log=job.put)
+    if not r.get("ok"):
+        job.put(r.get("msg", "종료 실패"))
 
 
-# ── 4) 로그 수집 ────────────────────────────────────────────────
-def job_collect(job: Job) -> None:
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    stage = os.path.join(os.environ.get("TEMP", ROOT), "logpack_%s" % ts)
-    os.makedirs(stage, exist_ok=True)
-    n = 0
-    for src, dst in ((LOGS, "_logs"),
-                     (os.path.join(ROOT, "BackEnd", "_logs"), "backend_logs")):
-        if os.path.isdir(src):
-            job.put("모으는 중: %s" % src)
-            shutil.copytree(src, os.path.join(stage, dst), dirs_exist_ok=True)
-            n += 1
-    if n == 0:
-        job.put("[없음] 모을 로그가 없습니다")
-        return
-    out = os.path.join(ROOT, "로그수집_%s" % ts)
-    zip_path = shutil.make_archive(out, "zip", stage)
-    shutil.rmtree(stage, ignore_errors=True)
-    mb = os.path.getsize(zip_path) / 1048576
-    job.put("")
-    job.put("만들어졌습니다: %s" % zip_path)
-    job.put("크기: %.1f MB" % mb)
-    job.put("")
-    job.put("★ 나올 때 이 파일과 망측정 폴더를 챙기세요")
+def job_session_bags(job: Job) -> None:
+    r = field_session.bags(log=job.put)
+    if not r.get("ok"):
+        job.put(r.get("msg", "실패"))
 
 
 # ── 5) 상태 ─────────────────────────────────────────────────────
@@ -443,7 +365,7 @@ def get_status() -> dict:
         "venv python": os.path.exists(os.path.join(ROOT, "BackEnd", "venv", "Scripts", "python.exe")),
     }
     st["cfg"] = CFG
-    st["marks"] = len(MARKS)
+    st["session"] = field_session.status()
     return st
 
 
@@ -505,9 +427,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._json({"lines": lines, "total": total, "done": j.done,
                         "rc": j.rc, "title": j.title,
                         "elapsed": int(time.time() - j.started)})
-        elif p == "/api/marks":
-            self._json({"marks": MARKS[-50:], "count": len(MARKS),
-                        "file": MARK_FILE["path"]})
+        elif p == "/api/session":
+            self._json(field_session.status())
         else:
             self._send(404, b"not found", "text/plain")
 
@@ -522,7 +443,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 body = {}
 
         if p == "/api/mark":
-            self._json(mark_now(body.get("note", "")))
+            self._json(field_session.mark(body.get("note", ""), "폰·웹"))
             return
 
         if p == "/api/stop":
@@ -537,15 +458,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             spec = {
                 "netcheck": ("망 측정", job_netcheck),
                 "probe": ("사전 점검", job_probe),
-                "collect": ("로그 수집", job_collect),
+                "sstart": ("기록 시작", job_session_start),
+                "sstop": ("종료·추출", job_session_stop),
+                "sbags": ("bag 다시 받기", job_session_bags),
             }
-            if what == "record":
-                cycles = int(body.get("cycles") or 2)
-                job = new_job("주행 기록")
-                threading.Thread(target=self._wrap, args=(job, job_record, cycles),
-                                 daemon=True).start()
-                self._json({"id": job.id})
-                return
             if what in spec:
                 title, fn = spec[what]
                 job = new_job(title)
@@ -661,12 +577,36 @@ td:first-child{color:var(--ink-2);width:120px;white-space:nowrap}
     <table id="st"><tr><td>불러오는 중…</td><td></td></tr></table>
   </div>
 
+  <div class="card" id="sess-card">
+    <h2><span class="num">2</span> 로그 기록 &mdash; 시작 한 번, 종료 한 번
+      <span id="sess-badge" class="chip" style="margin-left:auto">확인 중…</span></h2>
+    <p class="hint"><b>[기록 시작]</b> 을 누르면 주행 기록 · 망 상시 기록(ping 1초) · 시작 상태가 한꺼번에 켜집니다.
+      검은 창(주행 기록기)이 하나 열리는데 <b>닫지 마세요.</b></p>
+    <p class="hint"><b>[종료·추출]</b> 을 누르면 서버 로그 · 알람 · 로봇 bag 까지 <b>zip 하나</b>로 나옵니다.
+      <span class="mono">로그추출\</span> 폴더. 나올 때 그 zip 하나만 챙기면 됩니다.</p>
+    <div class="row" style="margin-bottom:12px">
+      <button class="primary" data-run="sstart">기록 시작</button>
+      <button class="danger" data-run="sstop">종료·추출</button>
+      <button data-run="sbags" title="마지막 세션의 로봇 bag 을 이어받고 zip 을 갱신">bag 다시 받기</button>
+    </div>
+    <div class="row" style="margin-bottom:8px">
+      <input id="note" placeholder="메모 (선택) — 예: 랙 앞, 코너" style="flex:1;min-width:160px;font:inherit;padding:10px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--ink)">
+    </div>
+    <button class="big mark" id="mark">비이상적 정지 &mdash; 지금 불편하게 섰다</button>
+    <p class="hint" style="margin:10px 0 0">서버PC 앞이면 검은 창에서 <b>스페이스바</b>, 로봇 옆이면 폰으로 이 버튼.
+      둘 다 같은 파일에 모이고 스냅샷도 똑같이 찍힙니다.</p>
+    <div class="marks" id="marks"></div>
+    <pre id="out-sstart" hidden></pre>
+    <pre id="out-sstop" hidden></pre>
+    <pre id="out-sbags" hidden></pre>
+  </div>
+
   <div class="card">
-    <h2><span class="num">2</span> 망 측정</h2>
+    <h2><span class="num">3</span> 망 측정 (1회)</h2>
     <p class="hint"><b>현장에서만 잴 수 있습니다.</b> 서버PC 를 빼오면 못 잽니다.
       ping 3종 + 경로 추적 + 네트워크 정보를 <span class="mono">_logs/망측정_&lt;시각&gt;/</span> 에 저장합니다.
       약 2분.</p>
-    <p class="hint">멈칫의 원인이 <b>망</b>인지 <b>로봇</b>인지가 이 한 번으로 갈립니다.
+    <p class="hint">비이상적 정지(급감속)의 원인이 <b>망</b>인지 <b>로봇</b>인지가 이 한 번으로 갈립니다.
       현장 실측 RTT 가 446 ms 인데, ping 이 200 ms 이상이면 망 문제로 확정됩니다.</p>
     <div class="row">
       <button class="primary" data-run="netcheck">망 측정 시작</button>
@@ -675,7 +615,7 @@ td:first-child{color:var(--ink-2);width:120px;white-space:nowrap}
   </div>
 
   <div class="card">
-    <h2><span class="num">3</span> 사전 점검</h2>
+    <h2><span class="num">4</span> 사전 점검</h2>
     <p class="hint"><b>주행 전에 반드시.</b> 30초.
       09-18 과 09-21 에 현장 기록이 <b>통째로 비어 있었습니다</b>
       (motion.jsonl 0~1줄, 사이클 폴더 0개).
@@ -688,44 +628,12 @@ td:first-child{color:var(--ink-2);width:120px;white-space:nowrap}
   </div>
 
   <div class="card">
-    <h2><span class="num">4</span> 주행 기록</h2>
-    <p class="hint">자동 감지는 "속도가 떨어졌다"만 압니다.
-      <b>어느 게 불편한 정지인지는 사람만 압니다.</b></p>
-    <p class="hint">[기록 시작]을 누르면 <b>검은 창이 하나 더 열립니다.</b> 그게 기록기입니다.
-      창을 닫지 마세요.</p>
-    <p class="hint">멈칫을 표시하는 방법이 둘입니다 —
-      <b>그 검은 창에서 스페이스바</b>(권장. 기록기 안에 직접 들어가고
-      반응지연 보정과 스냅샷까지 붙습니다),
-      또는 <b>아래 [멈칫] 버튼</b>(폰에서 누를 때. 별도 파일로 남습니다).
-      둘 다 같은 시계를 쓰므로 나중에 합칠 수 있습니다.</p>
-    <div class="row" style="margin-bottom:12px">
-      <span class="hint" style="margin:0">사이클</span>
-      <input type="number" id="cycles" value="2" min="1" max="20">
-      <button class="primary" data-run="record">기록 시작</button>
-      <button class="danger" id="stop-record" hidden>기록 중지</button>
-    </div>
-    <button class="big mark" id="mark">멈칫 &mdash; 지금 불편하게 섰다</button>
-    <p class="hint" style="margin:10px 0 0">서버PC 앞이면 검은 창의 스페이스바가 낫습니다.
-      이 버튼은 <b>폰으로 로봇을 따라다닐 때</b> 쓰세요.</p>
-    <div class="marks" id="marks"></div>
-    <pre id="out-record" hidden></pre>
-  </div>
-
-  <div class="card">
     <h2><span class="num">5</span> 부하 모니터</h2>
     <p class="hint">속도·부하·잭 상태를 실시간으로 봅니다. 별도 창으로 열립니다.
       먼저 <b>부하 0</b> 으로 몇 바퀴 돌려 기준선을 잡고,
       <span class="mono">load average</span> 경고가 <b>실제로 뜨는지</b> 보세요.
       사무실 crawler 에서는 3단계에서도 0건이었습니다.</p>
     <div class="row"><button id="monitor">부하 모니터 열기</button></div>
-  </div>
-
-  <div class="card">
-    <h2><span class="num">6</span> 로그 수집</h2>
-    <p class="hint">주행 기록과 백엔드 로그를 zip 하나로 묶습니다.
-      <b>나올 때 이 zip 과 망측정 폴더를 챙기세요.</b> 그 둘이면 밖에서 분석됩니다.</p>
-    <div class="row"><button data-run="collect">zip 만들기</button></div>
-    <pre id="out-collect" hidden></pre>
   </div>
 
   <p class="foot">
@@ -769,7 +677,7 @@ async function loadStatus(){
       <tr><td>git 브랜치</td><td class="mono">${s.git_branch||'-'}</td></tr>
       <tr><td>최근 커밋</td><td class="mono" style="font-size:12px">${(s.git_log||'-').replace(/\n/g,'<br>')}</td></tr>
       <tr><td>필요한 파일</td><td>${miss.length ? cell('없음: '+miss.join(', '), false) : cell('전부 있음', true)}</td></tr>
-      <tr><td>멈칫 표시</td><td>${s.marks} 건</td></tr>`;
+      <tr><td>로그 기록</td><td>${s.session && s.session.active ? cell('기록 중 ('+s.session.start+' 시작)', true) : '안 함'}</td></tr>`;
   }catch(e){
     t.innerHTML = `<tr><td>오류</td><td class="bad">서버에 못 붙었습니다</td></tr>`;
   }
@@ -786,7 +694,6 @@ async function start(what, extra){
   const r = await api('/api/run', Object.assign({what}, extra||{}));
   if(!r.id){ pre.textContent = '시작 실패'; if(btn) btn.disabled=false; return; }
   jobs[what] = {id:r.id, from:0};
-  if(what === 'record'){ $('#stop-record').hidden = false; }
   poll(what);
 }
 
@@ -804,9 +711,8 @@ async function poll(what){
     if(r.done){
       const btn = document.querySelector(`[data-run="${what}"]`);
       if(btn) btn.disabled = false;
-      if(what === 'record') $('#stop-record').hidden = true;
       delete jobs[what];
-      loadStatus();
+      loadStatus(); loadSession();
       return;
     }
   }catch(e){}
@@ -816,34 +722,53 @@ async function poll(what){
 document.querySelectorAll('[data-run]').forEach(b=>{
   b.onclick = ()=>{
     const what = b.dataset.run;
-    if(what === 'record') start(what, {cycles: +$('#cycles').value || 2});
-    else start(what);
+    if(what === 'sstop' && !confirm('기록을 끝내고 로그를 추출할까요?\n로봇 bag 을 받느라 몇 분 걸릴 수 있습니다.')) return;
+    ['sstart','sstop','sbags'].forEach(w=>{ if(w!==what) outEl(w).hidden = true; });
+    start(what);
   };
 });
 
-$('#stop-record').onclick = async ()=>{
-  const j = jobs['record']; if(!j) return;
-  await api('/api/stop', {id:j.id});
-};
+// ── 세션 상태 ──
+async function loadSession(){
+  try{
+    const s = await api('/api/session');
+    const bd = $('#sess-badge');
+    if(s.active){
+      bd.textContent = `기록 중 · ${s.start} 시작 · ${s.elapsed} · 표시 ${s.marks}건`
+        + (s.drive_log ? '' : ' · ⚠ 주행 기록기 꺼짐');
+      bd.style.background = 'var(--red)'; bd.style.color = '#fff';
+    }else{
+      bd.textContent = '기록 안 함' + (s.last_zip ? ' · 마지막 zip 있음' : '');
+      bd.style.background = ''; bd.style.color = '';
+    }
+    $('[data-run="sstart"]').disabled = !!s.active || !!jobs['sstart'];
+    $('[data-run="sstop"]').disabled = !s.active || !!jobs['sstop'];
+    $('#mark').disabled = !s.active;
+  }catch(e){}
+}
 
-// ── 멈칫 표시 ──
+// ── 비이상적 정지 표시 ──
 $('#mark').onclick = async ()=>{
-  const r = await api('/api/mark', {note:''});
-  const d = document.createElement('span');
-  d.className = 'chip'; d.textContent = r.ts;
-  $('#marks').prepend(d);
+  const r = await api('/api/mark', {note: $('#note').value.trim()});
   const btn = $('#mark');
   const old = btn.textContent;
-  btn.textContent = '기록했습니다  ' + r.ts;
+  if(!r.ok){ btn.textContent = r.msg || '실패'; setTimeout(()=>{ btn.textContent = old; }, 1500); return; }
+  const d = document.createElement('span');
+  d.className = 'chip'; d.textContent = r.ts + (r.note ? ' ' + r.note : '');
+  $('#marks').prepend(d);
+  $('#note').value = '';
+  btn.textContent = `기록했습니다  ${r.ts}  (${r.count}건째)`;
   setTimeout(()=>{ btn.textContent = old; }, 1100);
+  loadSession();
 };
 
 $('#monitor').onclick = ()=>{
   window.open('/monitor', '_blank');
 };
 
-$('#refresh').onclick = loadStatus;
-loadStatus();
+$('#refresh').onclick = ()=>{ loadStatus(); loadSession(); };
+loadStatus(); loadSession();
+setInterval(loadSession, 5000);
 setInterval(()=>{ if(!Object.keys(jobs).length) loadStatus(); }, 15000);
 </script>
 </html>
