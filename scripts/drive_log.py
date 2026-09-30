@@ -1505,6 +1505,131 @@ def _spawn(fn, *args):
     threading.Thread(target=run, daemon=True).start()
 
 
+# ══════════════════════════════════════════════════════════════════
+#  비이상적 정지(급감속) 판별 — 정상 감속은 빼고 이것만 따로 남긴다 (2026-09-29)
+#
+#  왜 — 이 기록기는 속도가 떨어진 구간을 **전부** 남긴다(9/29 현장 1사이클 129건).
+#    대부분 도착·회전 같은 정상 감속이라, 사람이 표시하지 않으면 무엇이 문제였는지
+#    가려낼 수 없었다.
+#
+#  기준 — 9/29 현장 bag 분석에서 나온 모양을 그대로 쓴다.
+#    경유지 주행(along_given_route) 중, 목적지까지 ABN_REM_MIN_M 넘게 남았을 때
+#      ① 상한의 ABN_HI 배 이상으로 달리다가
+#      ② ABN_FALL_S 초 안에 상한의 ABN_LO 배 이하로 떨어지고
+#      ③ ABN_REC_S 초 안에 상한의 ABN_REC 배 이상으로 **회복**한다 (완전히 서면 아니다)
+#      ④ 그동안 서버 속도 상한이 그대로다 (바뀌었으면 서버 안전존이 누른 것)
+#      ⑤ **직진 중이다** — 방향 변화 ABN_TURN_DEG 미만, 최대 각속도 ABN_ANG_MAX 미만
+#      ⑥ 서버 상한이 평소 값(본 것 중 최대)의 ABN_CAP_BASE 배 이상 — 안전존 서행 중이면 뺀다
+#    상한 0.8 이면 0.68 이상 → 0.40 이하 → 0.60 이상.
+#  ⑤⑥ 은 2026-09-29 연구소 시험에서 추가했다. ①~④ 만으로는 23건이 잡혔는데
+#    19건이 충전소 출구 **코너 감속**(방향 46~90°, 각속도 0.55~0.80), 3건이 **안전존 서행**
+#    (상한 0.5/0.3/0.1) 이었다. 현장 실제 급감속 14건은 방향 0~1°, 각속도 0.03~0.14 였다.
+#  검증 — 9/29 현장 기록에 적용: 사람이 표시한 13건 중 12건을 잡았다.
+#    표시 없이 잡힌 것도 bag 에서 같은 모양이 보인 건이다(사람이 놓친 것).
+# ══════════════════════════════════════════════════════════════════
+ABN_HI, ABN_LO, ABN_REC = 0.85, 0.50, 0.75
+ABN_FALL_S, ABN_REC_S = 2.5, 6.0
+ABN_REM_MIN_M = 4.0
+ABN_TURN_DEG = 10.0        # 감속 구간 방향 변화 상한(도)
+ABN_ANG_MAX = 0.3          # 감속 구간 최대 각속도 상한(rad/s)
+ABN_CAP_BASE = 0.9         # 평소 상한 대비 이 배 미만이면 안전존 서행으로 본다
+ABN_PATH = {"p": None}          # 세션(실행) 단위 파일 — main 에서 정한다
+
+
+class _AbnormalStop:
+    def __init__(self):
+        self.hi = None          # 마지막으로 '빠르게 달리던' 행
+        self.dip = None         # 떨어진 뒤 추적 중 {start, enter, bottom, rows}
+        self.base_cap = 0.0     # 지금까지 본 서버 상한의 최대 = 평소 주행 속도
+
+    def feed(self, r: dict) -> None:
+        try:
+            self._feed(r)
+        except Exception as e:                    # 판별기 오류가 기록을 죽이면 안 된다
+            print("  (비이상적 정지 판별 오류 무시: %s)" % e, flush=True)
+            self.hi = self.dip = None
+
+    def _feed(self, r):
+        v, cap, t = r.get("v"), r.get("cap"), r.get("t")
+        if v is None or t is None:
+            return
+        cap = cap if cap and cap > 0 else 0.8
+        self.base_cap = max(self.base_cap, cap)
+        on_route = r.get("action") == "along_given_route" and r.get("move") == "moving"
+        if self.dip is None:
+            if on_route and v >= ABN_HI * cap and (r.get("rem") or 0) > ABN_REM_MIN_M:
+                self.hi = r
+                return
+            if self.hi and v <= ABN_LO * cap and t - self.hi["t"] <= ABN_FALL_S:
+                self.dip = {"start": self.hi, "enter": r, "bottom": r,
+                            "rows": [self.hi, r]}
+                self.hi = None
+            elif self.hi and t - self.hi["t"] > ABN_FALL_S:
+                self.hi = None
+            return
+        d = self.dip
+        d["rows"].append(r)
+        if v < d["bottom"]["v"]:
+            d["bottom"] = r
+        if v >= ABN_REC * cap:
+            self.dip = None
+            s, b = d["start"], d["bottom"]
+            if t - d["enter"]["t"] > ABN_REC_S:
+                return
+            if (b.get("rem") or 0) <= ABN_REM_MIN_M:
+                return                                 # 도착 감속
+            cap_same = (s.get("cap") == b.get("cap"))
+            # ⑥ 안전존 서행 중(상한이 평소보다 낮음)이면 뺀다
+            if (s.get("cap") or 0) < ABN_CAP_BASE * self.base_cap:
+                return
+            # ⑤ 직진 중이었나 — 코너 감속을 뺀다
+            ori = [x.get("ori") for x in d["rows"] if x.get("ori") is not None]
+            turn = 0.0
+            if len(ori) >= 2:
+                turn = abs(math.degrees(math.atan2(math.sin(ori[-1] - ori[0]),
+                                                   math.cos(ori[-1] - ori[0]))))
+            ang = max((abs(x.get("ang") or 0) for x in d["rows"]), default=0.0)
+            if turn >= ABN_TURN_DEG or ang >= ABN_ANG_MAX:
+                return
+            self._emit(s, b, r, cap_same, turn, ang)
+            return
+        if t - d["enter"]["t"] > ABN_REC_S:
+            self.dip = None                            # 회복 안 함 — 정지·도착
+
+    def _emit(self, s, b, rec, cap_same, turn=0.0, ang=0.0):
+        rec_d = {
+            "t": round(s["t"], 2), "ts": time.strftime("%H:%M:%S", time.localtime(s["t"])),
+            "bottom_ts": time.strftime("%H:%M:%S", time.localtime(b["t"])),
+            "v_from": s.get("v"), "v_min": b.get("v"), "v_recovered": rec.get("v"),
+            "drop_s": round(b["t"] - s["t"], 2), "recover_s": round(rec["t"] - b["t"], 2),
+            "cap": s.get("cap"), "server_cap_changed": not cap_same,
+            "rem_m": round(b.get("rem") or 0, 1),
+            "x": b.get("x"), "y": b.get("y"),
+            "sug_from": s.get("sug"), "sug_min": b.get("sug"),
+            "front_m": b.get("front_m"), "n_band": b.get("n_band"),
+            "turn_deg": round(turn, 1), "ang_max": round(ang, 2),
+            "cycle": CY.get("idx") if CY.get("active") else None,
+        }
+        # 서버 상한이 바뀌었으면 서버 안전존이 누른 것 — 비이상적 정지가 아니다
+        kind = "abnormal_stop" if cap_same else "server_slowdown"
+        w("events", dict(rec_d, kind=kind))
+        if kind != "abnormal_stop":
+            return
+        p = ABN_PATH["p"]
+        if p:
+            try:
+                with io.open(p, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(rec_d, ensure_ascii=False) + "\n")
+            except Exception:
+                pass
+        print("  ★ 비이상적 정지 %s  %.2f → %.2f → %.2f m/s  (남은 %.0f m, 회복 %.1f초)"
+              % (rec_d["ts"], rec_d["v_from"] or 0, rec_d["v_min"] or 0,
+                 rec_d["v_recovered"] or 0, rec_d["rem_m"], rec_d["recover_s"]), flush=True)
+
+
+_abn = _AbnormalStop()
+
+
 def sampler(a):
     cur = None
     pois = META.get("pois") or []
@@ -1549,7 +1674,7 @@ def sampler(a):
                 CY["last_pose"] = pose
             if plan_t and now - plan_t < 1.0:
                 CY["plan_seen"] += 1
-            w("motion", {
+            _row = {
                 "t": now, "v": v, "acc": acc, "ang": ang,
                 "x": round(pose[0], 3) if pose else None,
                 "y": round(pose[1], 3) if pose else None,
@@ -1574,7 +1699,9 @@ def sampler(a):
                 # 이 값들이 얼마나 낡았는지. 크면 rem/sug 를 믿으면 안 된다.
                 "plan_age": round(now - plan_t, 2) if plan_t else None,
                 "fused_age": round(now - fused_t, 2) if fused_t else None,
-            })
+            }
+            w("motion", _row)
+            _abn.feed(_row)
 
         if v is not None and CY["active"]:
             if cur is None:
@@ -1999,6 +2126,28 @@ def write_summary(outdir, a, t0, t1, evs, n_bk, n_sf, cyc, reason):
             L.append("> - %s" % x)
         L.append("")
 
+    # ★ 2026-09-29 — 자동 판별한 비이상적 정지(정상 감속 제외). _AbnormalStop 주석 참조.
+    abns = [e for e in evs if e.get("kind") == "abnormal_stop"]
+    L.append("## ★ 자동 판별 — 비이상적 정지 %d건" % len(abns))
+    L.append("")
+    if abns:
+        L.append("| 시각 | 속도(시작→최저→회복) | 떨어지는 데 | 회복까지 | 남은 거리 | 제안속도 | 앞거리 | 사람 표시 |")
+        L.append("|---|---|---:|---:|---:|---|---:|---|")
+        for e in abns:
+            near = any(-1 <= m["t"] - e["t"] <= 8 for m in mks)
+            L.append("| %s | %s → %s → %s | %ss | %ss | %s m | %s→%s | %s | %s |" % (
+                e.get("ts"), e.get("v_from"), e.get("v_min"), e.get("v_recovered"),
+                e.get("drop_s"), e.get("recover_s"), e.get("rem_m"),
+                e.get("sug_from"), e.get("sug_min"), e.get("front_m") or "빔",
+                "O" if near else "-"))
+    else:
+        L.append("없음 (경유지 주행 중 급히 떨어졌다 회복한 구간이 없다)")
+    L.append("")
+    L.append("> 기준: 경유지 주행 중·직진 중(방향 %.0f° 미만) 목적지까지 %.0f m 넘게 남았을 때, 상한의 %.0f%% 이상 → "
+             "%.1f초 안에 %.0f%% 이하 → %.0f초 안에 %.0f%% 이상 회복, 서버 상한 평소 그대로." % (
+                 ABN_TURN_DEG, ABN_REM_MIN_M, ABN_HI * 100, ABN_FALL_S, ABN_LO * 100, ABN_REC_S, ABN_REC * 100))
+    L.append("")
+
     if mks:
         L.append("## ★ 사용자가 표시한 비이상적 정지 %d건" % len(mks))
         L.append("")
@@ -2406,6 +2555,7 @@ def main():
     stamp = time.strftime("%Y%m%d_%H%M%S", time.localtime(t_start))
     if a.session_dir:
         SESSION["dir"] = a.session_dir
+        ABN_PATH["p"] = os.path.join(a.session_dir, "비이상적정지.jsonl")
         base = os.path.join(a.session_dir, "drive_log")
         os.makedirs(base, exist_ok=True)
         try:
@@ -2417,6 +2567,7 @@ def main():
         base = os.path.join(LOG_DIR, "run_%s%s"
                             % (stamp, ("_" + a.tag) if a.tag else ""))
         os.makedirs(base, exist_ok=True)
+        ABN_PATH["p"] = os.path.join(base, "비이상적정지.jsonl")
 
     print("=" * 76)
     print("[drive_log v2] 로봇 %s" % a.ip)

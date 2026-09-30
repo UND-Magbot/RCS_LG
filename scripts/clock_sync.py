@@ -10,12 +10,17 @@
   비이상적 정지(급감속)의 원인을 찾을 때 **서버 로그와 로봇 bag 로그를 나란히**
   놓아야 한다. 그런데 두 시계가 같다는 보장이 없다.
 
-  로봇은 시각을 NTP(chrony)로 받아오는데, 설정된 시계 서버가 **전부 인터넷
-  주소**다 (2026-09-28 확인).
+  로봇은 시각을 NTP(chrony)로 받아온다. 설정된 시계 서버는 전부 인터넷 주소다.
       pool ntp.ubuntu.com / 0~2.ubuntu.pool.ntp.org
       server ntp1.autoxing.com / ntp2.autoxing.com
-  현장은 M2M 전용망이라 **하나도 닿지 않는다.** 받아올 곳이 없으니 로봇 시계가
-  혼자 흘러간다.
+
+  ★ 2026-09-28 현장 확인 — **로봇은 실제로 동기가 된다.**
+      "there is no need to make step: system time is 0.000035180 seconds fast"
+    M2M 망에서도 NTP 에 닿는 것이다. "현장은 인터넷이 없으니 로봇 시계가
+    흘러간다" 는 처음 전제는 **틀렸다.**
+
+    그래서 이 도구의 쓸모는 바뀐다 — 로봇이 아니라 **서버PC 시계가 틀어졌는지**
+    보는 수단이다. 두 로그를 겹치려면 어느 쪽이 틀어졌든 차이를 알아야 한다.
 
   게다가 로봇은 스스로 따라잡지 못한다.
       maxslewrate 277.778 ppm   1시간에 1초씩만 고친다
@@ -49,9 +54,9 @@ import json
 import os
 import sys
 import time
-from datetime import datetime, timezone
-
-import requests
+import urllib.error
+import urllib.request
+from datetime import datetime
 
 ROBOT_PORT = 8090
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -64,22 +69,26 @@ PRECISE_POLL_SEC = 0.05
 PRECISE_MAX_SEC = 2.5
 
 
-def _robot_date(ip: str, timeout: float = 6.0) -> tuple[float, float, float] | None:
+def _robot_date(ip: str, timeout: float = 6.0) -> "tuple[float, float, float] | None":
     """로봇의 `Date` 헤더를 읽는다.
 
     반환: (로봇 epoch초, 요청 중간 시점의 PC epoch초, 왕복 ms). 실패면 None.
+
+    ※ 표준 라이브러리만 쓴다(2026-09-28). 현장 서버PC 의 시스템 파이썬에는
+      requests 가 없어서 `ModuleNotFoundError` 로 막혔다. 진단 도구가 환경
+      때문에 못 돌면 쓸모가 없다.
     """
+    # GET 만 쓴다. HEAD 를 먼저 시도하다 405 를 받으면 폴백 처리가 번거로워지고
+    # (실측 — 백엔드는 HEAD 를 405 로 거부한다), 이 응답은 작은 JSON 이라
+    # GET 비용이 낮다. 현장 도구는 단순한 편이 낫다.
     url = f"http://{ip}:{ROBOT_PORT}/device/info/brief"
     try:
         t0 = time.time()
-        r = requests.head(url, timeout=timeout)
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            hdr = r.headers
+            r.read(64)                  # 헤더만 필요하지만 연결을 깔끔히 닫는다
         t1 = time.time()
-        if "Date" not in r.headers:
-            # HEAD 를 안 받는 경로일 수 있다 — GET 으로 한 번 더
-            t0 = time.time()
-            r = requests.get(url, timeout=timeout)
-            t1 = time.time()
-        d = r.headers.get("Date")
+        d = hdr.get("Date")
         if not d:
             return None
         rt = email.utils.parsedate_to_datetime(d).timestamp()
@@ -95,15 +104,16 @@ def _step_time(ip: str, timeout: float = 6.0) -> dict | None:
     "no NTP" 류의 메시지가 온다. 그것도 정보이므로 그대로 남긴다.
     """
     try:
-        r = requests.get(f"http://{ip}:{ROBOT_PORT}/services/step_time", timeout=timeout)
-        if r.status_code >= 400:
-            return {"error": f"HTTP {r.status_code}", "body": r.text[:200]}
-        return r.json()
+        with urllib.request.urlopen(
+                f"http://{ip}:{ROBOT_PORT}/services/step_time", timeout=timeout) as r:
+            return json.loads(r.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as e:
+        return {"error": f"HTTP {e.code}", "body": e.read()[:200].decode("utf-8", "replace")}
     except Exception as e:
         return {"error": str(e)[:200]}
 
 
-def _precise_offset(ip: str) -> tuple[float, float] | None:
+def _precise_offset(ip: str) -> "tuple[float, float] | None":
     """초가 바뀌는 순간을 포착해 오프셋을 좁힌다.
 
     `Date` 헤더가 N초에서 N+1초로 넘어가는 시점을 잡으면, 그 순간 로봇 시계는

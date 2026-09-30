@@ -538,6 +538,8 @@ def write_index(d: str) -> str:
         L.append("%s %-18s %-40s %s" % (ok if good else no, label, detail, where))
 
     row(True, "비이상적 정지 표시", "%d건" % len(marks), "marks.jsonl")
+    row(True, "비이상적 정지 자동 판별", "%d건" % len(jlines(os.path.join(d, "비이상적정지.jsonl"))),
+        "비이상적정지.jsonl")
     row(bool(cycles), "주행 기록", ("사이클 %d개" % len(cycles)) if cycles
         else "사이클 없음 — drive_log_화면.txt 확인", "drive_log/")
     row(not srv.get("error"), "서버 로그",
@@ -570,6 +572,21 @@ def write_index(d: str) -> str:
         L.append("  %2d  %s  %-6s  로봇 %s  %s%s" % (
             i, hm(t), m.get("source", ""), rt, bf, ("   메모: " + m["note"]) if m.get("note") else ""))
     L.append("  ※ 사람은 느끼고 나서 누른다(실측 0.9~4.2초 늦음). 표시 몇 초 앞을 보세요.")
+    L.append("")
+    # ★ 2026-09-29 — 주행 기록기가 자동 판별한 비이상적 정지(정상 감속 제외)
+    abns = jlines(os.path.join(d, "비이상적정지.jsonl"))
+    L.append("[2-1] 자동 판별 — 비이상적 정지 %d건  (시작 시각 / 로봇 시각 / 속도 / 들어 있는 bag)" % len(abns))
+    if not abns:
+        L.append("  (없음)")
+    for i, e in enumerate(abns, 1):
+        t = float(e.get("t") or 0)
+        rt = hm(t + off) if off is not None else "-"
+        bf = next((bb["file"] for bb in (bag.get("ok") or []) if bb["start"] <= t < bb["end"]), "-")
+        near = any(-1 <= float(m.get("t") or 0) - t <= 8 for m in marks)
+        L.append("  %2d  %s  로봇 %s  %s→%s→%s m/s  남은 %sm  %s%s" % (
+            i, hm(t), rt, e.get("v_from"), e.get("v_min"), e.get("v_recovered"),
+            e.get("rem_m"), bf, "   (사람 표시 있음)" if near else ""))
+    L.append("  ※ 기준: 경유지 주행 중 급히 떨어졌다가 수 초 안에 회복한 것만. 도착·회전·서버 안전존 감속은 뺐다.")
     L.append("")
 
     L.append("[3] 망 요약  (ping 1초 · HTTP 5초 간격)")
