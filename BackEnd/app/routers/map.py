@@ -365,6 +365,62 @@ def _build_firewall_overlay_features(firewall_polygons: list) -> list[dict]:
     return features
 
 
+# ── 조명 노이즈 구역 (Deep Obstacle Area → Spotlight Obstacle) ─────────
+#   2026-09-30 — 비이상적 정지(급감속) 원인이 천장 스포트라이트였다(제조사 답변).
+#   조명 반사를 뎁스 카메라가 빈 바닥의 장애물로 오인 → 감속.
+#   이 구역 안에서는 **뎁스 카메라가 꺼지고 라이다만** 동작한다(제조사 확인).
+#   → 노이즈 점만 덮는 최소 크기로 그릴 것.
+#   형식은 AutoXing 클라우드 편집기 Export 2회로 실측:
+#       Polygon + regionType "15" + obstacleType "1"(Spotlight)
+SPOTLIGHT_REGION_TYPE = "15"
+SPOTLIGHT_OBSTACLE_TYPE = "1"
+
+
+def _is_spotlight_feature(feat: dict) -> bool:
+    """로봇 오버레이의 feature 가 '뎁스 장애물 구역(regionType 15)'인가.
+
+    우리 DB 가 이 구역의 원본이다. 동기화 때 로봇에 있던 것은 전부 걷어내고 DB 것으로 교체한다
+    (DB 에서 지우고 동기화하면 로봇에서도 사라진다 = 롤백).
+    """
+    if (feat.get("geometry") or {}).get("type") != "Polygon":
+        return False
+    return str((feat.get("properties") or {}).get("regionType", "")) == SPOTLIGHT_REGION_TYPE
+
+
+def _build_spotlight_overlay_features(polys: list) -> list[dict]:
+    """조명 노이즈 구역(shape_type='spotlight') 폴리곤 → 로봇 오버레이 Polygon Feature."""
+    features = []
+    for poly in polys:
+        points = json.loads(poly.points_json) if isinstance(poly.points_json, str) else poly.points_json
+        coords = [[pt["worldX"], pt["worldY"]] for pt in (points or [])
+                  if pt.get("worldX") is not None and pt.get("worldY") is not None]
+        if len(coords) < 3:
+            continue
+        coords.append(coords[0])     # GeoJSON Polygon 은 닫힌 고리
+        features.append({
+            "id": uuid.uuid4().hex[:24],
+            "type": "Feature",
+            "geometry": {"type": "Polygon", "coordinates": [coords]},
+            "properties": {
+                "blocked": False,
+                "mapOverlay": True,
+                "name": poly.name or "Spotlight",
+                "obstacleType": SPOTLIGHT_OBSTACLE_TYPE,
+                "regionType": SPOTLIGHT_REGION_TYPE,
+            },
+        })
+    return features
+
+
+def _db_spotlight_features(db: Session, map_id: int) -> list[dict]:
+    polys = db.query(MapPolygon).filter(
+        MapPolygon.map_id == map_id,
+        MapPolygon.shape_type == "spotlight",
+        MapPolygon.is_active == True,
+    ).all()
+    return _build_spotlight_overlay_features(polys)
+
+
 # ── 로봇 목록 / 연결 확인 ─────────────────────────────────────
 
 @router.get("/robots")
@@ -1286,7 +1342,9 @@ def api_sync_map_to_robot(map_id: int, body: dict, db: Session = Depends(get_db)
                         old_overlays = _json_overlay.loads(r_map.json().get("overlays", "{}"))
                         for feat in old_overlays.get("features", []):
                             feat_type = str(feat.get("properties", {}).get("type", ""))
-                            if _is_firewall_feature(feat):
+                            if _is_spotlight_feature(feat):
+                                pass  # 조명 노이즈 구역은 DB 가 원본 — 기존 것은 버리고 새로 넣는다
+                            elif _is_firewall_feature(feat):
                                 existing_firewall.append(feat)
                             elif feat_type in CHARGING_TYPES:
                                 existing_charging.append(feat)
@@ -1357,12 +1415,16 @@ def api_sync_map_to_robot(map_id: int, body: dict, db: Session = Depends(get_db)
                 })
             logger.info(f"[sync] 잭킹 POI {len(jack_pois)}개 → Shelves Point {len(new_shelves_points)}개")
 
-        # 4) 병합: 기타 + 충전소 + 가상벽 + Shelves Point
-        merged = existing_other + new_charging + new_firewall + new_shelves_points
+        # 3-1) 조명 노이즈 구역 (regionType 15) — 항상 DB 기준
+        new_spotlight = _db_spotlight_features(db, map_id)
+
+        # 4) 병합: 기타 + 충전소 + 가상벽 + Shelves Point + 조명 구역
+        merged = existing_other + new_charging + new_firewall + new_shelves_points + new_spotlight
         overlay_data["features"] = merged
         overlay_synced = True
         logger.info(f"[sync] 오버레이 병합 완료: 기타={len(existing_other)} + 충전소={len(new_charging)} "
-                     f"+ 가상벽={len(new_firewall)} + Shelves Point={len(new_shelves_points)} = {len(merged)}")
+                     f"+ 가상벽={len(new_firewall)} + Shelves Point={len(new_shelves_points)} "
+                     f"+ 조명구역={len(new_spotlight)} = {len(merged)}")
     except Exception as e:
         overlay_error = str(e)
         logger.error(f"[sync] 오버레이 처리 실패: {e}")
@@ -1554,7 +1616,8 @@ def _sync_full_from_server(
                         keep = []
                         for f in existing_feats:
                             ft = str(f.get("properties", {}).get("type", ""))
-                            if ft in ("9", "36", "34") or _is_firewall_feature(f):
+                            if (ft in ("9", "36", "34") or _is_firewall_feature(f)
+                                    or _is_spotlight_feature(f)):
                                 continue
                             keep.append(f)
                         merged = keep + list(our_features)
@@ -1710,6 +1773,9 @@ def api_sync_overlays_to_robot(map_id: int, body: dict, db: Session = Depends(ge
     if fw_polys:
         fw_features = _build_firewall_overlay_features(fw_polys)
 
+    # DB에서 조명 노이즈 구역 overlay (regionType 15) — 항상 DB 기준으로 교체
+    spot_features = _db_spotlight_features(db, map_id)
+
     # DB에서 jack/standby POI → Shelves Point overlay (type=34, subtype=rack)
     shelves_features = []
     from app.models.map import MapPOI
@@ -1775,13 +1841,14 @@ def api_sync_overlays_to_robot(map_id: int, body: dict, db: Session = Depends(ge
                 feat_type = str(feat.get("properties", {}).get("type", ""))
                 # 충전소, 가상벽, Shelves Point 제외 → 나머지 보존
                 if (feat_type not in CHARGING_TYPES and feat_type != "34"
-                        and not _is_firewall_feature(feat)):
+                        and not _is_firewall_feature(feat)
+                        and not _is_spotlight_feature(feat)):
                     existing_other.append(feat)
     except Exception as e:
         logger.warning(f"[sync-overlays] 기존 overlay 읽기 실패: {e}")
 
     # 병합
-    merged = existing_other + charging_features + fw_features + shelves_features
+    merged = existing_other + charging_features + fw_features + shelves_features + spot_features
     overlay_data = {"type": "FeatureCollection", "features": merged}
     overlay_json = _json.dumps(overlay_data)
 
@@ -1840,6 +1907,7 @@ def api_sync_overlays_to_robot(map_id: int, body: dict, db: Session = Depends(ge
         "charging": len(charging_features),
         "firewall": len(fw_features),
         "shelves_point": len(shelves_features),
+        "spotlight": len(spot_features),
         "total_features": len(merged),
     }
 

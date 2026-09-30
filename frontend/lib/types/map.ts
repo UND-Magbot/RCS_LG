@@ -1,4 +1,4 @@
-export type MapTool = "select" | "point" | "jackPoint" | "line" | "curveLine" | "polygon" | "del" | "chargingPile" | "currentPos" | "currentPosJack" | "firewall" | "virtualwall";
+export type MapTool = "select" | "point" | "jackPoint" | "line" | "curveLine" | "polygon" | "del" | "chargingPile" | "currentPos" | "currentPosJack" | "firewall" | "virtualwall" | "spotlight";
 
 export type POIType = "waypoint" | "standby" | "charging" | "firewall" | "jack";
 
@@ -36,7 +36,8 @@ export type PolygonShape = {
   id: string;
   points: { x: number; y: number }[];
   name: string;
-  shapeType?: "polygon" | "firewall";
+  /** spotlight = 조명 노이즈 구역(로봇 뎁스 카메라 무시 구역, regionType 15) */
+  shapeType?: "polygon" | "firewall" | "spotlight";
 };
 
 export type ConnectedRobot = {
@@ -95,6 +96,8 @@ export type MapCanvasProps = {
   vwAutoGap?: boolean;
   /** 출입구 폭 (SVG 픽셀) */
   vwGapPx?: number;
+  /** 조명 구역 그리는 중 — 첫 번째로 찍은 모서리 (두 번째 클릭에서 사각형 완성) */
+  spotCorner?: { x: number; y: number } | null;
 };
 
 export type MapToolbarTopProps = {

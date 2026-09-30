@@ -118,6 +118,8 @@ export default function MapPage() {
   const [selectedPOI, setSelectedPOI] = useState<string | null>(null);
   const [lineStartPOI, setLineStartPOI] = useState<string | null>(null);
   const [polygonPoints, setPolygonPoints] = useState<{ x: number; y: number }[]>([]);
+  // 조명 노이즈 구역 — 첫 번째로 찍은 모서리 (두 번째 클릭에서 사각형 완성)
+  const [spotCorner, setSpotCorner] = useState<{ x: number; y: number } | null>(null);
 
   // Zoom/Pan/Rotation
   const [zoom, setZoom] = useState(1);
@@ -649,12 +651,31 @@ export default function MapPage() {
         }
       } else if (activeTool === "polygon") {
         setPolygonPoints((prev) => [...prev, { x, y }]);
+      } else if (activeTool === "spotlight") {
+        // 조명 노이즈 구역 — 두 번 클릭(대각선 두 모서리)으로 사각형.
+        //   로봇이 이 안에서 뎁스 카메라를 끄므로(라이다만 동작) 노이즈 점만 덮게 작게 그릴 것.
+        if (!spotCorner) {
+          setSpotCorner({ x, y });
+        } else {
+          const a = spotCorner;
+          if (Math.abs(x - a.x) > 1 && Math.abs(y - a.y) > 1) {
+            pushHistory();
+            const n = polygons.filter((p) => p.shapeType === "spotlight").length;
+            setPolygons((prev) => [...prev, {
+              id: generateId("polygon"),
+              points: [{ x: a.x, y: a.y }, { x, y: a.y }, { x, y }, { x: a.x, y }],
+              name: `SPOT${n + 1}`,
+              shapeType: "spotlight",
+            } as PolygonShape]);
+          }
+          setSpotCorner(null);
+        }
       }
     },
     // 스냅 토글이 즉시 반영되도록 관련 state 를 의존성에 넣는다.
     // svgToWorld/worldToSvg 는 이 아래에서 선언되므로 여기 넣으면 TDZ 로 터진다 — 넣지 말 것.
     [activeTool, pois.length, pushHistory, lineStartPOI, pois, zoom, offset,
-     vwAngleSnap, vwSnap, selectedMapId, mapMeta]
+     vwAngleSnap, vwSnap, selectedMapId, mapMeta, spotCorner, polygons]
   );
 
   // ── POI Click Handler ──
@@ -822,6 +843,8 @@ export default function MapPage() {
     setEditingPOI(null);
     setLineStartPOI(null);
     setLineDirectionPopup(null);
+
+    setSpotCorner(null);   // 조명 구역 그리던 모서리 취소
 
     // 가상벽 도구에서 벗어나면 임시 점 초기화
     if (tool !== "virtualwall") {
@@ -1330,6 +1353,7 @@ export default function MapPage() {
                 vwWidthPx={vwWidthM / (mapMeta?.grid_resolution || 0.05)}
                 vwAutoGap={vwAutoGap}
                 vwGapPx={vwGapM / (mapMeta?.grid_resolution || 0.05)}
+                spotCorner={spotCorner}
                 activeTool={activeTool}
                 selectedPOI={selectedPOI}
                 lineStartPOI={lineStartPOI}

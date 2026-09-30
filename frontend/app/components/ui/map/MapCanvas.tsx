@@ -45,6 +45,7 @@ export function MapCanvas({
   vwWidthPx = 0,
   vwAutoGap = false,
   vwGapPx = 0,
+  spotCorner = null,
 }: MapCanvasProps) {
   const svgRef = useRef<SVGSVGElement>(null);
   const isPanningRef = useRef(false);
@@ -201,7 +202,8 @@ export function MapCanvas({
       activeTool === "curveLine" ||
       activeTool === "polygon" ||
       activeTool === "firewall" ||
-      activeTool === "virtualwall"
+      activeTool === "virtualwall" ||
+      activeTool === "spotlight"
     ) {
       const pos = screenToCanvas(e.clientX, e.clientY);
       onCanvasClick(pos.x, pos.y);
@@ -290,13 +292,23 @@ export function MapCanvas({
             <polygon
               key={poly.id}
               points={poly.points.map((p) => `${p.x},${p.y}`).join(" ")}
-              className={poly.shapeType === "firewall" ? "map-polygon__firewall" : "map-polygon__shape"}
+              className={
+                poly.shapeType === "firewall" ? "map-polygon__firewall"
+                  : poly.shapeType === "spotlight" ? "map-polygon__spotlight"
+                  : "map-polygon__shape"
+              }
               onClick={(e) => {
                 e.stopPropagation();
                 onPolygonClick(poly.id);
               }}
             />
           ))}
+
+          {/* 조명 구역 — 첫 모서리 표시 (두 번째 클릭에서 사각형 완성) */}
+          {spotCorner && (
+            <circle cx={spotCorner.x} cy={spotCorner.y} r={5 / zoom}
+              fill="#f5a623" stroke="#fff" strokeWidth={1.5 / zoom} pointerEvents="none" />
+          )}
 
           {/* 가상벽 그리기 프리뷰 — 클릭한 선(회색 점선)과 실제 생성될 선(빨강)을 같이 보여준다 */}
           {vwTempPoints.length > 0 && (() => {

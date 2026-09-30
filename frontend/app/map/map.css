@@ -278,6 +278,15 @@
   cursor: pointer;
 }
 
+/* 조명 노이즈 구역 — 로봇 뎁스 카메라를 끄는 곳. 가상벽(빨강)과 구분되게 주황 */
+.map-polygon__spotlight {
+  fill: rgba(245, 166, 35, 0.3);
+  stroke: #f5a623;
+  stroke-width: 2;
+  stroke-dasharray: 3 3;
+  cursor: pointer;
+}
+
 .map-polygon__firewall--preview {
   fill: rgba(255, 60, 60, 0.15);
   stroke: #ff3c3c;

@@ -6,6 +6,7 @@ const tools: { key: MapTool; icon: string; label: string }[] = [
   { key: "point", icon: "●", label: "포인트" },
   { key: "jackPoint", icon: "⚑", label: "작업 포인트" },
   { key: "virtualwall", icon: "▯", label: "가상벽" },
+  { key: "spotlight", icon: "☀", label: "조명 구역" },
   { key: "del", icon: "✕", label: "삭제" },
 ];
 
