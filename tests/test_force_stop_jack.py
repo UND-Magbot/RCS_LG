@@ -484,6 +484,7 @@ def run_case(label, phase, action, with_reservation=True):
         record(label, False, f"'{phase}' 시점을 못 만남")
         settle()
         return
+    last_before = (q("SELECT MAX(id) FROM dispatch_sessions") or [(0,)])[0][0] or 0
     t_press = time.time()
     if action == "reserve":
         ds.force_clear(ROBOT_ID, after="reserve")
@@ -496,6 +497,17 @@ def run_case(label, phase, action, with_reservation=True):
     elif action == "stop_all":
         from app.routers.robot import api_stop_all
         api_stop_all(FAKE_IP)
+    if action == "hold":
+        # [그 자리 정지] — 로봇은 랙을 든 채 선다. 새 규칙(2026-09-29)상 **새 작업이 붙으면 안 된다.**
+        #   종전에는 워커가 죽으면서 R2 예약을 물고 랙을 든 채 출발했다.
+        time.sleep(20)
+        newer = (q("SELECT COUNT(*) FROM dispatch_sessions WHERE id>:s", s=last_before) or [(0,)])[0][0]
+        v = ROBOT.violations
+        record(label, not v and newer == 0,
+               f"위반 {len(v)}건 · 정지 후 새 작업 {newer}건 (0 이어야 함 — 랙을 든 채라 배차 제외)")
+        js._laden_flags.pop(FAKE_IP, None)          # 다음 판을 위해 사람이 잭을 내린 것으로
+        settle(60)
+        return ROBOT.events
     fin = settle(150)
     v = ROBOT.violations
     detail = f"위반 {len(v)}건"
@@ -511,6 +523,53 @@ def run_case(label, phase, action, with_reservation=True):
             detail += " · 종료 뒤 잭다운 없음(확인)"
     record(label, not v and fin, detail)
     return ROBOT.events
+
+
+def run_case_divert():
+    """2026-09-29 현장 버그 — JOB 종료했는데 **취소한 작업(R1)이 다시 실행**됐다.
+
+    재현 순서
+      ① R2→J2 를 한 번 보내 끝낸다 → 로봇이 충전소로 **복귀 중**
+      ② 복귀 중에 R1 호출 → 가용 로봇이 없어 예약 → 복귀하던 워커가 **이어받는다**(예약 id 보유)
+      ③ R2 예약
+      ④ R1→J1 주행 중 [현재 JOB 강제 종료]
+    기대 — 다음 작업은 **R2(J2)**, R1 예약은 **cancelled**.
+    종전 — 워커 예외 처리가 R1 예약을 waiting 으로 되살려, 먼저 생긴 R1 을 다시 집었다.
+    """
+    label = "divert  JOB종료 → 다음은 R2"
+    reset()
+    call_j("J2")
+    ok = wait_until(lambda: (q("SELECT status FROM dispatch_sessions WHERE robot_id=:r "
+                               "ORDER BY id DESC LIMIT 1", r=ROBOT_ID) or [("",)])[0][0]
+                    == "returning", 240)
+    if not ok:
+        record(label, False, "복귀 상태를 못 만남")
+        settle()
+        return
+    q("UPDATE job_points SET occupied=0 WHERE area_id=:a", a=AREA)   # 작업자가 J2 [확인]
+    ok1, msg1, rid1, res1 = call_j("J1")                               # 복귀 중 → 예약 → 이어받기
+    time.sleep(1.0)
+    ok2, msg2, rid2, res2 = call_j("J2")                               # R2 예약
+    j1_res = q("SELECT id FROM dispatch_reservations WHERE poi_id=:p ORDER BY id DESC LIMIT 1",
+               p=POI["J1"]["id"])
+    if not wait_until(lambda: phase_ready("주행중") and any(
+            e[1] == "이동 명령" and "along_given_route" in e[2] for e in ROBOT.events[-3:]), 240):
+        record(label, False, f"J1 주행을 못 만남 (J1 호출 reserved={res1}, J2 reserved={res2})")
+        settle()
+        return
+    last_sid = (q("SELECT MAX(id) FROM dispatch_sessions") or [(0,)])[0][0] or 0
+    ds.force_clear(ROBOT_ID, after="reserve")
+    wait_until(lambda: (q("SELECT COUNT(*) FROM dispatch_sessions WHERE id>:s", s=last_sid)
+                        or [(0,)])[0][0] > 0, 150)
+    new = q("SELECT first_poi_id FROM dispatch_sessions WHERE id>:s ORDER BY id LIMIT 1", s=last_sid)
+    first = new[0][0] if new else None
+    st = q("SELECT status FROM dispatch_reservations WHERE id=:i", i=j1_res[0][0])[0][0] if j1_res else None
+    fin = settle(240)
+    name = {POI["J1"]["id"]: "J1(R1 — 취소한 작업)", POI["J2"]["id"]: "J2(R2)"}.get(first, str(first))
+    good = first == POI["J2"]["id"] and st == "cancelled" and not ROBOT.violations
+    record(label, good and fin,
+           f"J1호출 예약여부={res1} · 다음 작업={name} · R1 예약상태={st} · 위반 {len(ROBOT.violations)}건"
+           + ("" if fin else " · 정리 안 됨"))
 
 
 def main():
@@ -535,6 +594,8 @@ def main():
             print("     ── 사건 기록 ──")
             for e in evs[-40:]:
                 print("     ", e)
+    if not only or "divert" in only:
+        run_case_divert()
     # 무작위 반복 — 누르는 시점을 흩뜨린다
     for i in range(int(os.environ.get("RANDOM_ROUNDS", "6"))):
         phase = random.choice(["적재중", "주행중", "하차중"])

@@ -1433,7 +1433,7 @@ def _worker_loop(worker: _Worker, *, skip_pickup: bool = False) -> None:
             poi = _load_poi(cont_poi)
             if not poi:
                 logger.warning(f"[dispatch] 이어받기 POI {cont_poi} 조회 실패 — 예약 복구 후 종료")
-                _mark_reservation(cont_res_id, "waiting", poi_id=cont_poi,
+                _release_reservation(worker, cont_res_id, cont_poi,
                                   reason="이어받기 POI 조회 실패 — 선점 롤백")
                 break
             logger.info(f"[dispatch] 예약 이어받기 — robot={worker.robot_id} → poi={cont_poi} "
@@ -1446,7 +1446,7 @@ def _worker_loop(worker: _Worker, *, skip_pickup: bool = False) -> None:
             if not ok:
                 # 이동 실패 — 예약을 되돌려 다른 로봇/다음 기회에 처리되게 하고 종료 시퀀스로
                 logger.warning("[dispatch] 이어받기 이동 실패 — 예약 복구 후 종료 시퀀스로 전환")
-                _mark_reservation(cont_res_id, "waiting", poi_id=cont_poi,
+                _release_reservation(worker, cont_res_id, cont_poi,
                                   reason="이어받기 이동 실패 — 선점 롤백")
                 break
             _set_current_poi(worker.session_id, cont_poi)
@@ -3251,6 +3251,31 @@ def _mark_reservation(reservation_id: int, status: str, *,
     _reserve_log(status, reservation_id, poi_id, reason)
 
 
+def _release_reservation(worker: "_Worker", reservation_id: Optional[int],
+                         poi_id: Optional[int], reason: str) -> None:
+    """작업이 중간에 끝났을 때, 그 작업이 물고 있던 예약을 정리한다 (2026-09-29).
+
+    ★ 현장 사고 — [현재 JOB 강제 종료]를 눌렀는데 **취소한 작업이 다시 실행됐다.**
+      종전에는 이 자리가 무조건 `waiting` 으로 되돌렸다("호출 자체는 살려 다른 로봇이
+      받게"). 그런데 되살아난 예약은 **원래 생성 시각을 그대로 가져서** 뒤에 건 예약보다
+      앞선다. 후속 처리가 선착순으로 예약을 넘기니 방금 취소한 R1 을 다시 집었다.
+        R1→J1 (복귀 중 호출을 이어받은 작업 — 예약 id 보유) + R2 예약
+        → JOB 종료 → R1 예약 되살아남 → R1 '작업 중', R2 '예약됨' → 다시 R1 로
+      직접 호출로 시작한 작업은 예약 id 가 없어 재현 때는 정상이었다.
+
+      현장 정의(2026-09-23) — JOB 종료 = **지금 작업은 끝** + 예약된 작업이 있으면 그걸 한다.
+      그래서 **강제 종료(abort)로 끝났으면 취소**로 닫는다. 강제 종료가 아닌 실패
+      (이동 실패·매핑 오류 등)는 종전대로 되돌려 다음 기회에 다시 하게 한다.
+    """
+    if not reservation_id:
+        return
+    if getattr(worker, "abort_flag", False):
+        _mark_reservation(reservation_id, "cancelled", poi_id=poi_id,
+                          reason=f"강제 종료로 취소된 작업 — 다시 하지 않는다 ({reason})")
+    else:
+        _mark_reservation(reservation_id, "waiting", poi_id=poi_id, reason=reason)
+
+
 def try_fulfill_reservations() -> None:
     """가용 로봇이 생겼을 때 대기 중 예약을 FIFO로 자동 호출.
 
@@ -3694,7 +3719,7 @@ def _worker_loop_delivery(worker: _Worker, *, first_j_poi_id: int) -> None:
                 # 이어받은 예약이면 선점을 되돌린다. 안 그러면 그 호출이 fulfilled 로 남아
                 # 아무 로봇도 받지 못하고 조용히 유실된다(작업자는 다시 눌러야 한다).
                 if res_id:
-                    _mark_reservation(res_id, "waiting", poi_id=j_poi_id,
+                    _release_reservation(worker, res_id, j_poi_id,
                                       reason="작업지점 매핑/좌표 조회 실패 — 선점 롤백")
                 return
 
@@ -3703,7 +3728,7 @@ def _worker_loop_delivery(worker: _Worker, *, first_j_poi_id: int) -> None:
                 _set_db_status(worker.session_id, "failed",
                                error=f"랙 보관 위치 {mapping['r_name']} 를 맵에서 찾을 수 없음")
                 if res_id:
-                    _mark_reservation(res_id, "waiting", poi_id=j_poi_id,
+                    _release_reservation(worker, res_id, j_poi_id,
                                       reason=f"랙 보관 위치 {mapping['r_name']} 조회 실패 — 선점 롤백")
                 return
 
@@ -3771,7 +3796,7 @@ def _worker_loop_delivery(worker: _Worker, *, first_j_poi_id: int) -> None:
                 _set_db_status(worker.session_id, "failed",
                                error=f"{mapping['j_name']} 이동 실패")
                 if res_id:
-                    _mark_reservation(res_id, "waiting", poi_id=j_poi_id,
+                    _release_reservation(worker, res_id, j_poi_id,
                                       reason=f"{mapping['j_name']} 이동 실패 — 선점 롤백")
                 return
             _set_current_poi(worker.session_id, j_poi_id)
@@ -3784,11 +3809,12 @@ def _worker_loop_delivery(worker: _Worker, *, first_j_poi_id: int) -> None:
             if worker.abort_flag:
                 _clear_waypoints(worker.session_id)
                 _set_db_status(worker.session_id, "failed", error="작업 강제 정리")
-                # 강제 정리는 이 로봇의 작업만 취소하는 것이다. 작업자의 호출 자체는
-                # 유효하므로 예약을 살려 다른 로봇이 받을 수 있게 한다.
+                # ★ 2026-09-29 — 강제 종료로 끝난 작업의 예약은 **취소**로 닫는다
+                #   (종전: 되살려 다른 로봇이 받게 → 단일 로봇 현장에서 취소한 작업이
+                #   다시 실행됐다. _release_reservation 주석 참조)
                 if res_id:
-                    _mark_reservation(res_id, "waiting", poi_id=j_poi_id,
-                                      reason="작업 강제 정리 — 호출 자체는 살려둔다")
+                    _release_reservation(worker, res_id, j_poi_id,
+                                         reason="작업 강제 정리")
                 return
 
             # ── 4) 대기 예약이 있으면 충전소 생략하고 이어서 ──
@@ -3829,7 +3855,7 @@ def _worker_loop_delivery(worker: _Worker, *, first_j_poi_id: int) -> None:
         logger.exception(f"[delivery] 워커 예외 — robot_id={worker.robot_id}")
         _set_db_status(worker.session_id, "failed", error=str(e))
         if res_id:
-            _mark_reservation(res_id, "waiting", poi_id=j_poi_id,
+            _release_reservation(worker, res_id, j_poi_id,
                               reason=f"배송 워커 예외 — 선점 롤백 ({e})")
     finally:
         jack_service._running_robot_id_by_ip.pop(worker.robot_ip, None)
