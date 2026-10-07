@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>스톱워치</title>
+<!-- 현장(인터넷 없음)용 스톱워치. 외부 파일을 전혀 쓰지 않는다 — 더블클릭으로 연다. -->
+<style>
+  :root { --bg:#111; --fg:#f2f2f2; --dim:#888; --go:#1f9d55; --stop:#c53030; --btn:#2d2d2d; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font-family:"Malgun Gothic","Segoe UI",sans-serif; display:flex; flex-direction:column;
+         align-items:center; padding:24px 16px; min-height:100vh; }
+  #time { font-family:Consolas,"Courier New",monospace; font-size:min(18vw,140px);
+          letter-spacing:2px; margin:12px 0 4px; }
+  #lapnow { font-family:Consolas,monospace; color:var(--dim); font-size:28px; min-height:34px; }
+  .btns { display:flex; gap:12px; margin:20px 0; flex-wrap:wrap; justify-content:center; }
+  button { font-size:24px; padding:16px 28px; border:0; border-radius:10px; background:var(--btn);
+           color:var(--fg); cursor:pointer; min-width:150px; font-family:inherit; }
+  button.go { background:var(--go); } button.stop { background:var(--stop); }
+  .keys { color:var(--dim); font-size:14px; margin-bottom:16px; }
+  table { border-collapse:collapse; font-family:Consolas,monospace; font-size:20px; width:min(560px,100%); }
+  th, td { padding:6px 12px; text-align:right; border-bottom:1px solid #333; }
+  th { color:var(--dim); font-weight:normal; font-family:"Malgun Gothic",sans-serif; font-size:15px; }
+  td.memo { text-align:left; font-family:"Malgun Gothic",sans-serif; font-size:16px; color:#ccc; }
+</style>
+</head>
+<body>
+  <div id="time">00:00.00</div>
+  <div id="lapnow"></div>
+  <div class="btns">
+    <button id="startBtn" class="go">시작</button>
+    <button id="lapBtn">구간</button>
+    <button id="resetBtn">초기화</button>
+    <button id="saveBtn">기록 저장</button>
+  </div>
+  <div class="keys">스페이스 = 시작/정지 · L 또는 Enter = 구간 · R = 초기화 · 구간 기록의 메모 칸을 눌러 메모</div>
+  <table>
+    <thead><tr><th>#</th><th>구간</th><th>누적</th><th>시각</th><th style="text-align:left">메모</th></tr></thead>
+    <tbody id="laps"></tbody>
+  </table>
+
+<script>
+// 경과 시간 = 누적(acc) + 지금 달리는 중이면 (now - startAt).
+// performance.now() 는 PC 시계를 바꿔도 영향받지 않는다.
+let running = false, startAt = 0, acc = 0, lastLap = 0;
+let laps = [];   // {total, split, clock, memo}
+
+const $ = id => document.getElementById(id);
+const elapsed = () => acc + (running ? performance.now() - startAt : 0);
+
+function fmt(ms) {
+  const cs = Math.floor(ms / 10) % 100, s = Math.floor(ms / 1000) % 60,
+        m = Math.floor(ms / 60000) % 60, h = Math.floor(ms / 3600000);
+  const p = n => String(n).padStart(2, "0");
+  return (h ? h + ":" + p(m) : p(m)) + ":" + p(s) + "." + p(cs);
+}
+function clock() {           // 로그와 대조할 수 있게 벽시계 시각을 같이 남긴다
+  const d = new Date(), p = n => String(n).padStart(2, "0");
+  return p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds());
+}
+
+function tick() {
+  const t = elapsed();
+  $("time").textContent = fmt(t);
+  $("lapnow").textContent = laps.length ? "구간 " + fmt(t - lastLap) : "";
+  requestAnimationFrame(tick);
+}
+
+function toggle() {
+  if (running) { acc += performance.now() - startAt; running = false; }
+  else { startAt = performance.now(); running = true; }
+  const b = $("startBtn");
+  b.textContent = running ? "정지" : "시작";
+  b.className = running ? "stop" : "go";
+}
+function lap() {
+  const t = elapsed();
+  if (t === 0) return;
+  laps.push({ total: t, split: t - lastLap, clock: clock(), memo: "" });
+  lastLap = t;
+  render(); keep();
+}
+function reset() {
+  if (laps.length && !confirm("기록을 지울까요?")) return;
+  running = false; acc = 0; lastLap = 0; laps = [];
+  $("startBtn").textContent = "시작"; $("startBtn").className = "go";
+  render(); keep();
+}
+function render() {
+  const tb = $("laps"); tb.innerHTML = "";
+  laps.slice().reverse().forEach((l, i) => {
+    const n = laps.length - i, tr = document.createElement("tr");
+    tr.innerHTML = `<td>${n}</td><td>${fmt(l.split)}</td><td>${fmt(l.total)}</td><td>${l.clock}</td>`;
+    const memo = document.createElement("td");
+    memo.className = "memo"; memo.textContent = l.memo || "＋";
+    memo.onclick = () => { const v = prompt("메모", l.memo); if (v !== null) { l.memo = v; render(); keep(); } };
+    tr.appendChild(memo); tb.appendChild(tr);
+  });
+}
+// 기록 저장 — 텍스트 파일로 내려받는다 (다운로드 폴더)
+function save() {
+  if (!laps.length) { alert("구간 기록이 없습니다."); return; }
+  const lines = ["#\t구간\t누적\t시각\t메모"].concat(
+    laps.map((l, i) => [i + 1, fmt(l.split), fmt(l.total), l.clock, l.memo].join("\t")));
+  const d = new Date(), p = n => String(n).padStart(2, "0");
+  const name = `스톱워치_${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}.txt`;
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob(["﻿" + lines.join("\r\n")], { type: "text/plain" }));
+  a.download = name; a.click();
+}
+// 창을 실수로 닫아도 구간 기록은 남긴다 (진행 중인 시간은 남기지 않는다)
+function keep() { try { localStorage.setItem("sw_laps", JSON.stringify(laps)); } catch (e) {} }
+try {
+  const s = JSON.parse(localStorage.getItem("sw_laps") || "[]");
+  if (Array.isArray(s) && s.length) { laps = s; render(); }
+} catch (e) {}
+
+// 버튼을 누른 뒤 포커스를 풀어 둔다 — 안 그러면 다음 스페이스·Enter 가
+// 단축키 + 버튼 클릭으로 **두 번** 처리된다(시작 직후 바로 정지되는 문제)
+const bind = (id, fn) => { $(id).onclick = () => { fn(); $(id).blur(); }; };
+bind("startBtn", toggle); bind("lapBtn", lap); bind("resetBtn", reset); bind("saveBtn", save);
+document.addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT") return;
+  if (e.code === "Space") { e.preventDefault(); toggle(); }
+  else if (e.key === "l" || e.key === "L" || e.key === "Enter") { e.preventDefault(); lap(); }
+  else if (e.key === "r" || e.key === "R") reset();
+});
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>
