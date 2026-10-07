@@ -711,6 +711,42 @@ PICKUP_ESCAPE_MIN_M = 0.30
 PICKUP_ESCAPE_TIMEOUT = 40
 
 
+def _route_first_heading(x: float, y: float, route_coords: Optional[str],
+                         min_dist: Optional[float] = None) -> Optional[float]:
+    """좌표열에서 (x, y) 로부터 `min_dist` 이상 떨어진 **첫 점의 방향**(rad). 없으면 None.
+
+    출발 정렬(`_face_route_start`)과 강제 종료 선회(`_turn_before_unload`)가 같이 쓴다.
+
+    min_dist
+      기본(None) = ARRIVED_EPS. 출발 정렬용 — 바로 다음 경유지를 본다.
+      선회는 이탈 거리보다 길게 준다. 이탈 전진(1.2 m) 안에 있는 경유지는 **어차피
+      지나치므로** 그 방향으로 돌면 나온 뒤 반대로 또 돈다(2026-10-07 연구소 실측 —
+      W3 0.88 m 앞에서 종료 → '돌 필요 없음' 판정 → 이탈 뒤 -176.9° 회전).
+      그보다 먼 점이 없으면 마지막 점(목적지 쪽)을 본다.
+    """
+    if not route_coords:
+        return None
+    try:
+        v = [float(a) for a in route_coords.split(",")]
+    except ValueError:
+        return None
+    pts = [(v[i], v[i + 1]) for i in range(0, len(v) - 1, 2)]
+    if not pts:
+        return None
+    eps = waypoint_route.ARRIVED_EPS
+    need = eps if min_dist is None else max(eps, min_dist)
+    # ★ 2026-09-28 — 좌표열은 **로봇의 현재 위치부터** 시작한다(waypoint_route 주석 참조).
+    #   그래서 첫 점은 보통 자기 자리다 — 그 점은 건너뛰고 다음 점을 본다.
+    #   이 처리가 없으면 정렬 회전을 통째로 건너뛰고, 로봇이 제자리에서 알아서 돌게 된다.
+    for fx, fy in pts:
+        if math.hypot(fx - x, fy - y) >= need:
+            return math.atan2(fy - y, fx - x)
+    fx, fy = pts[-1]
+    if math.hypot(fx - x, fy - y) < eps:
+        return None                 # 목적지 위 — 방향을 정할 수 없다
+    return math.atan2(fy - y, fx - x)
+
+
 def _face_route_start(worker: _Worker, route_coords: Optional[str]) -> None:
     """경유지 체인으로 출발하기 전에 **첫 경유지 쪽으로 제자리 회전**한다.
 
@@ -730,32 +766,15 @@ def _face_route_start(worker: _Worker, route_coords: Optional[str]) -> None:
     """
     if not route_coords:
         return
-    v = route_coords.split(",")
-    if len(v) < 2:
-        return
-    try:
-        fx, fy = float(v[0]), float(v[1])
-    except ValueError:
-        return
     xy = _current_xy(worker.robot_ip)
     if xy is None:
         return
     cur = _current_pose(worker.robot_ip)
     if cur is None:
         return
-    # ★ 2026-09-28 — 좌표열은 **로봇의 현재 위치부터** 시작한다(waypoint_route 주석 참조).
-    #   그래서 첫 점은 보통 자기 자리다 — 그 점으로는 방향을 정할 수 없으니
-    #   **다음 점**을 본다. 이 처리가 없으면 아래 ARRIVED_EPS 검사에 걸려
-    #   정렬 회전을 통째로 건너뛰고, 로봇이 제자리에서 알아서 돌게 된다.
-    if math.hypot(fx - xy[0], fy - xy[1]) < waypoint_route.ARRIVED_EPS and len(v) >= 4:
-        try:
-            fx, fy = float(v[2]), float(v[3])
-        except ValueError:
-            return
-    d = math.hypot(fx - xy[0], fy - xy[1])
-    if d < waypoint_route.ARRIVED_EPS:
+    want = _route_first_heading(xy[0], xy[1], route_coords)
+    if want is None:
         return                      # 첫 경유지 위 — 방향을 정할 수 없다
-    want = math.atan2(fy - xy[1], fx - xy[0])
     diff = math.degrees(math.atan2(math.sin(want - cur[2]), math.cos(want - cur[2])))
     if abs(diff) < FACE_ROUTE_MIN_DEG:
         return
@@ -2024,6 +2043,178 @@ def _load_any_charging_poi(area_id: Optional[int]) -> Optional[dict]:
     return None
 
 
+def _followup_dest_or_charger(robot_id: int, after: str) -> tuple[Optional[dict], Optional[int]]:
+    """후속 동작이 **다음에 갈 곳**과 area_id.
+
+    예약 인계 대상(R 지점)이 있으면 그쪽, 없으면 충전소.
+    선회(`_turn_before_unload`)와 이탈(`_escape_after_unload`)이 같은 목적지를 봐야
+    선회한 방향과 실제 출발 방향이 어긋나지 않는다.
+    """
+    _robot = _load_robot(robot_id)
+    try:
+        area = int(_robot.area_id) if (_robot and _robot.area_id) else None
+    except (TypeError, ValueError):
+        area = None
+    dest = _followup_destination(after)
+    if not dest:
+        dest = _load_charging_poi(_robot) if _robot else None
+        if not dest:
+            dest = _load_any_charging_poi(area)
+    return dest, area
+
+
+# ── 강제 종료 후 '랙 든 채 선회 → 하차' (2026-10-07 구현, 사양 2026-10-01 확정) ──
+#
+# 왜 필요한가
+#   종전 순서는 잭다운 → 전진 이탈 → (랙 밖에서) 경로 방향으로 회전이었다.
+#   그런데 통로 한가운데서 벽을 보고 종료되면 랙을 내린 뒤 **앞으로 나갈 수가 없다.**
+#   랙을 내린 뒤에는 그 아래에서 돌 수도 없다 — 로봇 외접원 0.519 m 가
+#   랙 다리 거리 0.42~0.43 m 보다 커서 다리에 닿는다.
+#   그래서 **랙을 든 채 가고자 하는 방향으로 먼저 돌고**, 내려놓고, 그 방향으로 나온다.
+#
+# 방향 = 다음 경로의 **첫 구간 방향** (목적지 직선 방향이 아니다).
+#   출발 정렬(`_face_route_start`)과 같은 계산이라 나온 뒤 다시 돌지 않는다.
+UNLOAD_TURN_MIN_DEG = 15.0      # 이 이하면 돌지 않는다 (출발 정렬 FACE_ROUTE_MIN_DEG 와 같은 값)
+# 랙 적재 회전은 로봇 자체 제한으로 2.5~5 °/s (2026-09-28 현장 실측).
+#   180° 면 최대 72초 → 출발 정렬용 상한(8초·40초)으로는 매번 실패한다.
+UNLOAD_TURN_TIMEOUT = 90
+# 작업지점(R·J) 칸 반경. 이 안에서는 랙을 든 채 돌면 옆 랙·설비에 닿는다.
+UNLOAD_TURN_CELL_M = 1.5
+# 선회 방향을 볼 때 이탈 거리(UNLOAD_ESCAPE_M) 에 더하는 여유 — 1.2 + 0.3 = 1.5 m 너머 점을 본다.
+UNLOAD_TURN_LOOKAHEAD_MARGIN_M = 0.3
+
+
+def _near_work_point(area_id: Optional[int], x: float, y: float) -> Optional[str]:
+    """(x, y) 가 작업지점(R·J) 칸 안이면 그 작업지점 이름. 아니면 None.
+
+    작업지점 = poi_type `jack`(J) · `standby`(R). 진입점(`R1-1` 등)은 waypoint 라 제외된다.
+    조회에 실패하면 **칸 안으로 본다** — 모르는 채로 랙을 든 채 돌지 않는다.
+    """
+    db = SessionLocal()
+    try:
+        q = db.query(RobotMap).filter(RobotMap.is_active == True)        # noqa: E712
+        if area_id is not None:
+            q = q.filter(RobotMap.area_id == area_id)
+        active = q.order_by(RobotMap.id.desc()).first()
+        if active is None:
+            return None
+        rows = (db.query(MapPOI)
+                .filter(MapPOI.map_id == active.id,
+                        MapPOI.is_active == True,                        # noqa: E712
+                        MapPOI.poi_type.in_(("jack", "standby")))
+                .all())
+        best = None
+        for p in rows:
+            if p.world_x is None or p.world_y is None:
+                continue
+            d = math.hypot(float(p.world_x) - x, float(p.world_y) - y)
+            if d <= UNLOAD_TURN_CELL_M and (best is None or d < best[0]):
+                best = (d, p.name or "?")
+        return best[1] if best else None
+    except Exception:
+        logger.exception("[dispatch] 작업지점 칸 판정 실패 — 칸 안으로 본다")
+        return "(판정 실패)"
+    finally:
+        db.close()
+
+
+def _unload_turn_heading(robot_id: int, after: str, x: float, y: float
+                         ) -> tuple[Optional[float], Optional[dict], Optional[int]]:
+    """(x, y) 에서 출발할 **다음 경로의 첫 구간 방향**(rad), 목적지, area_id.
+
+    경로가 안 나오면(경유지 없음 등) 목적지 직선 방향. 목적지를 모르면 방향은 None.
+    """
+    dest, area = _followup_dest_or_charger(robot_id, after)
+    if not dest:
+        return None, None, area
+    want = None
+    try:
+        _mv, extra = waypoint_route.plan(area, x, y, dest["x"], dest["y"])
+        if waypoint_route.is_routed(extra):
+            # 이탈 전진 거리 안의 경유지는 어차피 지나친다 — 그 너머 점을 본다
+            want = _route_first_heading(x, y, extra.get("route_coordinates"),
+                                        min_dist=UNLOAD_ESCAPE_M + UNLOAD_TURN_LOOKAHEAD_MARGIN_M)
+    except Exception as e:
+        logger.warning("[dispatch] 선회 방향 — 경로 계산 실패(%s), 목적지 직선 방향을 쓴다", e)
+    if want is None:
+        want = math.atan2(dest["y"] - y, dest["x"] - x)
+    return want, dest, area
+
+
+def _turn_before_unload(robot_id: int, robot_ip: str, after: str, label: str,
+                        loaded: Optional[bool], flagged: bool) -> None:
+    """랙을 내려놓기 **전에** 다음 경로 첫 방향으로 랙을 든 채 돈다.
+
+    규칙 (2026-10-01 확정, 2026-10-07 수정)
+      · 다음 경로 첫 방향과 지금 방향의 차이가 15° 이하면 돌지 않는다
+      · 15° 를 넘으면 랙을 든 채 그쪽으로 돈다
+      · 돌 수 없거나 돌면 안 되는 경우는 **돌지 않고 종전 순서로 넘긴다**
+        (잭다운 → 전진 이탈 → 랙 밖에서 회전 → 복귀)
+          - 작업지점 칸 안(반경 1.5 m) — 후진으로 들어가 있어 앞이 열려 있다
+          - 잭업 완료가 불확실 — 든 채 돌지 않는다
+          - 현재 자세를 못 읽음 / 회전 실패
+
+    ★ 2026-10-07 사용자 지시 — **어떤 경우에도 그 자리에 세우지 않는다.**
+      강제 종료 = 충전소 복귀, JOB 종료 = 예약 R 지점(없으면 충전소)이 반드시 이어져야 한다.
+      처음 구현은 위 예외에서 정지·알림(_halt_followup)으로 끝냈는데, J1-1 에서 종료하자
+      'J1 칸 안' 에 걸려 랙을 든 채 서 버렸다(11:27:15). 그래서 이 함수는 로봇을 세우지 않는다.
+    """
+    pose = _current_pose(robot_ip) or _current_pose(robot_ip)    # LTE 순간 끊김 대비 1회 재시도
+    if pose is None:
+        logger.warning("[dispatch] %s 선회 생략 — 현재 자세를 못 읽음. 종전 순서로 진행", robot_ip)
+        return
+    x, y, ori = pose
+
+    want, dest, area = _unload_turn_heading(robot_id, after, x, y)
+    if want is None:
+        # 충전소조차 등록이 안 된 설정 문제. 방향을 모르니 돌 근거가 없다 — 종전대로 진행.
+        logger.warning("[dispatch] %s 선회 생략 — 다음 목적지를 모른다(충전소 미지정?)", robot_ip)
+        return
+    diff = math.degrees(math.atan2(math.sin(want - ori), math.cos(want - ori)))
+    if abs(diff) <= UNLOAD_TURN_MIN_DEG:
+        logger.info("[dispatch] %s 선회 불필요 — 다음 경로(%s) 첫 방향 %.1f°, 현재 %.1f° (차 %+.1f°)",
+                    robot_ip, dest.get("name"), math.degrees(want), math.degrees(ori), diff)
+        return
+
+    # ── 돌아야 한다. 든 채 돌면 안 되는 경우는 종전 순서로 넘긴다 ──
+    if loaded is None or (loaded is False and flagged):
+        logger.warning("[dispatch] %s 선회 생략 — 잭업 완료 불확실(필요 회전 %+.0f°). "
+                       "내린 뒤 밖에서 돈다", robot_ip, diff)
+        return
+    cell = _near_work_point(area, x, y)
+    if cell:
+        logger.warning("[dispatch] %s 선회 생략 — 작업지점 %s 칸 안(필요 회전 %+.0f°). "
+                       "내리고 전진으로 나온 뒤 돈다", robot_ip, cell, diff)
+        return
+
+    logger.warning("[dispatch] %s 선회 — 대차를 든 채 %+.1f° (현재 %.1f° → 다음 경로(%s) 첫 방향 %.1f°)",
+                   robot_ip, diff, math.degrees(ori), dest.get("name"), math.degrees(want))
+    jack_service.update_job_status(robot_ip, status="moving",
+                                   message=f"{label} — 대차를 든 채 갈 방향으로 회전합니다")
+    # 제자리 회전(/twist) 먼저. 안 먹는 로봇(현장 longjack)은 즉시 False → 제자리 standard.
+    try:
+        ok = jack_service.rotate_in_place(robot_ip, want, timeout=UNLOAD_TURN_TIMEOUT)
+        if not ok:
+            jack_service.safe_move(robot_ip, "standard", x, y, want,
+                                   max_attempts=2, timeout=UNLOAD_TURN_TIMEOUT,
+                                   poll=jack_service.POLL_INTERVAL_SHORT)
+    except RuntimeError:
+        raise                       # 사용자 중지는 그대로 올린다
+    except Exception as e:
+        logger.warning("[dispatch] %s 선회 명령 실패: %s", robot_ip, e)
+
+    # 결과는 기록만 한다. 덜 돌았어도 종전 순서(내림 → 전진 이탈 → 밖에서 회전)로 이어간다.
+    now = _current_pose(robot_ip)
+    if now is None:
+        logger.warning("[dispatch] %s 선회 후 자세를 못 읽음 — 그대로 진행", robot_ip)
+        return
+    left = math.degrees(math.atan2(math.sin(want - now[2]), math.cos(want - now[2])))
+    if abs(left) > UNLOAD_TURN_MIN_DEG:
+        logger.warning("[dispatch] %s 선회 미완(남은 %+.1f°) — 내린 뒤 밖에서 마저 돈다", robot_ip, left)
+    else:
+        logger.info("[dispatch] %s 선회 완료 — 남은 %+.1f°", robot_ip, left)
+
+
 def _escape_after_unload(robot_id: int, robot_ip: str, after: str, label: str) -> None:
     """랙을 제자리에 내려놓은 직후 **랙 아래에서 직선으로 빠져나온다** (2026-09-28).
 
@@ -2065,17 +2256,7 @@ def _escape_after_unload(robot_id: int, robot_ip: str, after: str, label: str) -
         return
     # 목적지 — 예약 인계 대상(R 지점)이 있으면 그쪽, 없으면 충전소.
     #   ※ 여기서는 방향만 쓴다. 실제 이동 목적지는 아래에서 다시 정한다.
-    dest = _followup_destination(after)
-    if not dest:
-        _robot = _load_robot(robot_id)
-        dest = _load_charging_poi(_robot) if _robot else None
-        if not dest:
-            _area = None
-            try:
-                _area = int(_robot.area_id) if (_robot and _robot.area_id) else None
-            except (TypeError, ValueError):
-                _area = None
-            dest = _load_any_charging_poi(_area)
+    dest, _ = _followup_dest_or_charger(robot_id, after)
     if not dest:
         logger.warning("[dispatch] %s 목적지를 몰라 랙 이탈 방향을 못 정한다 — 생략", robot_ip)
         return
@@ -2221,6 +2402,10 @@ def _force_followup_body(robot_id: int, robot_ip: str, after: str, label: str,
             how = "잭 상태는 '내려감' 이지만 잭업 기록이 있다 — 안전하게"
         else:
             how = "적재 여부 불명 — 안전하게"
+        # ★ 2026-10-07 — 내려놓기 **전에** 랙을 든 채 다음 경로 방향으로 돈다.
+        #   내린 뒤에는 랙 아래에서 돌 수 없고, 벽을 보고 섰으면 앞으로 나갈 수도 없다.
+        #   못 돌면 세우지 않고 종전 순서로 이어간다(_turn_before_unload 주석).
+        _turn_before_unload(robot_id, robot_ip, after, label, loaded, flagged)
         jack_service.update_job_status(robot_ip, status="unloading",
                                        message=f"{label} — 이 자리에 랙을 내려놓습니다")
         logger.warning(f"[dispatch] {robot_ip} 후속 동작 — 제자리 잭다운({how})")

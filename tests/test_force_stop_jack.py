@@ -83,6 +83,8 @@ class FakeRobot:
         self.next_id = 1000
         self.jack_state, self.progress, self.jack_dir = "hold", 0.0, 0
         self.cap = 1.0                          # /robot-params max_forward_velocity
+        self.fail_rotate = False                # True 면 제자리 회전(같은 좌표 standard)을 실패시킨다
+        self.jack_down_ori = None               # 마지막 잭다운 명령 순간의 방향(rad)
         self.subs: list["FakeWS"] = []
         self.events: list[tuple] = []           # (t, kind, detail)
         self.violations: list[tuple] = []
@@ -186,6 +188,12 @@ class FakeRobot:
             m = {"id": mid, "type": body.get("type"), "state": "moving", "path": path,
                  "target_x": tx, "target_y": ty, "target_ori": tori,
                  "rot_left": ROT_TIME, "fail_reason": 0, "fail_reason_str": "None - None"}
+            # 제자리 회전 = 지금 자리를 목표로 준 standard. 실패 시나리오용.
+            if self.fail_rotate and body.get("type") == "standard" \
+                    and math.hypot(tx - self.x, ty - self.y) < 0.05:
+                m.update(state="failed", path=[], fail_reason=1001,
+                         fail_reason_str="rotate_failed - 모의 회전 실패")
+                self.ev("제자리 회전 실패(모의)", f"id={mid}")
             self.moves[mid] = m
             self.cur_id = mid
             self.ev("이동 명령", f"{m['type']} id={mid} → ({tx:.1f},{ty:.1f})")
@@ -205,6 +213,8 @@ class FakeRobot:
                 self.bad("이동 중 잭 명령", f"{'up' if up else 'down'} move={m['id']}")
             self.jack_state = "jacking_up" if up else "jacking_down"
             self.jack_dir = 1 if up else -1
+            if not up:
+                self.jack_down_ori = self.ori
             self.ev("잭 명령", "up" if up else "down")
             self._publish_jack()
 
@@ -572,6 +582,93 @@ def run_case_divert():
            + ("" if fin else " · 정리 안 됨"))
 
 
+def run_case_turn(kind):
+    """강제 종료 후 '랙 든 채 선회 → 하차' (2026-10-07).
+
+    배차를 거치지 않고, 랙을 든 로봇을 원하는 자세에 세운 뒤 후속 처리만 돌린다.
+    방향은 실제 코드(`_unload_turn_heading`)로 구해 그 기준으로 자세를 틀어 놓는다.
+      turn   통로, 90° 어긋남  → 회전 → 잭다운(그때 방향이 다음 경로 쪽) → 이탈
+      noturn 통로, 5° 어긋남   → 회전 없이 잭다운
+      fail   통로, 90° + 회전 실패 → 세우지 않고 종전 순서(잭다운 → 이탈 → 복귀)
+      cell   J1 칸 안, 90° 어긋남 → 돌지 않고 종전 순서(잭다운 → 이탈 → 복귀)
+      ※ 2026-10-07 사용자 지시 — 강제 종료 뒤 로봇을 **그 자리에 세우는 일은 없어야 한다**
+      near   W2→W3 주행 중 W3 0.9 m 앞에서 종료(2026-10-07 연구소 실측 재현)
+             → 바로 앞 W3 가 아니라 그 너머(충전소 쪽)로 돌아야 한다
+    """
+    label = {"turn": "선회  회전 후 하차", "noturn": "선회  15° 이하 → 회전 없음",
+             "fail": "선회  회전 실패 → 종전 순서로 복귀", "cell": "선회  작업지점 칸 안 → 돌지 않고 복귀",
+             "near": "선회  경유지 바로 앞 → 그 너머로 회전"}[kind]
+    reset()
+    if kind == "cell":
+        x, y = POI["J1"]["x"], POI["J1"]["y"]
+    elif kind == "near":
+        w2, w3 = POI.get("W2"), POI.get("W3")
+        if not (w2 and w3):
+            record(label, False, "맵에 W2·W3 없음")
+            return
+        travel = math.atan2(w3["y"] - w2["y"], w3["x"] - w2["x"])
+        x, y = w3["x"] - 0.9 * math.cos(travel), w3["y"] - 0.9 * math.sin(travel)
+    else:
+        w1, w2 = POI.get("W1"), POI.get("W2")
+        if not (w1 and w2):
+            record(label, False, "맵에 W1·W2 없음")
+            return
+        x, y = (w1["x"] + w2["x"]) / 2, (w1["y"] + w2["y"]) / 2      # 통로 한가운데
+    want, dest, _ = ds._unload_turn_heading(ROBOT_ID, "charge", x, y)
+    if want is None:
+        record(label, False, "다음 경로 방향을 못 구함")
+        return
+    off = math.radians(5 if kind == "noturn" else 90)
+    start_ori = want + off
+    if kind == "near":
+        start_ori = travel                      # W3 를 향해 달리던 자세 그대로
+    with ROBOT.lock:
+        ROBOT.x, ROBOT.y, ROBOT.ori = x, y, start_ori
+        ROBOT.progress = 1.0                                         # 잭 올라간 상태
+        ROBOT.fail_rotate = (kind == "fail")
+    js.set_laden(FAKE_IP, True, apply_speed=False)
+    t_start = time.time() - ROBOT.t0
+    th = threading.Thread(target=ds._force_followup, args=(ROBOT_ID, FAKE_IP, "charge"), daemon=True)
+    th.start()
+    th.join(240)
+    fin = not th.is_alive() and settle(240)
+    evs = [e for e in ROBOT.events if e[0] >= t_start]
+    down = [e for e in evs if e[1] == "잭 명령" and e[2] == "down"]
+    t_down = down[0][0] if down else None
+    # 잭다운 전에 나간 '제자리 회전'(같은 좌표 standard) 명령 수
+    rot = [e for e in evs if e[1] == "이동 명령" and e[2].startswith("standard")
+           and (t_down is None or e[0] < t_down) and f"({x:.1f},{y:.1f})" in e[2]]
+    v = ROBOT.violations
+    if kind in ("turn", "noturn", "near"):
+        d_ori = None
+        if ROBOT.jack_down_ori is not None:
+            d_ori = abs(math.degrees(math.atan2(math.sin(want - ROBOT.jack_down_ori),
+                                                math.cos(want - ROBOT.jack_down_ori))))
+        want_rot = 0 if kind == "noturn" else 1
+        ok = bool(down) and len(rot) == want_rot and d_ori is not None and d_ori <= 15 and not v and fin
+        detail = (f"잭다운 {len(down)}회 · 잭다운 전 회전 {len(rot)}회(기대 {want_rot}) · "
+                  f"잭다운 때 경로 방향과 차 {d_ori if d_ori is None else round(d_ori, 1)}° · "
+                  f"목적지 {dest.get('name') if dest else None} · 위반 {len(v)}건")
+        if kind == "near":
+            # 선회 목표가 바로 앞 W3 쪽(=달리던 방향)이면 종전 버그 그대로다
+            back = abs(math.degrees(math.atan2(math.sin(want - travel), math.cos(want - travel))))
+            detail += f" · 선회 각 {back:.0f}°(W3 쪽이면 0)"
+            ok = ok and back > 15
+    else:
+        # 세우지 않고 끝까지 갔나 — 잭다운 1회 + 충전소(C1) 도착 + 오류 상태 아님
+        c1 = POI["C1"]
+        home = math.hypot(ROBOT.x - c1["x"], ROBOT.y - c1["y"]) < 0.5
+        want_rot = 0 if kind == "cell" else 1          # cell 은 회전 시도조차 없어야 한다
+        ok = len(down) == 1 and home and len(rot) >= want_rot and             (kind != "cell" or len(rot) == 0) and not v and fin
+        detail = (f"잭다운 {len(down)}회(기대 1) · 충전소 도착 {home} · "
+                  f"잭다운 전 회전 시도 {len(rot)}회 · 위반 {len(v)}건")
+    if not fin:
+        detail += " · 정리 안 됨"
+    record(label, ok, detail)
+    with ROBOT.lock:
+        ROBOT.fail_rotate = False
+
+
 def main():
     random.seed(7)
     install()
@@ -596,6 +693,9 @@ def main():
                 print("     ", e)
     if not only or "divert" in only:
         run_case_divert()
+    for kind in ("turn", "noturn", "fail", "cell", "near"):
+        if not only or "선회" in only or kind in only:
+            run_case_turn(kind)
     # 무작위 반복 — 누르는 시점을 흩뜨린다
     for i in range(int(os.environ.get("RANDOM_ROUNDS", "6"))):
         phase = random.choice(["적재중", "주행중", "하차중"])
