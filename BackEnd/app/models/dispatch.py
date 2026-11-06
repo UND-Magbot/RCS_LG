@@ -134,3 +134,47 @@ class JobPoint(Base):
     occupied_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class DispatchJobLog(Base):
+    """배송 작업 기록 — 작업 1건 = R 에서 랙 적재 → 짝 J 하차 (2026-11-06).
+
+    배차 콘솔의 [로그] 화면(작업 기록·요약)이 읽는다. 배차 동작에는 쓰지 않는다
+    (기록이 실패해도 배차는 그대로 돈다 — services/job_log.py 참조).
+
+    이름(r_name/j_name)으로 저장하는 이유는 JobPoint 와 같다 — 맵을 다시 동기화하면
+    POI id 가 바뀌어도 기록이 끊기지 않게.
+
+    result:
+      None           — 진행 중
+      completed      — J 하차까지 끝남
+      cancelled      — 사용자 중지(작업 중지)로 끊김
+      force_stopped  — 강제 종료로 끊김
+      failed         — 그 밖의 실패(랙 없음·이동 실패·서버 재시작 등, note 에 사유)
+
+    continued:
+      J 하차 **직후**, 충전소 복귀를 시작하기 전에 바로 이어받은 작업이면 True.
+      복귀 중(사전 접근·도킹 전후)에 이어받은 것은 False.
+    """
+    __tablename__ = "dispatch_job_log"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    area_id = Column(Integer, nullable=True, index=True)
+    robot_id = Column(Integer, nullable=True)
+    robot_name = Column(String(100), nullable=True)
+    r_name = Column(String(200), nullable=True)            # 랙 보관 위치 이름   예) R1
+    j_name = Column(String(200), nullable=True)            # 작업지점 이름      예) J1
+    route_key = Column(String(100), nullable=True)         # "R1→J1"
+    call_at = Column(DateTime, nullable=True)              # 호출(예약 생성) 시각
+    started_at = Column(DateTime, nullable=True, index=True)   # 이 작업 출발
+    unloaded_at = Column(DateTime, nullable=True)          # J 하차 완료
+    ended_at = Column(DateTime, nullable=True)
+    result = Column(String(20), nullable=True)
+    note = Column(String(200), nullable=True)              # 실패·중단 사유
+    continued = Column(Boolean, nullable=False, default=False)
+    prev_job_id = Column(Integer, nullable=True)           # 연속이면 직전 작업 id
+    source = Column(String(20), nullable=False, default="live")   # live / log_import
+    session_id = Column(Integer, nullable=True)
+    # 로그 가져오기 중복 방지 키 — live 는 NULL (MariaDB UNIQUE 는 NULL 여러 개 허용)
+    dedup_key = Column(String(120), nullable=True, unique=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)

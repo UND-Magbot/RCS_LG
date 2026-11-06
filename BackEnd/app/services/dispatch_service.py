@@ -30,6 +30,8 @@ from app.services import jack_service
 from app.services import notice_service
 from app.services import waypoint_route
 from app.services.thread_utils import safe_thread
+# 작업 기록(콘솔 [로그] 화면용) — 기록 실패는 배차를 막지 않는다(모든 함수가 예외를 삼킨다)
+from app.services import job_log as _jl
 # 로그·알림 문구에 쓸 **표시용** 이름. 조회 키로는 절대 쓰지 않는다
 # (job_points 매핑과 진입점 "<이름>-1" 은 전부 원래 이름 기준이다).
 from app.services.poi_label import label_for as _poi_label
@@ -3890,6 +3892,8 @@ def _worker_loop_delivery(worker: _Worker, *, first_j_poi_id: int) -> None:
     """
     j_poi_id = first_j_poi_id
     res_id: Optional[int] = None
+    # 작업 기록용 — 다음 작업이 'J 하차 직후' 이어받은 것인가(연속 작업). 4) 에서만 True 가 된다
+    _jl_cont = False
 
     try:
         jack_service._running_robot_id_by_ip[worker.robot_ip] = worker.robot_id
@@ -3918,6 +3922,12 @@ def _worker_loop_delivery(worker: _Worker, *, first_j_poi_id: int) -> None:
                 return
 
             logger.info(f"[delivery] robot={worker.robot_id} {mapping['r_name']} → {mapping['j_name']}")
+            # 작업 기록 — 출발(세션 시작·이어받기 공통). 연속 여부는 직전 반복이 정해 둔 값
+            _jl.begin(robot_id=worker.robot_id, session_id=worker.session_id,
+                      area_id=mapping["area_id"], r_name=mapping["r_name"],
+                      j_name=mapping["j_name"], j_poi_id=j_poi_id, res_id=res_id,
+                      continued=_jl_cont)
+            _jl_cont = False
 
             # ── 1) R 에서 랙 적재 ──
             _set_db_status(worker.session_id, "picking_up")
@@ -3931,6 +3941,7 @@ def _worker_loop_delivery(worker: _Worker, *, first_j_poi_id: int) -> None:
                 logger.warning(f"[delivery] {msg}")
                 jack_service.update_job_status(worker.robot_ip, message=msg)
                 _log_rack_missing(worker, mapping["r_name"], mapping["j_name"])
+                _jl.close(worker.robot_id, "failed", "랙 없음(정렬 실패)")
 
                 nxt = _take_next_reservation_if_continuable(worker)
                 if nxt is not None:
@@ -3978,6 +3989,7 @@ def _worker_loop_delivery(worker: _Worker, *, first_j_poi_id: int) -> None:
             _set_db_status(worker.session_id, "moving")
             _set_target_poi(worker.session_id, j_poi_id)
             if not _move_to_jack_point(worker, j_poi):
+                _jl.close(worker.robot_id, "failed", f"{mapping['j_name']} 이동 실패")
                 _set_db_status(worker.session_id, "failed",
                                error=f"{mapping['j_name']} 이동 실패")
                 if res_id:
@@ -3990,6 +4002,7 @@ def _worker_loop_delivery(worker: _Worker, *, first_j_poi_id: int) -> None:
             _dropoff_at_poi(worker, j_poi)
             _set_j_occupied(mapping["area_id"], mapping["j_name"], True)
             logger.info(f"[delivery] {mapping['j_name']} 하차 완료 — 점유 표시")
+            _jl.unloaded(worker.robot_id)   # 작업 기록 — 완료(이후 복귀는 작업에 안 넣는다)
 
             if worker.abort_flag:
                 _clear_waypoints(worker.session_id)
@@ -4008,6 +4021,7 @@ def _worker_loop_delivery(worker: _Worker, *, first_j_poi_id: int) -> None:
                 if nxt is not None:
                     j_poi_id, res_id = nxt
                     _clear_waypoints(worker.session_id)
+                    _jl_cont = True   # 하차 직후 · 복귀 시작 전 이어받기 = 연속 작업
                     continue
 
             # ── 5) 충전소 복귀 (랙 반납 단계 없음) ──
@@ -4038,11 +4052,19 @@ def _worker_loop_delivery(worker: _Worker, *, first_j_poi_id: int) -> None:
 
     except Exception as e:
         logger.exception(f"[delivery] 워커 예외 — robot_id={worker.robot_id}")
+        # 작업 기록 — 강제 종료(abort) / 사용자 중지(RuntimeError = _check_stop) / 그 밖의 실패
+        _jl.close(worker.robot_id,
+                  "force_stopped" if worker.abort_flag
+                  else ("cancelled" if isinstance(e, RuntimeError) else "failed"),
+                  str(e))
         _set_db_status(worker.session_id, "failed", error=str(e))
         if res_id:
             _release_reservation(worker, res_id, j_poi_id,
                               reason=f"배송 워커 예외 — 선점 롤백 ({e})")
     finally:
+        # 작업 기록 — 위에서 닫지 못한 채 빠져나온 작업(매핑 조회 실패 등). 이미 닫혔으면 아무 일 없음
+        _jl.close(worker.robot_id,
+                  "force_stopped" if worker.abort_flag else "failed", "작업 중단")
         jack_service._running_robot_id_by_ip.pop(worker.robot_ip, None)
         try:
             from app.services.zone_lock import release_all_by_robot as _release_zones

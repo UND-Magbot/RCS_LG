@@ -375,11 +375,68 @@
       max-width: 90vw; text-align: center;
     }
     #toast.show { opacity: 1; }
+
+    /* ── 화면 전환 [배차 콘솔] [로그] (2026-11-06) ──
+       같은 페이지 안에서 보이는 칸만 바꾼다. 배차 화면의 폴링(refresh)·알림은 전환과 무관하게 계속 돈다. */
+    .view-tabs { flex: 1; display: flex; gap: 6px; min-width: 0; }
+    .vt { background: transparent; border: 1px solid #2a3343; color: #8a93a6; border-radius: 9px;
+          padding: 7px 14px; font-size: clamp(14px, 1.8vw, 18px); font-weight: 700; cursor: pointer; white-space: nowrap; }
+    .vt.active { background: #2a3343; color: #e6eaf2; border-color: #3a4558; }
+    .view-hidden { display: none !important; }
+
+    /* ── 로그 화면 — 표 중심, 장식 최소 ── */
+    .log-view { flex: 1; min-height: 0; overflow-y: auto; padding: clamp(10px, 1.6vw, 18px); }
+    .lg-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 12px; }
+    .lg-seg { display: inline-flex; background: #141a23; border: 1px solid #232b38; border-radius: 9px; padding: 3px; }
+    .lg-seg button { background: transparent; border: none; color: #8a93a6; border-radius: 7px;
+                     padding: 7px 12px; font-size: 14px; font-weight: 700; cursor: pointer; }
+    .lg-seg button.active { background: #2a3343; color: #e6eaf2; }
+    .lg-nav { display: inline-flex; align-items: center; gap: 4px; }
+    .lg-nav button { background: #1a212c; border: 1px solid #2a3343; color: #cfe0ff; border-radius: 7px;
+                     padding: 6px 10px; font-size: 14px; cursor: pointer; }
+    .lg-label { min-width: 120px; text-align: center; font-weight: 700; font-size: 14px; }
+    .lg-bar select, .lg-bar input[type=date] { background: #1a212c; color: #e6eaf2; border: 1px solid #2a3343;
+                     border-radius: 7px; padding: 6px 8px; font-size: 14px; }
+    .lg-check { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; color: #cfd6e2; cursor: pointer; }
+    .lg-count { color: #8a93a6; font-size: 13px; margin-left: auto; }
+    .lg-wrap { overflow-x: auto; border: 1px solid #232b38; border-radius: 10px; }
+    table.lg { width: 100%; border-collapse: collapse; font-size: 14px; }
+    table.lg th, table.lg td { padding: 8px 10px; border-bottom: 1px solid #1f2632; text-align: left; white-space: nowrap; }
+    table.lg th { background: #161b24; color: #9fb0c8; font-weight: 700; }
+    table.lg td.num, table.lg th.num { text-align: right; font-variant-numeric: tabular-nums; }
+    table.lg tr.sub-row td { color: #8a93a6; font-size: 13px; }
+    table.lg tr.sub-row td:first-child { padding-left: 26px; }
+    table.lg tr.zero td { color: #55606f; }
+    table.lg tr.total td { font-weight: 800; border-top: 2px solid #3a4558; background: #161b24; }
+    table.lg tr.total-sub td { background: #161b24; color: #9fb0c8; font-size: 13px; }
+    table.lg tr.total-sub td:first-child { padding-left: 26px; }
+    /* 연속 작업 — 직전 작업과 같은 왼쪽 띠로 묶어 보이게 */
+    table.lg tr.chain td:first-child { box-shadow: inset 4px 0 0 #3d7bfd; }
+    .lg-badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; }
+    .lg-badge.cont { background: #2f6fff; color: #fff; }
+    .rs-completed { color: #6dd99b; } .rs-failed { color: #ff8a8a; }
+    .rs-force_stopped { color: #ffa46d; } .rs-cancelled { color: #c3cad6; } .rs-run { color: #6db5ff; }
+    .lg-note { color: #6b7686; font-size: 12px; margin-left: 6px; }
+    .lg-empty { color: #8a93a6; text-align: center; padding: 30px; }
+    @media (max-width: 640px) {
+      /* 좁은 화면 — 헤더가 한 줄을 넘으면 페이지 전체가 가로로 밀린다. 줄바꿈 허용 */
+      header { flex-wrap: wrap; gap: 8px; }
+      .vt { padding: 6px 10px; }
+      table.lg .lg-note { display: none; }
+      table.lg td.lg-robot { max-width: 90px; overflow: hidden; text-overflow: ellipsis; }
+      table.lg { font-size: 13px; }
+      table.lg th, table.lg td { padding: 7px 6px; }
+      .lg-label { min-width: 96px; }
+    }
   </style>
 </head>
 <body>
   <header>
-    <h1>배차 콘솔</h1>
+    <!-- 2026-11-06 — 제목 자리를 화면 전환 버튼 2개로. 기본은 배차 콘솔(종전 화면 그대로) -->
+    <div class="view-tabs">
+      <button class="vt active" data-view="dispatch">배차 콘솔</button>
+      <button class="vt" data-view="log">로그</button>
+    </div>
     <!-- 2026-09-17 — 강제 종료 버튼 2개를 여기서 **로봇별 [직접 제어] 안으로** 옮겼다.
          종전 전역 버튼은 작업 중인 로봇을 전부 돌며 세웠다(force_clear_current/all).
          현장에 여러 대가 섞여 돌면 "지금 누르면 어느 로봇이 멈추는지" 를 알 수 없다.
@@ -397,7 +454,7 @@
   <div class="sf-alert" id="sf-alert"></div>
   <!-- 관제 알림 (강제 종료 확인 · 도킹 실패). ack_required 면 [확인] 을 눌러야 사라진다 -->
   <div class="nt-alert" id="nt-alert"></div>
-  <div class="content">
+  <div class="content" id="view-dispatch">
     <main>
       <div class="grid" id="grid"></div>
     </main>
@@ -405,6 +462,32 @@
       <div class="sidebar-title"><span>로봇</span><span id="robot-count" style="font-weight:600;color:#6db5ff"></span></div>
       <div id="robot-list"></div>
     </aside>
+  </div>
+
+  <!-- 로그 화면 (2026-11-06) — 배송 작업 기록(dispatch_job_log) 조회. 읽기 전용 -->
+  <div class="log-view view-hidden" id="view-log">
+    <div class="lg-bar">
+      <div class="lg-seg" id="lg-tabs">
+        <button class="active" data-lgtab="list">작업 기록</button>
+        <button data-lgtab="sum">요약</button>
+      </div>
+      <div class="lg-seg" id="lg-units">
+        <button class="active" data-unit="day">일</button>
+        <button data-unit="week">주</button>
+        <button data-unit="month">월</button>
+      </div>
+      <div class="lg-nav">
+        <button id="lg-prev" title="이전">◀</button>
+        <span class="lg-label" id="lg-label">-</span>
+        <button id="lg-next" title="다음">▶</button>
+        <input type="date" id="lg-date" />
+        <button id="lg-today">오늘</button>
+      </div>
+      <label class="lg-check" id="lg-cont-wrap"><input type="checkbox" id="lg-cont" /> 연속 작업만</label>
+      <select id="lg-area"></select>
+      <span class="lg-count" id="lg-count"></span>
+    </div>
+    <div class="lg-wrap" id="lg-body"><div class="lg-empty">불러오는 중…</div></div>
   </div>
 
   <!-- 호출/예약 모달 (로봇 타입별) -->
@@ -2721,6 +2804,155 @@
         el.classList.add("show");
       } catch (e) { /* 폴링 실패는 조용히 */ }
     }
+
+    // ══ 로그 화면 (2026-11-06) ═════════════════════════════════════
+    // 배차 화면과 상태를 공유하지 않는다. 열려 있을 때만 서버에 묻는다(폴링 없음 — 조작할 때 갱신).
+    function lgFmt(d) {
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    }
+    function lgToday() { return lgFmt(new Date()); }
+    function lgParse(s) { const [y, m, d] = s.split("-").map(Number); return new Date(y, m - 1, d); }
+    const lg = { tab: "list", unit: "day", date: lgToday(), cont: false, area: "", areasLoaded: false };
+
+    // 이전/다음 — 작업 기록은 한 기간씩, 요약은 한 화면(일 14 · 주 8 · 월 6)씩 옮긴다
+    function lgShift(dir) {
+      const d = lgParse(lg.date);
+      const n = lg.tab === "sum" ? ({ day: 14, week: 8, month: 6 })[lg.unit] : 1;
+      if (lg.unit === "day") d.setDate(d.getDate() + dir * n);
+      else if (lg.unit === "week") d.setDate(d.getDate() + dir * 7 * n);
+      else { d.setDate(1); d.setMonth(d.getMonth() + dir * n); }
+      lg.date = lgFmt(d);
+      lgLoad();
+    }
+    function lgEsc(s) {
+      return String(s == null ? "" : s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+    }
+    function lgDur(sec) {
+      if (sec == null) return "-";
+      const m = Math.floor(sec / 60), s = sec % 60;
+      return m >= 60 ? `${Math.floor(m / 60)}시간 ${m % 60}분` : `${m}분 ${String(s).padStart(2, "0")}초`;
+    }
+    function lgWhen(iso) {
+      if (!iso) return "-";
+      const t = iso.replace("T", " ");
+      return lg.unit === "day" ? t.slice(11, 19) : `${t.slice(5, 10)} ${t.slice(11, 16)}`;
+    }
+    const LG_RESULT = { completed: "완료", failed: "실패", force_stopped: "강제 종료", cancelled: "중지" };
+    function lgResult(r) {
+      if (!r.result) return `<span class="rs-run">진행 중</span>`;
+      const note = (r.result !== "completed" && r.note) ? `<span class="lg-note">${lgEsc(r.note.slice(0, 40))}</span>` : "";
+      return `<span class="rs-${r.result}">${LG_RESULT[r.result] || lgEsc(r.result)}</span>${note}`;
+    }
+    function lgRatio(v) { return v == null ? "-" : `${v.toFixed(1)}%`; }
+
+    async function lgLoadAreas() {
+      if (lg.areasLoaded) return;
+      try {
+        const d = await api("/api/dispatch/joblog/areas");
+        const sel = document.getElementById("lg-area");
+        const def = d.default_area_id;
+        let html = `<option value="">기본 구역${def && def !== "all" ? ` (${lgEsc(def)})` : ""}</option>`
+                 + `<option value="real">전체 (시뮬레이션 제외)</option><option value="all">전체</option>`;
+        for (const a of d.areas || []) {
+          if (a.area_id == null) continue;
+          html += `<option value="${a.area_id}">구역 ${a.area_id}${a.name ? " · " + lgEsc(a.name) : ""} (${a.count})</option>`;
+        }
+        sel.innerHTML = html;
+        sel.value = lg.area;
+        lg.areasLoaded = true;
+      } catch (e) { /* 구역 목록 실패는 무시 — 기본 구역으로 본다 */ }
+    }
+
+    let lgSeq = 0;   // 빠르게 연달아 누를 때 늦게 온 옛 응답이 화면을 덮지 않게
+    async function lgLoad() {
+      const my = ++lgSeq;
+      document.getElementById("lg-date").value = lg.date;
+      document.getElementById("lg-cont-wrap").style.display = lg.tab === "list" ? "" : "none";
+      const body = document.getElementById("lg-body");
+      const area = lg.area ? `&area_id=${encodeURIComponent(lg.area)}` : "";
+      try {
+        if (lg.tab === "list") {
+          const d = await api(`/api/dispatch/joblog?unit=${lg.unit}&date=${lg.date}&continued_only=${lg.cont ? 1 : 0}${area}`);
+          if (my !== lgSeq) return;
+          document.getElementById("lg-label").textContent = d.label;
+          document.getElementById("lg-count").textContent = `${d.count}건`;
+          body.innerHTML = lgListHtml(d.items || []);
+        } else {
+          const d = await api(`/api/dispatch/joblog/summary?unit=${lg.unit}&to=${lg.date}${area}`);
+          if (my !== lgSeq) return;
+          const ps = d.periods || [];
+          document.getElementById("lg-label").textContent =
+            ps.length ? `${ps[ps.length - 1].label} ~ ${ps[0].label}` : "-";
+          document.getElementById("lg-count").textContent = `완료 ${d.total.total}건`;
+          body.innerHTML = lgSumHtml(d);
+        }
+      } catch (e) {
+        if (my !== lgSeq) return;
+        body.innerHTML = `<div class="lg-empty">불러오기 실패 — ${lgEsc(e.message)}</div>`;
+      }
+    }
+
+    function lgListHtml(items) {
+      if (!items.length) return `<div class="lg-empty">기록이 없습니다</div>`;
+      // 연속 작업과 그 직전 작업을 같은 띠로 묶는다(최신순이라 직전 작업은 보통 바로 아래 행)
+      const chained = new Set();
+      for (const r of items) if (r.continued) { chained.add(r.id); if (r.prev_job_id) chained.add(r.prev_job_id); }
+      const rows = items.map(r => `
+        <tr class="${chained.has(r.id) ? "chain" : ""}">
+          <td>${lgWhen(r.started_at)}</td>
+          <td>${lgEsc(r.route_label)} <span class="lg-note">${lgEsc(r.route_key || "")}</span></td>
+          <td class="lg-robot">${lgEsc(r.robot_name || (r.robot_id != null ? "로봇 " + r.robot_id : "-"))}</td>
+          <td>${lgResult(r)}</td>
+          <td class="num">${lgDur(r.duration_sec)}</td>
+          <td>${r.continued ? `<span class="lg-badge cont">연속</span>` : ""}</td>
+        </tr>`).join("");
+      return `<table class="lg"><thead><tr>
+          <th>${lg.unit === "day" ? "시각" : "날짜·시각"}</th><th>경로</th><th>로봇</th><th>결과</th>
+          <th class="num">소요</th><th>연속</th></tr></thead><tbody>${rows}</tbody></table>`;
+    }
+
+    function lgSumRow(cls, label, v) {
+      return `<tr class="${cls}"><td>${lgEsc(label)}</td><td class="num">${v.total}</td>`
+           + `<td class="num">${v.continued}</td><td class="num">${lgRatio(v.ratio)}</td></tr>`;
+    }
+    function lgSumHtml(d) {
+      const ps = d.periods || [];
+      if (!ps.length) return `<div class="lg-empty">기록이 없습니다</div>`;
+      let rows = "";
+      for (const p of ps) {
+        rows += lgSumRow(p.total ? "" : "zero", p.label, p);
+        for (const r of (p.routes || [])) if (r.total) rows += lgSumRow("sub-row", r.route_label, r);
+      }
+      rows += lgSumRow("total", "합계", d.total);
+      for (const r of (d.total.routes || [])) if (r.total) rows += lgSumRow("total-sub", r.route_label, r);
+      return `<table class="lg"><thead><tr><th>기간</th><th class="num">전체</th><th class="num">연속</th>
+        <th class="num">비율</th></tr></thead><tbody>${rows}</tbody></table>`;
+    }
+
+    // 화면 전환 — 배차 화면은 숨기기만 한다(폴링·타이머는 그대로)
+    document.querySelectorAll(".vt").forEach(b => b.addEventListener("click", () => {
+      const v = b.dataset.view;
+      document.querySelectorAll(".vt").forEach(x => x.classList.toggle("active", x === b));
+      document.getElementById("view-dispatch").classList.toggle("view-hidden", v !== "dispatch");
+      document.getElementById("view-log").classList.toggle("view-hidden", v !== "log");
+      if (v === "log") lgLoadAreas().then(lgLoad);
+    }));
+    document.querySelectorAll("#lg-tabs button").forEach(b => b.addEventListener("click", () => {
+      lg.tab = b.dataset.lgtab;
+      document.querySelectorAll("#lg-tabs button").forEach(x => x.classList.toggle("active", x === b));
+      lgLoad();
+    }));
+    document.querySelectorAll("#lg-units button").forEach(b => b.addEventListener("click", () => {
+      lg.unit = b.dataset.unit;
+      document.querySelectorAll("#lg-units button").forEach(x => x.classList.toggle("active", x === b));
+      lgLoad();
+    }));
+    document.getElementById("lg-prev").addEventListener("click", () => lgShift(-1));
+    document.getElementById("lg-next").addEventListener("click", () => lgShift(1));
+    document.getElementById("lg-today").addEventListener("click", () => { lg.date = lgToday(); lgLoad(); });
+    document.getElementById("lg-date").addEventListener("change", e => { if (e.target.value) { lg.date = e.target.value; lgLoad(); } });
+    document.getElementById("lg-cont").addEventListener("change", e => { lg.cont = e.target.checked; lgLoad(); });
+    document.getElementById("lg-area").addEventListener("change", e => { lg.area = e.target.value; lgLoad(); });
 
     refresh(true);
     sfAlertTick();

@@ -100,7 +100,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.database import init_db
-from app.routers import user, robot, auth, map, alarm_log, activity_log, backup, log, jack_test, task, settings, dispatch
+from app.routers import user, robot, auth, map, alarm_log, activity_log, backup, log, jack_test, task, settings, dispatch, joblog
 from app.services.scheduler import init_scheduler, shutdown_scheduler
 from app.services import dispatch_service
 # 데드락 감지/양보 기능 비활성화 — 좁은 통로 없는 사이트.
@@ -230,6 +230,7 @@ app.include_router(jack_test.router)
 app.include_router(task.router)
 app.include_router(settings.router)
 app.include_router(dispatch.router)
+app.include_router(joblog.router)   # 배송 작업 기록 조회 (콘솔 [로그] 화면)
 
 
 # 정적 파일 서빙 (맵 이미지 등)
