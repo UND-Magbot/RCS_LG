@@ -472,9 +472,10 @@
         <button data-lgtab="sum">요약</button>
       </div>
       <div class="lg-seg" id="lg-units">
-        <button class="active" data-unit="day">일</button>
+        <button data-unit="day">일</button>
         <button data-unit="week">주</button>
         <button data-unit="month">월</button>
+        <button class="active" data-unit="all">전체</button>
       </div>
       <div class="lg-nav">
         <button id="lg-prev" title="이전">◀</button>
@@ -2812,10 +2813,12 @@
     }
     function lgToday() { return lgFmt(new Date()); }
     function lgParse(s) { const [y, m, d] = s.split("-").map(Number); return new Date(y, m - 1, d); }
-    const lg = { tab: "list", unit: "day", date: lgToday(), cont: false, area: "", areasLoaded: false };
+    // 처음 열면 전체 구역(시뮬레이션 제외) · 전체 기간 — 기본 구역·오늘만 보면 비어 보이던 문제 (2026-11-06)
+    const lg = { tab: "list", unit: "all", date: lgToday(), cont: false, area: "real", areasLoaded: false };
 
     // 이전/다음 — 작업 기록은 한 기간씩, 요약은 한 화면(일 14 · 주 8 · 월 6)씩 옮긴다
     function lgShift(dir) {
+      if (lg.unit === "all") return;   // 전체 기간은 옮길 칸이 없다
       const d = lgParse(lg.date);
       const n = lg.tab === "sum" ? ({ day: 14, week: 8, month: 6 })[lg.unit] : 1;
       if (lg.unit === "day") d.setDate(d.getDate() + dir * n);
@@ -2867,6 +2870,7 @@
     async function lgLoad() {
       const my = ++lgSeq;
       document.getElementById("lg-date").value = lg.date;
+      document.querySelector(".lg-nav").style.display = lg.unit === "all" ? "none" : "";
       document.getElementById("lg-cont-wrap").style.display = lg.tab === "list" ? "" : "none";
       const body = document.getElementById("lg-body");
       const area = lg.area ? `&area_id=${encodeURIComponent(lg.area)}` : "";

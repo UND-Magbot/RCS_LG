@@ -169,11 +169,13 @@ def close(robot_id: int, result: str, note: Optional[str] = None) -> None:
 # ── 조회 (라우터가 부른다) ─────────────────────────────────────────
 
 
-UNITS = ("day", "week", "month")
+UNITS = ("day", "week", "month", "all")   # all = 전체 기간 한 칸 (2026-11-06 사용자 요청)
 
 
 def period_start(d: date, unit: str) -> date:
-    """그 날짜가 속한 기간의 첫날. 주는 월요일 시작."""
+    """그 날짜가 속한 기간의 첫날. 주는 월요일 시작. 전체(all)는 고정 시작일."""
+    if unit == "all":
+        return date(2000, 1, 1)
     if unit == "week":
         return d - timedelta(days=d.weekday())
     if unit == "month":
@@ -183,6 +185,8 @@ def period_start(d: date, unit: str) -> date:
 
 def period_next(d: date, unit: str) -> date:
     """기간 첫날 → 다음 기간 첫날."""
+    if unit == "all":
+        return date(2100, 1, 1)
     if unit == "week":
         return d + timedelta(days=7)
     if unit == "month":
@@ -191,6 +195,8 @@ def period_next(d: date, unit: str) -> date:
 
 
 def period_label(d: date, unit: str) -> str:
+    if unit == "all":
+        return "전체"
     if unit == "week":
         e = d + timedelta(days=6)
         return f"{d:%m-%d}~{e:%m-%d}"

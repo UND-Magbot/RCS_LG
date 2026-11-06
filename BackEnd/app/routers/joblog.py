@@ -45,7 +45,7 @@ def _area(area_id: Optional[str]) -> tuple[Optional[str], Optional[str]]:
 
 def _unit(unit: str) -> str:
     if unit not in job_log.UNITS:
-        raise HTTPException(400, "unit 은 day / week / month 중 하나")
+        raise HTTPException(400, "unit 은 day / week / month / all 중 하나")
     return unit
 
 
@@ -75,7 +75,8 @@ def api_joblog_summary(unit: str = "day", area_id: Optional[str] = None,
     """기간 칸별 요약. from/to 생략 시 일=최근 14일 · 주=최근 8주 · 월=최근 6개월."""
     unit = _unit(unit)
     today = date.today()
-    back = {"day": timedelta(days=13), "week": timedelta(weeks=7), "month": timedelta(days=31 * 5)}[unit]
+    back = {"day": timedelta(days=13), "week": timedelta(weeks=7), "month": timedelta(days=31 * 5),
+            "all": timedelta(0)}[unit]   # all 은 한 칸뿐이라 범위가 의미 없다
     t = _date(d_to, today)
     f = _date(d_from, t - back)
     if f > t:
